@@ -37,23 +37,12 @@
 
 ## 4. Data Strategy
 
-### 4.1 Dataset Mix
 - **Unlabeled 95%**: DROID dataset converted to LeRobot format; only RGB video streams are consumed, and action columns are ignored. For now only using DROID, but here is a short list of potential very interesting datasets:
   - airoa-moma (https://huggingface.co/datasets/airoa-org/airoa-moma)
   - agibot_alpha (https://huggingface.co/datasets/cadene/agibot_alpha_v30)
 - **Labeled 5%**: forthcoming in-house LeRobot dataset capturing the target robot with action deltas; collection pipeline still to be built.
 - All sources follow the LeRobot directory schema (episodes, parquet indices, media folders) to simplify ingestion and batching.
 - Reference implementations for loading these datasets live in `lerobot_tests/dataset_download.py` (offline DataLoader) and `lerobot_tests/test_streaming_dataset.py` (streaming iterator with delta timestamps).
-
-### 4.2 Handling Unlabeled Clips
-- Strip or mask action fields within the DROID parquet files, replacing them with the learned null-action embedding during training.
-- Maintain metadata about camera viewpoints and scene IDs so curriculum schedules can interleave similar contexts.
-- Periodically validate frame integrity and timestamps to guarantee consistent sequence lengths before batching.
-
-### 4.3 Handling Action-Labeled Robot Clips
-- Record new demonstrations with synchronized sensor streams and delta end-effector actions, exporting directly through `lerobot` tooling.
-- Use the same image resolution and normalization as DROID to minimize domain shift; add robot-specific labels (task tags, workspace ID) for filtering.
-- Hold out a validation split for the action-conditioned rollout metrics and MPC evaluation.
 
 ## 5. Training Workflow
 - Build a LeRobot streaming dataset that yields mixed minibatches (e.g., 19 unlabeled sequences for every labeled sequence to match the 95/5 ratio).
@@ -72,54 +61,9 @@
 
 ### 6.2 MPC Performance
 - Evaluate CEM MPC latency, success rate on goal-image reaching tasks, and smoothness of executed action deltas using the labeled robot dataset.
-- Compare against a baseline that omits shortcut forcing (pure teacher-forced ViT dynamics) to quantify benefits.
-- Stress-test domain shifts (lighting, backgrounds) since the encoder remains frozen.
+- Compare against a baseline that omits to use diffusion for learning dynamics from unlabeled data and quantify benefits of the approach.
+- Stress-test domain shifts (lighting, backgrounds) since the encoder remains frozen, should be trivial for dino.
 
-## 7. Repository Layout
-```
-├── configs/
-│   ├── world_model.yaml    # Dreamer4-DINO hyperparameters
-│   ├── decoder.yaml        # reconstruction head options
-│   └── mpc.yaml            # planning defaults
-├── lerobot_tests/
-│   ├── dataset_download.py       # offline DataLoader example with delta timestamps
-│   ├── lerobot_dataset.py        # upstream LeRobot dataset implementation snapshot
-│   └── test_streaming_dataset.py
-├── world_model/
-│   ├── transformer.py
-│   ├── shortcut_losses.py
-│   └── rollout.py
-├── training/
-│   ├── world_model_trainer.py
-│   ├── decoder_trainer.py
-│   └── datasets.py
-├── planning/
-│   ├── cem_mpc.py
-│   └── goal_latent.py
-├── vision/
-│   ├── dino_v3.py         # frozen encoder wrapper
-│   └── image_decoder.py   # optional visualization decoder
-└── scripts/
-    ├── preprocess_lerobot.py
-    ├── evaluate_world_model.py
-    ├── run_cem_mpc.py
-    └── visualize_rollouts.py
-```
-
-## 8. Config Highlights
-- `model_dim`: 768, `num_layers`: 24, `num_heads`: 16, `num_registers`: 8 (tune to match hardware).
-- `shortcut_steps K`: 4, `tau_min`: 0.02, `tau_max`: 1.0, `ramp_weight`: `(0.9 * tau + 0.1)`.
-- `tau_distribution` / `tau_power` and `noise_mean` / `noise_std`: bias sampling toward cleaner latents and align the base noise with dataset statistics when training flow matching.
-- `context_frames`: `{64, 160}`, with per-device batch size 1–2 and gradient accumulation.
-- Action encoder hidden dim: 128; learned null-action embedding shared across unlabeled clips.
-- Optimizer: AdamW (`lr = 1e-4`, `betas = (0.9, 0.95)`, weight decay `0.1`) with gradient clipping at 1.0 and bfloat16 mixed precision; flip on `ema.decay` to maintain a smoothed copy of the world model.
-
-## 9. Deployment Considerations
-- Real-time inference targets ~20 FPS on a single A100/H100 by caching KV states and reusing shortcut forcing steps.
-- Use Torch Dynamo (`torch.compile`) or TensorRT for additional speed-ups; preallocate CUDA graphs for inference + MPC loops.
-- Enforce safety guards (joint limits, velocity clamps) before sending commands; optionally extend with control barrier functions.
-- When new LeRobot episodes arrive, perform low-learning-rate fine-tuning with EMA tracking while monitoring for catastrophic forgetting.
 
 ## 10. References
-- Hafner et al., 2025. *Training Agents Inside of Scalable World Models (Dreamer 4).*
-- Zhou et al., 2024. *DINO-WM: World Models on Pre-trained Visual Features Enable Zero-shot Planning.*
+See `archive/important_papers`.
