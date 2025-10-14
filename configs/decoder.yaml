@@ -1,0 +1,6 @@
+observation_shape: [3, 512, 512]
+feature_dim: 1024
+depth: 64
+kernel_size: 5
+stride: 3
+activation: torch.nn.ReLU
