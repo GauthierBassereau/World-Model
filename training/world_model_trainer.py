@@ -297,7 +297,7 @@ class WorldModelTrainer:
                 ema_buffer.data.copy_(source)
 
     def _init_wandb(self):
-        import wandb  # pylint: disable=import-outside-toplevel
+        import wandb
 
         wandb_run = wandb.init(
             project=self.config.logging.project,
@@ -325,43 +325,40 @@ class WorldModelTrainer:
         )
         data_iter = iter(self.dataloader)
 
-        try:
-            for step in range(self.global_step + 1, self.config.trainer.max_steps + 1):
-                self.optimizer.zero_grad(set_to_none=True)
-                accum_metrics: Dict[str, float] = {}
-                for _ in range(self.config.trainer.grad_accum_steps):
-                    batch_start_time = time.perf_counter()
-                    batch, data_iter = self._next_batch(data_iter)
-                    metrics = self._train_micro_step(batch)
-                    metrics["batch_time_sec"] = time.perf_counter() - batch_start_time
-                    for key, value in metrics.items():
-                        accum_metrics[key] = accum_metrics.get(key, 0.0) + value
-                if self.config.optimizer.grad_clip_norm:
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.optimizer.grad_clip_norm)
+        for step in range(self.global_step + 1, self.config.trainer.max_steps + 1):
+            self.optimizer.zero_grad(set_to_none=True)
+            accum_metrics: Dict[str, float] = {}
+            for _ in range(self.config.trainer.grad_accum_steps):
+                batch_start_time = time.perf_counter()
+                batch, data_iter = self._next_batch(data_iter)
+                metrics = self._train_micro_step(batch)
+                metrics["batch_time_sec"] = time.perf_counter() - batch_start_time
+                for key, value in metrics.items():
+                    accum_metrics[key] = accum_metrics.get(key, 0.0) + value
+            if self.config.optimizer.grad_clip_norm:
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.optimizer.grad_clip_norm)
 
-                if self.use_scaler:
-                    self.scaler.step(self.optimizer)
-                    self.scaler.update()
-                else:
-                    self.optimizer.step()
+            if self.use_scaler:
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                self.optimizer.step()
 
-                self._update_ema()
+            self._update_ema()
 
-                self.global_step = step
-                mean_metrics = {
-                    key: value / self.config.trainer.grad_accum_steps for key, value in accum_metrics.items()
-                }
-                self._log_step(mean_metrics)
+            self.global_step = step
+            mean_metrics = {
+                key: value / self.config.trainer.grad_accum_steps for key, value in accum_metrics.items()
+            }
+            self._log_step(mean_metrics)
 
-                if (
-                    self.config.logging.checkpoint_interval
-                    and step % self.config.logging.checkpoint_interval == 0
-                ):
-                    self._save_checkpoint(step)
+            if (
+                self.config.logging.checkpoint_interval
+                and step % self.config.logging.checkpoint_interval == 0
+            ):
+                self._save_checkpoint(step)
 
-            self.logger.info("Finished training")
-        finally:
-            self.close()
+        self.logger.info("Finished training")
 
     def _train_micro_step(self, batch: WorldModelBatch) -> Dict[str, float]:
         sequence_latents = batch.sequence_latents.to(self.device)

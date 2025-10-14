@@ -1,8 +1,8 @@
-# Dreamer4-DINO World Model Project
+# World Model | Master Thesis (in progress)
 
 ## 1. Motivation and Scope
 - Build a task-agnostic latent world model that combines Dreamer V4 shortcut forcing with DINO-style latent planning to support goal-conditioned MPC.
-- Target robot: single 6-DoF arm commanded with delta end-effector poses (XYZ position deltas, optional wrist rotation, and gripper control) at 10–20 Hz once deployed.
+- Target robot: single 6-DoF arm commanded with delta end-effector poses.
 - Data regime: train exclusively on LeRobot-format corpora composed of 95% real-world raw manipulation videos without actions and 5% action-labeled demonstrations from a forthcoming in-house robot dataset. The unlabeled portion is currently the DROID dataset converted to LeRobot; the labeled portion will be supplied by the future custom dataset.
 
 ## 2. Research Foundations
@@ -10,7 +10,7 @@
 ### Dreamer V4 (Training Agents Inside of Scalable World Models)
 - Adopt Phase 1 (tokenizer + dynamics pretraining) of the Dreamer V4 recipe, emphasizing shortcut forcing and causal transformers without policy/reward heads.
 - World model backbone: block-causal transformer with alternating spatial and temporal attention, register tokens, RoPE, grouped-query attention, and shortcut forcing (flow matching + bootstrap) to reach stable predictions in four denoising steps.
-- Tokenizer: causal masked autoencoder with tanh bottleneck; patch dropout encourages spatial consistency and supports fast inference on a single GPU.
+- Operating latent space is frozen DinoV3 encoder
 - Action conditioning is optional for unlabeled data—Dreamer-style learned null tokens allow the model to mix clips with and without action annotations.
 
 ### DINO-WM (World Models on Pre-trained Visual Features Enable Zero-shot Planning)
@@ -22,7 +22,7 @@
 
 ### 3.1 Observation Pipeline
 - Freeze DINOv3-B (ViT-B/16) and integrate it directly inside the LeRobot dataset loader so frames arrive as patch tokens.
-- Return the 14×14 patch grid tokens (dim 768) and optional CLS token for diagnostics; append Dreamer-style register tokens for global aggregation.
+- Return the 14×14 patch grid tokens (dim 768); append Dreamer-style register tokens for global aggregation.
 - Normalize inputs with DINO preprocessing and apply consistent temporal augmentations (color jitter, random crop) during data loading.
 
 ### 3.2 Dynamics Transformer
