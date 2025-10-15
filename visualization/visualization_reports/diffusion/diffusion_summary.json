@@ -1,0 +1,50 @@
+{
+  "batch_shape": {
+    "batch": 1,
+    "steps": 2,
+    "tokens": 220,
+    "dim": 768
+  },
+  "schedule": {
+    "min_signal": 0.0,
+    "max_signal": 1.0,
+    "base_dimension": 4096,
+    "effective_dimension": 168960,
+    "dimension_shift_alpha": 6.422616289332565
+  },
+  "components": {
+    "signal_levels": {
+      "count": 2,
+      "mean": 0.8730016946792603,
+      "std": 0.12361618876457214,
+      "min": 0.7493855357170105,
+      "max": 0.9966179132461548
+    },
+    "base_noise": {
+      "count": 337920,
+      "mean": -0.00032523993286304176,
+      "std": 1.0005793571472168,
+      "min": -4.5645036697387695,
+      "max": 5.03540563583374
+    },
+    "noisy_latents": {
+      "count": 337920,
+      "mean": 0.003246656386181712,
+      "std": 0.3801228404045105,
+      "min": -6.130329608917236,
+      "max": 3.462165355682373
+    },
+    "target_velocity": {
+      "count": 337920,
+      "mean": 0.004154595080763102,
+      "std": 1.0695643424987793,
+      "min": -9.006246566772461,
+      "max": 5.2717204093933105
+    }
+  },
+  "config": {
+    "num_hist_bins": 60,
+    "schedule_plot_points": 256,
+    "max_time_series": 8
+  }
+}

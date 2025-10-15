@@ -1,15 +1,15 @@
 """
-One-shot diffusion debugging utilities that capture rich plots for the first training batch.
+Offline diffusion visualisation utilities.
 
-When enabled, the debugger persists figures and lightweight summaries that describe the sampled
-signal levels, the applied dimension-shifted schedule, and the main latent components used by
-the flow matching objective.
+The helpers here mirror the previous debugging hooks but are designed to be
+invoked explicitly from standalone scripts so they no longer couple to the
+training loop.
 """
 
 import json
 import math
 from pathlib import Path
-from typing import Dict, Sequence
+from typing import Dict, Optional, Sequence
 
 import matplotlib
 
@@ -17,18 +17,20 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import torch
 
-from .config import DiffusionConfig, DiffusionDebugConfig
+from training.diffusion.config import DiffusionConfig, DiffusionDebugConfig
 
 
-class DiffusionBatchDebugger:
+class DiffusionVisualizer:
     """
-    Stores diagnostic plots for a single batch of diffusion training data.
-
-    The debugger is intended to run exactly once per training session and only when explicitly
-    enabled via the diffusion debug configuration.
+    Generate plots and lightweight summaries for a batch of diffusion tensors.
     """
 
-    def __init__(self, debug_cfg: DiffusionDebugConfig, schedule_cfg: DiffusionConfig) -> None:
+    def __init__(
+        self,
+        debug_cfg: DiffusionDebugConfig,
+        schedule_cfg: DiffusionConfig,
+        output_dir: Optional[Path] = None,
+    ) -> None:
         self.cfg = debug_cfg
         self.schedule_cfg = schedule_cfg
         self.enabled = debug_cfg.enabled
@@ -37,10 +39,11 @@ class DiffusionBatchDebugger:
             self.output_dir = None
             return
 
-        self.output_dir = Path(debug_cfg.output_dir)
+        base_dir = Path(output_dir) if output_dir is not None else Path(debug_cfg.output_dir)
+        self.output_dir = base_dir
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-    def maybe_run(
+    def generate(
         self,
         *,
         latents: torch.Tensor,
@@ -71,7 +74,7 @@ class DiffusionBatchDebugger:
         )
 
     def _write_summary(self, payload: Dict[str, object]) -> None:
-        target = self.output_dir / "batch_summary.json"
+        target = self.output_dir / "diffusion_summary.json"
         target.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     def _tensor_stats(self, tensor: torch.Tensor) -> Dict[str, float]:
@@ -162,7 +165,7 @@ class DiffusionBatchDebugger:
         )
         ax.set_xlabel("Signal level τ")
         ax.set_ylabel("Count")
-        ax.set_title("Signal distribution (first batch)")
+        ax.set_title("Signal distribution")
         ax.set_xlim(min_signal, max_signal)
         fig.tight_layout()
         fig.savefig(self.output_dir / "signal_histogram.png", dpi=200)
@@ -188,7 +191,7 @@ class DiffusionBatchDebugger:
         )
         ax.set_xlabel("Sequence step")
         ax.set_ylabel("Batch index")
-        ax.set_title("Signal levels per sequence (first batch)")
+        ax.set_title("Signal levels per sequence")
         fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="τ")
         fig.tight_layout()
         fig.savefig(self.output_dir / "signal_heatmap.png", dpi=200)
@@ -233,7 +236,6 @@ class DiffusionBatchDebugger:
             min_val = float(values.min().item())
             max_val = float(values.max().item())
             if math.isclose(min_val, max_val):
-                # Avoid zero-width histograms
                 max_val = min_val + 1e-6
             hist = torch.histc(values, bins=self.cfg.num_hist_bins, min=min_val, max=max_val)
             edges = torch.linspace(min_val, max_val, steps=self.cfg.num_hist_bins + 1)

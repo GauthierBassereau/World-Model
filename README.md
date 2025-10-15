@@ -10,7 +10,7 @@
 ### Dreamer V4 (Training Agents Inside of Scalable World Models)
 - Adopt Phase 1 (tokenizer + dynamics pretraining) of the Dreamer V4 recipe, emphasizing shortcut forcing and causal transformers without policy/reward heads.
 - World model backbone: block-causal transformer with alternating spatial and temporal attention, register tokens, RoPE, grouped-query attention, and shortcut forcing (flow matching + bootstrap) to reach stable predictions in four denoising steps.
-- Operating latent space is frozen DinoV3 encoder
+- Operating latent space is frozen DINOv3-B encoder
 - Action conditioning is optional for unlabeled data—Dreamer-style learned null tokens allow the model to mix clips with and without action annotations.
 
 ### DINO-WM (World Models on Pre-trained Visual Features Enable Zero-shot Planning)

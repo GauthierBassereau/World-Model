@@ -1,15 +1,14 @@
 """
-Utilities to visualise transformer masks for debugging.
+Utilities to visualise transformer attention masks and token roles.
 
-The visualiser renders the temporal masking strategy used by the world model
-transformer so researchers can confirm that only matching patches interact
-across time.
+These helpers are invoked from standalone scripts so the training codebase no
+longer needs to trigger visualisation side effects at construction time.
 """
 
 import json
 import math
 from pathlib import Path
-from typing import Any
+from typing import Dict, List, Optional
 
 import matplotlib
 
@@ -19,21 +18,33 @@ import matplotlib.patches as mpatches
 from matplotlib.colors import ListedColormap
 import torch
 
+from world_model.transformer import TransformerDebugConfig, WorldModelConfig
 
-class TransformerDebugVisualizer:
-    def __init__(self, debug_cfg: Any, model_cfg: Any) -> None:
+
+class TransformerVisualizer:
+    """
+    Generate plots that describe the transformer spatial and temporal masks.
+    """
+
+    def __init__(
+        self,
+        debug_cfg: TransformerDebugConfig,
+        model_cfg: WorldModelConfig,
+        output_dir: Optional[Path] = None,
+    ) -> None:
         self.cfg = debug_cfg
         self.model_cfg = model_cfg
-        self.enabled = getattr(debug_cfg, "enabled", False)
+        self.enabled = debug_cfg.enabled
         self._has_run = False
         if not self.enabled:
             self.output_dir = None
             return
 
-        self.output_dir = Path(getattr(debug_cfg, "output_dir", "debug/transformer"))
+        base_dir = Path(output_dir) if output_dir is not None else Path(debug_cfg.output_dir)
+        self.output_dir = base_dir
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-    def maybe_run(
+    def generate(
         self,
         *,
         latent_tokens: int,
@@ -47,7 +58,7 @@ class TransformerDebugVisualizer:
         self._has_run = True
 
         temporal_indices = temporal_indices.to(dtype=torch.long, device="cpu")
-        time_steps = max(2, int(getattr(self.cfg, "dummy_time_steps", 6)))
+        time_steps = max(2, int(self.cfg.dummy_time_steps))
         spatial_mask = spatial_mask.to(dtype=torch.float32, device="cpu")
 
         temporal_mask = torch.tril(torch.ones(time_steps, time_steps, dtype=torch.float32))
@@ -58,9 +69,29 @@ class TransformerDebugVisualizer:
             )
             temporal_mask = temporal_mask * context_band
 
-        participation = torch.zeros(tokens_per_frame, dtype=torch.float32)
-        participation[temporal_indices] = 1.0
+        category_ids, palette, category_names, category_counts = self._categorise_tokens(
+            tokens_per_frame=tokens_per_frame,
+            latent_tokens=latent_tokens,
+        )
 
+        self._plot_spatial_mask(spatial_mask, category_ids, palette, category_names)
+        self._plot_patch_masks(temporal_mask, latent_tokens)
+        self._write_summary(
+            spatial_mask=spatial_mask,
+            temporal_indices=temporal_indices,
+            temporal_context=temporal_context,
+            time_steps=time_steps,
+            tokens_per_frame=tokens_per_frame,
+            latent_tokens=latent_tokens,
+            category_counts=category_counts,
+        )
+
+    def _categorise_tokens(
+        self,
+        *,
+        tokens_per_frame: int,
+        latent_tokens: int,
+    ) -> tuple[torch.Tensor, List[str], List[str], Dict[str, int]]:
         category_ids = torch.zeros(tokens_per_frame, dtype=torch.long)
         if latent_tokens > 0:
             category_ids[:latent_tokens] = 0
@@ -73,60 +104,35 @@ class TransformerDebugVisualizer:
 
         palette = ["#1E88E5", "#F4511E", "#8E24AA", "#43A047"]
         category_names = ["latent", "action", "noise", "register"]
-        category_counts = {}
+        category_counts: Dict[str, int] = {}
         for idx, name in enumerate(category_names):
             if (category_ids == idx).any():
                 category_counts[name] = int((category_ids == idx).sum().item())
-
-        self._plot_temporal_mask(temporal_mask)
-        self._plot_spatial_mask(spatial_mask, category_ids, palette, category_names)
-        self._plot_token_participation(participation, category_ids, palette)
-        self._plot_patch_masks(temporal_mask, latent_tokens)
-        self._write_summary(
-            temporal_mask=temporal_mask,
-            spatial_mask=spatial_mask,
-            participation=participation,
-            temporal_indices=temporal_indices,
-            temporal_context=temporal_context,
-            time_steps=time_steps,
-            tokens_per_frame=tokens_per_frame,
-            latent_tokens=latent_tokens,
-            category_counts=category_counts,
-        )
-
-    def _plot_temporal_mask(self, mask: torch.Tensor) -> None:
-        fig, ax = plt.subplots(figsize=(5, 4))
-        im = ax.imshow(mask.numpy(), origin="lower", cmap="Blues")
-        ax.set_xlabel("Key time index")
-        ax.set_ylabel("Query time index")
-        ax.set_title("Temporal causal mask")
-        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-        fig.tight_layout()
-        fig.savefig(self.output_dir / "temporal_mask.png", dpi=200)
-        plt.close(fig)
+        return category_ids, palette, category_names, category_counts
 
     def _plot_spatial_mask(
         self,
         spatial_mask: torch.Tensor,
         category_ids: torch.Tensor,
-        palette: list[str],
-        category_names: list[str],
+        palette: List[str],
+        category_names: List[str],
     ) -> None:
         tokens_per_frame = spatial_mask.size(0)
         fig, ax = plt.subplots(figsize=(6, 5))
         im = ax.imshow(spatial_mask.numpy(), origin="lower", cmap="Greens")
         ax.set_xlabel("Key token index (same frame)")
         ax.set_ylabel("Query token index (same frame)")
-        ax.set_title("Spatial attention mask (single frame)")
+        ax.set_title("Spatial attention mask")
 
-        cm = ListedColormap(palette[: int(category_ids.max().item()) + 1])
+        max_category = int(category_ids.max().item())
+        cm = ListedColormap(palette[: max_category + 1])
         top_ax = ax.inset_axes([0.0, 1.02, 1.0, 0.06], transform=ax.transAxes)
         top_ax.imshow(
             category_ids.unsqueeze(0).numpy(),
             aspect="auto",
             cmap=cm,
             vmin=0,
-            vmax=int(category_ids.max().item()),
+            vmax=max_category,
         )
         top_ax.set_axis_off()
 
@@ -136,7 +142,7 @@ class TransformerDebugVisualizer:
             aspect="auto",
             cmap=cm,
             vmin=0,
-            vmax=int(category_ids.max().item()),
+            vmax=max_category,
         )
         left_ax.set_axis_off()
 
@@ -147,9 +153,9 @@ class TransformerDebugVisualizer:
         if handles:
             ax.legend(handles=handles, loc="upper right", bbox_to_anchor=(1.35, 1.02))
 
-        tick_positions = []
-        tick_labels = []
-        previous_id = None
+        tick_positions: List[int] = []
+        tick_labels: List[str] = []
+        previous_id: Optional[int] = None
         for token_idx in range(tokens_per_frame):
             cat_id = int(category_ids[token_idx].item())
             if cat_id != previous_id:
@@ -166,44 +172,17 @@ class TransformerDebugVisualizer:
         fig.savefig(self.output_dir / "spatial_mask.png", dpi=200)
         plt.close(fig)
 
-    def _plot_token_participation(
-        self,
-        participation: torch.Tensor,
-        category_ids: torch.Tensor,
-        palette: list[str],
-    ) -> None:
-        tokens_per_frame = participation.numel()
-        indices = list(range(tokens_per_frame))
-        colors = []
-        for idx in range(tokens_per_frame):
-            base_color = palette[int(category_ids[idx].item())]
-            colors.append(base_color if participation[idx] > 0 else "#CFD8DC")
-
-        fig, ax = plt.subplots(figsize=(max(6, tokens_per_frame * 0.25), 3.5))
-        ax.bar(indices, participation.numpy(), color=colors, edgecolor="#37474F")
-        ax.set_ylim(0.0, 1.2)
-        ax.set_xlabel("Token index within frame")
-        ax.set_ylabel("Participates in temporal attention")
-        ax.set_title("Temporal token participation")
-
-        fig.tight_layout()
-        fig.savefig(self.output_dir / "token_participation.png", dpi=200)
-        plt.close(fig)
-
     def _plot_patch_masks(self, temporal_mask: torch.Tensor, latent_tokens: int) -> None:
         if latent_tokens <= 0:
             return
-        num_plots = min(latent_tokens, int(getattr(self.cfg, "num_patch_plots", 4)))
+        num_plots = min(latent_tokens, int(self.cfg.num_patch_plots))
         if num_plots <= 0:
             return
         rows = math.ceil(num_plots / 2)
         cols = min(2, num_plots)
 
         fig, axes = plt.subplots(rows, cols, figsize=(4 * cols, 4 * rows))
-        if hasattr(axes, "flat"):
-            axes_iter = list(axes.flat)
-        else:
-            axes_iter = [axes]
+        axes_iter = list(axes.flat) if hasattr(axes, "flat") else [axes]
 
         grid_side = int(math.sqrt(latent_tokens))
         is_square = grid_side * grid_side == latent_tokens
@@ -230,15 +209,13 @@ class TransformerDebugVisualizer:
     def _write_summary(
         self,
         *,
-        temporal_mask: torch.Tensor,
         spatial_mask: torch.Tensor,
-        participation: torch.Tensor,
         temporal_indices: torch.Tensor,
         temporal_context: int,
         time_steps: int,
         tokens_per_frame: int,
         latent_tokens: int,
-        category_counts: dict[str, int],
+        category_counts: Dict[str, int],
     ) -> None:
         payload = {
             "temporal_context": int(temporal_context),
@@ -247,10 +224,8 @@ class TransformerDebugVisualizer:
             "latent_tokens": int(latent_tokens),
             "num_registers": int(getattr(self.model_cfg, "num_registers", 0)),
             "active_token_indices": [int(idx) for idx in temporal_indices.tolist()],
-            "temporal_mask_density": float(temporal_mask.mean().item()),
             "spatial_mask_density": float(spatial_mask.mean().item()),
-            "active_token_fraction": float(participation.mean().item()),
             "token_category_counts": category_counts,
         }
-        target = self.output_dir / "transformer_debug_summary.json"
+        target = self.output_dir / "transformer_summary.json"
         target.write_text(json.dumps(payload, indent=2), encoding="utf-8")

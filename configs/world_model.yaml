@@ -32,7 +32,7 @@ trainer:
   single_batch_overfit: false
 
 logging:
-  project: dinowm
+  project: world_model
   entity: null
   run_name: null
   log_interval: 10

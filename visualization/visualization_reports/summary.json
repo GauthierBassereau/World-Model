@@ -1,0 +1,50 @@
+{
+  "device": "mps",
+  "camera_key": "observation.images.exterior_1_left",
+  "sequence_length": 2,
+  "latent_shape": [
+    1,
+    2,
+    220,
+    768
+  ],
+  "actions_shape": [
+    1,
+    2,
+    6
+  ],
+  "latent_stats": {
+    "mean": 0.0038293548859655857,
+    "std": 0.38059866428375244
+  },
+  "action_stats": {
+    "mean": 0.0,
+    "std": 0.0
+  },
+  "diffusion": {
+    "tau_mean": 0.8730016946792603,
+    "tau_std": 0.12361618876457214,
+    "base_noise_std": 1.0005793571472168
+  },
+  "latent_tokens": 220,
+  "tokens_per_frame": 226,
+  "dataset": {
+    "repo_id": "lerobot/droid_1.0.1",
+    "sample_index": 0,
+    "num_available_samples": 167786,
+    "cameras": [
+      "observation.images.exterior_1_left",
+      "observation.images.exterior_2_left"
+    ],
+    "action_key": "observation.state.cartesian_position",
+    "sequence_length_distribution": {
+      "2": 1.0
+    }
+  },
+  "output_directories": {
+    "base": "/Users/gauthierbassereau/Documents/git/World Model/visualization/visualization_reports",
+    "frames": "/Users/gauthierbassereau/Documents/git/World Model/visualization/visualization_reports/frames",
+    "diffusion": "/Users/gauthierbassereau/Documents/git/World Model/visualization/visualization_reports/diffusion",
+    "transformer": "/Users/gauthierbassereau/Documents/git/World Model/visualization/visualization_reports/transformer"
+  }
+}

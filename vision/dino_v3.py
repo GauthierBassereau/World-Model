@@ -8,8 +8,8 @@ Input tensors:
 
 Outputs:
     tokens: float Tensor of shape [B, num_tokens, embed_dim] where num_tokens
-    equals 14*14 for ViT-B/16 (196). The last dimension matches the transformer
-    hidden size (768 for ViT-B/16).
+    equals the spatial grid implied by the encoder patch size. The last
+    dimension matches the transformer hidden size (768 for ViT-B).
 
 Config keys used with this module:
     vision.repo_id         # Hugging Face model id, defaults to facebook/dinov3-vitb16-pretrain-lvd1689m

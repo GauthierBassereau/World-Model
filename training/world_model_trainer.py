@@ -38,7 +38,6 @@ from training.datasets import (
     build_world_model_dataloader,
 )
 from training.diffusion import (
-    DiffusionBatchDebugger,
     DiffusionConfig,
     DiffusionDebugConfig,
     DimensionShiftedUniformScheduler,
@@ -197,7 +196,6 @@ class WorldModelTrainer:
         self.device = self._resolve_device()
         self.flow_cfg = config.diffusion
         self.scheduler = DimensionShiftedUniformScheduler(self.flow_cfg)
-        self.diffusion_debugger = DiffusionBatchDebugger(self.flow_cfg.debug, self.flow_cfg)
         self.ema_cfg = config.ema
         self.ema_model: Optional[nn.Module] = None
         self._ema_param_pairs: List[Tuple[torch.nn.Parameter, torch.nn.Parameter]] = []
@@ -385,13 +383,6 @@ class WorldModelTrainer:
         tau_factor = tau.unsqueeze(-1).unsqueeze(-1)
         noisy_latents = (1.0 - tau_factor) * base_noise + tau_factor * sequence_latents
         target_velocity = sequence_latents - base_noise
-        self.diffusion_debugger.maybe_run(
-            latents=sequence_latents,
-            signal_levels=tau,
-            base_noise=base_noise,
-            noisy_latents=noisy_latents,
-            target_velocity=target_velocity,
-        )
 
         if self.use_autocast:
             autocast_ctx = torch.autocast(

@@ -30,8 +30,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from world_model.debugger import TransformerDebugVisualizer
-
 
 def _rotate_half(x: torch.Tensor) -> torch.Tensor:
     half = x.shape[-1] // 2
@@ -415,27 +413,6 @@ class WorldModelBackbone(nn.Module):
         self.final_norm = RMSNorm(self.config.latent_dim)
         self.output_proj = nn.Linear(self.config.latent_dim, self.config.input_dim or self.config.latent_dim)
         self.config.debug.validate()
-
-        if self.config.debug.enabled:
-            latent_tokens = max(1, int(self.config.debug.num_tokens))
-            total_tokens = latent_tokens + 2 + self.config.num_registers
-            spatial_mask_cpu, _ = self._build_spatial_masks(
-                latent_tokens,
-                self.config.num_registers,
-                device=torch.device("cpu"),
-            )
-            temporal_indices = self._build_temporal_indices(
-                latent_tokens,
-                device=torch.device("cpu"),
-            )
-            visualizer = TransformerDebugVisualizer(self.config.debug, self.config)
-            visualizer.maybe_run(
-                latent_tokens=latent_tokens,
-                tokens_per_frame=total_tokens,
-                temporal_indices=temporal_indices.cpu(),
-                temporal_context=self.config.temporal_context,
-                spatial_mask=spatial_mask_cpu.cpu(),
-            )
 
     def _get_spatial_rope(self, num_tokens: int, device: torch.device) -> Tuple[torch.Tensor, torch.Tensor]:
         cos, sin = _rope_cache(
