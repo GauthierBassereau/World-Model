@@ -7,16 +7,10 @@
 
 ## 2. Research Foundations
 
-### Dreamer V4 (Training Agents Inside of Scalable World Models)
-- Adopt Phase 1 (tokenizer + dynamics pretraining) of the Dreamer V4 recipe, emphasizing shortcut forcing and causal transformers without policy/reward heads.
-- World model backbone: block-causal transformer with alternating spatial and temporal attention, register tokens, RoPE, grouped-query attention, and shortcut forcing (flow matching + bootstrap) to reach stable predictions in four denoising steps.
-- Operating latent space is frozen DINOv3-B encoder
-- Action conditioning is optional for unlabeled data—Dreamer-style learned null tokens allow the model to mix clips with and without action annotations.
-
-### DINO-WM (World Models on Pre-trained Visual Features Enable Zero-shot Planning)
-- Observation encoder is frozen DINO patch embeddings (we use DINOv3-B). Transition model predicts next latent frame using a causal ViT; decoder is only for visualization.
-- Training objective is latent-space MSE between predicted and encoded latents with teacher forcing; no pixel reconstruction is required for core training.
-- Planning relies on Cross-Entropy Method MPC minimizing latent distance to a goal latent (`||z_T - z_goal||^2`), enabling zero-shot generalization across tasks when latent space is well aligned.
+Image encoder -> DinoV3
+World model's architecure -> Dreamer 4
+World model's trianing -> DiT-RAE mixed with Shortcute Forcing from Dreamer 4
+MPC on dino features -> DINO-WM
 
 ## 3. Integrated Architecture
 
