@@ -7,10 +7,10 @@
 
 ## 2. Research Foundations
 
-Image encoder -> DinoV3
-World model's architecure -> Dreamer 4
-World model's trianing -> DiT-RAE mixed with Shortcute Forcing from Dreamer 4
-MPC on dino features -> DINO-WM
+- Image encoder -> DinoV3
+- World model's architecure -> Dreamer 4
+- World model's trianing -> DiT-RAE mixed with Shortcute Forcing from Dreamer 4
+- MPC on dino features -> DINO-WM
 
 ## 3. Integrated Architecture
 
