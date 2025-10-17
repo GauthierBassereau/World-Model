@@ -12,8 +12,9 @@ import copy
 import logging
 import math
 from pathlib import Path
-from typing import Dict, Iterable, Iterator, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, Iterator, Optional, Sequence, Tuple
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -134,6 +135,7 @@ class LoggingConfig:
     use_wandb: bool = False
     wandb_project: Optional[str] = None
     wandb_entity: Optional[str] = None
+    sample_interval: int = 0
 
 
 @dataclass
@@ -173,6 +175,8 @@ class DecoderTrainingConfig:
         self.scheduler.validate()
         self.trainer.validate()
         self.ema.validate()
+        if self.logging.sample_interval < 0:
+            raise ValueError("logging.sample_interval must be >= 0.")
 
 
 class StreamingImageDataset(IterableDataset):
@@ -187,10 +191,13 @@ class StreamingImageDataset(IterableDataset):
         self.cfg = cfg
         self.image_size = image_size
         interpolation = transforms.InterpolationMode.BICUBIC
+        target_h, target_w = image_size
+        aspect_ratio = target_w / target_h
         augmentations = [
             transforms.RandomResizedCrop(
                 image_size,
                 scale=(cfg.min_scale, cfg.max_scale),
+                ratio=(aspect_ratio, aspect_ratio),
                 interpolation=interpolation,
             )
         ]
@@ -310,9 +317,14 @@ class DecoderTrainer:
             self.ema_model = None
             self.ema_decay = 0.0
 
+        self._wandb = None
+        self._wandb_run = None
+
         torch.manual_seed(config.trainer.seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(config.trainer.seed)
+
+        self._configure_wandb()
 
     def _resolve_device(self, requested: Optional[str]) -> torch.device:
         if requested:
@@ -396,6 +408,69 @@ class DecoderTrainer:
         self.logger.info("Resumed from %s at step %d", path, step)
         return step
 
+    def _configure_wandb(self) -> None:
+        if not self.config.logging.use_wandb:
+            self._wandb = None
+            self._wandb_run = None
+            return
+        try:
+            import wandb  # type: ignore[import]
+        except ImportError as exc:
+            raise RuntimeError(
+                "logging.use_wandb=True but wandb is not installed. "
+                "Install wandb or disable logging.use_wandb."
+            ) from exc
+
+        run_kwargs: Dict[str, Any] = {"config": self._wandb_config_dict()}
+        if self.config.logging.wandb_project:
+            run_kwargs["project"] = self.config.logging.wandb_project
+        if self.config.logging.wandb_entity:
+            run_kwargs["entity"] = self.config.logging.wandb_entity
+        if self.config.logging.run_name:
+            run_kwargs["name"] = self.config.logging.run_name
+        run_kwargs["resume"] = "allow"
+
+        self._wandb = wandb
+        self._wandb_run = wandb.init(**run_kwargs)
+
+    def _wandb_config_dict(self) -> Dict[str, Any]:
+        raw = asdict(self.config)
+
+        def convert(value: Any) -> Any:
+            if isinstance(value, dict):
+                return {k: convert(v) for k, v in value.items()}
+            if isinstance(value, (list, tuple)):
+                return [convert(v) for v in value]
+            if isinstance(value, Path):
+                return str(value)
+            return value
+
+        return convert(raw)
+
+    def _wandb_log(self, metrics: Dict[str, float], step: int) -> None:
+        if self._wandb_run is None:
+            return
+        self._wandb_run.log(metrics, step=step)
+
+    def _wandb_log_reconstruction(
+        self,
+        reference: torch.Tensor,
+        reconstruction: torch.Tensor,
+        step: int,
+    ) -> None:
+        if self._wandb_run is None:
+            return
+        ref = reference[0].clamp(0.0, 1.0).permute(1, 2, 0).numpy()
+        recon = reconstruction[0].clamp(0.0, 1.0).permute(1, 2, 0).numpy()
+        ref_uint8 = (ref * 255.0).round().astype(np.uint8)
+        recon_uint8 = (recon * 255.0).round().astype(np.uint8)
+        panel = np.concatenate([ref_uint8, recon_uint8], axis=1)
+        caption = "Left: input | Right: reconstruction"
+        self._wandb_run.log(
+            {"samples/reconstruction": self._wandb.Image(panel, caption=caption)},
+            step=step,
+        )
+
     def train(self) -> None:
         self.config.validate()
         dataset = StreamingImageDataset(
@@ -424,6 +499,8 @@ class DecoderTrainer:
         while global_step < self.config.trainer.max_steps:
             self.optimizer.zero_grad(set_to_none=True)
             step_metrics: Dict[str, float] = {}
+            sample_images: Optional[torch.Tensor] = None
+            sample_recons: Optional[torch.Tensor] = None
             for accumulate_idx in range(grad_accum):
                 try:
                     batch = next(data_iter)
@@ -461,6 +538,10 @@ class DecoderTrainer:
                 else:
                     loss.backward()
 
+                if sample_images is None:
+                    sample_images = images[:1].detach().cpu()
+                    sample_recons = recon[:1].detach().cpu()
+
                 step_metrics.setdefault("recon", 0.0)
                 step_metrics["recon"] += recon_loss.detach().item() / grad_accum
                 if self.perceptual_loss is not None:
@@ -490,15 +571,38 @@ class DecoderTrainer:
 
             if global_step % log_interval == 0:
                 lr = self.optimizer.param_groups[0]["lr"]
-                msg_parts = [f"step={global_step}", f"loss={step_metrics['total']:.4f}", f"recon={step_metrics['recon']:.4f}", f"lr={lr:.2e}"]
+                metrics = {
+                    "loss/total": step_metrics["total"],
+                    "loss/recon": step_metrics["recon"],
+                    "lr": lr,
+                }
+                msg_parts = [
+                    f"step={global_step}",
+                    f"loss={step_metrics['total']:.4f}",
+                    f"recon={step_metrics['recon']:.4f}",
+                    f"lr={lr:.2e}",
+                ]
                 if "perceptual" in step_metrics:
+                    metrics["loss/perceptual"] = step_metrics["perceptual"]
                     msg_parts.append(f"perc={step_metrics['perceptual']:.4f}")
                 self.logger.info(" | ".join(msg_parts))
+                self._wandb_log(metrics, global_step)
+
+            if (
+                self.config.logging.sample_interval > 0
+                and global_step % self.config.logging.sample_interval == 0
+                and sample_images is not None
+                and sample_recons is not None
+            ):
+                self._wandb_log_reconstruction(sample_images, sample_recons, global_step)
 
             if global_step > 0 and global_step % ckpt_interval == 0:
                 self._save_checkpoint(global_step)
 
             global_step += 1
+
+        if self._wandb_run is not None:
+            self._wandb_run.finish()
 
 
 def load_decoder_config(path: str | Path) -> DecoderTrainingConfig:

@@ -8,6 +8,7 @@ inputs.
 """
 
 from dataclasses import dataclass
+import warnings
 from typing import Optional, Sequence, Tuple
 
 import torch
@@ -209,16 +210,20 @@ class VisionDecoder(nn.Module):
         recon = self._unpatchify(patch_tokens)
         target_h, target_w = self.config.image_size
         if recon.shape[-2:] != (target_h, target_w):
+            mode = self.config.resize_mode or "bilinear"
             if self.config.resize_mode is None:
-                raise ValueError(
-                    "Decoder output grid does not match requested image_size and resize_mode=None. "
-                    "Specify image_size divisible by patch_size or enable interpolation."
+                warnings.warn(
+                    "decoder.resize_mode was None but the patch grid ("
+                    f"{self.grid_h}x{self.grid_w}) with patch size {self.config.patch_size} "
+                    "cannot exactly reconstruct the requested resolution. "
+                    "Falling back to bilinear interpolation.",
+                    stacklevel=2,
                 )
-            align_corners = False if self.config.resize_mode in {"bilinear", "bicubic"} else None
+            align_corners = False if mode in {"bilinear", "bicubic"} else None
             recon = F.interpolate(
                 recon,
                 size=(target_h, target_w),
-                mode=self.config.resize_mode,
+                mode=mode,
                 align_corners=align_corners,
             )
         return recon

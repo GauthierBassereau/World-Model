@@ -40,7 +40,7 @@ optimizer:
 
 scheduler:
   enabled: true
-  warmup_steps: 2000
+  warmup_steps: 100
   total_steps: 200000
   min_lr: 2.0e-5
 
@@ -49,23 +49,24 @@ trainer:
   grad_accum_steps: 1
   precision: fp32
   seed: 1234
-  device: null
+  device: mps
   resume_checkpoint: null
 
 logging:
   log_interval: 50
-  checkpoint_interval: 5000
+  checkpoint_interval: 500
   output_dir: checkpoints/decoder
   run_name: decoder
   use_wandb: true
   wandb_project: world_model
   wandb_entity: null
+  sample_interval: 500
 
 losses:
   recon_weight: 1.0
-  perceptual_weight: 1.0
+  perceptual_weight: 0.0
 
 ema:
-  enabled: true
+  enabled: false
   decay: 0.9978
   device: null

@@ -22,9 +22,9 @@
     "std": 0.0
   },
   "diffusion": {
-    "tau_mean": 0.8730016946792603,
-    "tau_std": 0.12361618876457214,
-    "base_noise_std": 1.0005793571472168
+    "tau_mean": 0.9504859447479248,
+    "tau_std": 0.02219182252883911,
+    "base_noise_std": 0.9991427659988403
   },
   "latent_tokens": 220,
   "tokens_per_frame": 226,
