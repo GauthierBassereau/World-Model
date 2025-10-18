@@ -1,10 +1,10 @@
 """
-Dataset utilities for turning LeRobot clips into DINO latents consumed by the
-world model trainer.
+Dataset utilities for turning LeRobot clips into Dinov2 RAE latents consumed by
+the world model trainer.
 
 Each batch contains:
     sequence_latents : [B, T, tokens, dim]
-        (DINO latents for each timestep; target frame kept in sequence.)
+        (Dinov2 RAE latents for each timestep; target frame kept in sequence.)
     sequence_actions : [B, T, action_dim] (delta between successive states with a zero dummy at step 0)
 
 Config keys consumed here:
@@ -27,11 +27,12 @@ from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Sequence
 
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
 
-from vision.dino_v3 import DinoV3Embedder
+from rae_dino import RAE
 
 
 @dataclass
@@ -117,11 +118,15 @@ class LeRobotSequenceCollator:
     def __init__(
         self,
         dataset_cfg: DatasetConfig,
-        embedder: DinoV3Embedder,
+        autoencoder: RAE,
+        target_size: int,
+        preserve_aspect_ratio: bool,
         device: torch.device,
     ) -> None:
         self.cfg = dataset_cfg
-        self.embedder = embedder
+        self.autoencoder = autoencoder
+        self.target_size = target_size
+        self.preserve_aspect_ratio = preserve_aspect_ratio
         self.device = device
         if not self.cfg.sequence_length_distribution:
             raise ValueError("DatasetConfig.sequence_length_distribution must contain at least one entry.")
@@ -245,7 +250,58 @@ class LeRobotSequenceCollator:
 
     def _encode_sample(self, sample: Dict[str, torch.Tensor], camera_key: str) -> torch.Tensor:
         frames = sample[camera_key].to(self.device)
-        return self.embedder(frames)
+        if frames.ndim != 4:
+            raise ValueError(f"Expected frames of shape [T, C, H, W], got {tuple(frames.shape)}.")
+        frames = frames.to(torch.float32)
+        if frames.max() > 1.5:
+            frames = frames / 255.0
+        frames = frames.clamp(0.0, 1.0)
+        frames = self._resize_frames(frames)
+        with torch.no_grad():
+            latents = self.autoencoder.encode(frames)
+        if latents.ndim == 4:
+            batch, channels, height, width = latents.shape
+            latents = latents.view(batch, channels, height * width).transpose(1, 2).contiguous()
+        elif latents.ndim == 3:
+            latents = latents.contiguous()
+        else:
+            raise ValueError(f"Unexpected latent shape {tuple(latents.shape)} returned by the autoencoder.")
+        return latents
+
+    def _resize_frames(self, frames: torch.Tensor) -> torch.Tensor:
+        if self.preserve_aspect_ratio:
+            return self._letterbox(frames, self.target_size)
+        return F.interpolate(
+            frames,
+            size=(self.target_size, self.target_size),
+            mode="bilinear",
+            align_corners=False,
+        )
+
+    def _letterbox(self, frames: torch.Tensor, target: int) -> torch.Tensor:
+        _, _, height, width = frames.shape
+        if height == target and width == target:
+            return frames
+
+        scale = target / max(height, width)
+        new_height = max(1, min(target, int(round(height * scale))))
+        new_width = max(1, min(target, int(round(width * scale))))
+
+        resized = F.interpolate(
+            frames,
+            size=(new_height, new_width),
+            mode="bilinear",
+            align_corners=False,
+        )
+
+        pad_height = target - new_height
+        pad_width = target - new_width
+        pad_top = pad_height // 2
+        pad_bottom = pad_height - pad_top
+        pad_left = pad_width // 2
+        pad_right = pad_width - pad_left
+
+        return F.pad(resized, (pad_left, pad_right, pad_top, pad_bottom), value=0.0)
 
     def _build_sequence_length_distribution(self) -> tuple[List[int], List[float]]:
         choices: List[int] = []
@@ -278,7 +334,9 @@ class LeRobotSequenceCollator:
 def build_world_model_dataloader(
     dataset_cfg: DatasetConfig,
     dataloader_cfg: DataloaderConfig,
-    embedder: DinoV3Embedder,
+    autoencoder: RAE,
+    target_size: int,
+    preserve_aspect_ratio: bool,
     device: Optional[torch.device] = None,
 ) -> DataLoader:
     device = device or torch.device("cpu")
@@ -290,7 +348,13 @@ def build_world_model_dataloader(
         delta_timestamps=delta_timestamps,
     )
 
-    collate = LeRobotSequenceCollator(dataset_cfg, embedder, device=device)
+    collate = LeRobotSequenceCollator(
+        dataset_cfg,
+        autoencoder=autoencoder,
+        target_size=target_size,
+        preserve_aspect_ratio=preserve_aspect_ratio,
+        device=device,
+    )
     return DataLoader(
         dataset,
         batch_size=dataloader_cfg.batch_size,
@@ -305,14 +369,17 @@ if __name__ == "__main__":
     dataset_cfg = DatasetConfig(episodes=[0])
     dataloader_cfg = DataloaderConfig(batch_size=8, shuffle=False)
 
-    embedder = DinoV3Embedder()
+    autoencoder = RAE()
     device = torch.device("cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu"))
-    embedder.to(device)
+    autoencoder.to(device)
+    autoencoder.eval()
 
     loader = build_world_model_dataloader(
         dataset_cfg=dataset_cfg,
         dataloader_cfg=dataloader_cfg,
-        embedder=embedder,
+        autoencoder=autoencoder,
+        target_size=224,
+        preserve_aspect_ratio=True,
         device=device,
     )
 

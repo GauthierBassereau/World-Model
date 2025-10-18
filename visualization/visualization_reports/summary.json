@@ -1,11 +1,11 @@
 {
-  "device": "mps",
+  "device": "cpu",
   "camera_key": "observation.images.exterior_1_left",
   "sequence_length": 2,
   "latent_shape": [
     1,
     2,
-    220,
+    256,
     768
   ],
   "actions_shape": [
@@ -14,20 +14,20 @@
     6
   ],
   "latent_stats": {
-    "mean": 0.0038293548859655857,
-    "std": 0.38059866428375244
+    "mean": -3.8805108432127255e-11,
+    "std": 0.9999999403953552
   },
   "action_stats": {
     "mean": 0.0,
     "std": 0.0
   },
   "diffusion": {
-    "tau_mean": 0.9504859447479248,
-    "tau_std": 0.02219182252883911,
-    "base_noise_std": 0.9991427659988403
+    "tau_mean": 0.45930561423301697,
+    "tau_std": 0.3949088156223297,
+    "base_noise_std": 0.9999035000801086
   },
-  "latent_tokens": 220,
-  "tokens_per_frame": 226,
+  "latent_tokens": 256,
+  "tokens_per_frame": 262,
   "dataset": {
     "repo_id": "lerobot/droid_1.0.1",
     "sample_index": 0,

@@ -2,9 +2,10 @@ __pycache__/
 .env
 .vscode/
 .DS_Store
+.matplotlib/
 
-RAE/
+*.pt
+
 archive/important_papers_text/
 wandb/
-checkpoints/
 AGENTS.md

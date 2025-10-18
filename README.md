@@ -7,7 +7,7 @@
 
 ## 2. Research Foundations
 
-- Image encoder -> DinoV3
+- Image encoder -> Dinov2 RAE autoencoder
 - World model's architecure -> Dreamer 4
 - World model's trianing -> DiT-RAE mixed with Shortcute Forcing from Dreamer 4
 - MPC on dino features -> DINO-WM
@@ -15,9 +15,9 @@
 ## 3. Integrated Architecture
 
 ### 3.1 Observation Pipeline
-- Freeze DINOv3-B (ViT-B/16) and integrate it directly inside the LeRobot dataset loader so frames arrive as patch tokens.
-- Return the 14×14 patch grid tokens (dim 768); append Dreamer-style register tokens for global aggregation.
-- Normalize inputs with DINO preprocessing and apply consistent temporal augmentations (color jitter, random crop) during data loading.
+- Freeze the Dinov2 RAE autoencoder and integrate it directly inside the LeRobot dataset loader so frames arrive as patch tokens.
+- Return the 16×16 patch grid tokens (dim 768); append Dreamer-style register tokens for global aggregation.
+- Letterbox input frames to 224×224 before encoding to preserve aspect ratio while matching the Dinov2 patch geometry.
 
 ### 3.2 Dynamics Transformer
 - Use the Dreamer V4 block-causal transformer without policy heads, alternating spatial-only and temporal-only attention layers.

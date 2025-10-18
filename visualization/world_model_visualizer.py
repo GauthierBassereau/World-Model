@@ -2,9 +2,9 @@
 Generate an offline visualisation report for the world model pipeline.
 
 The script simulates a single training step: it fetches a short sequence from
-the dataset, encodes the frames with the DINO embedder, samples diffusion noise
-using the configured scheduler, and exports the same plots previously produced
-by the in-loop debuggers.
+the dataset, encodes the frames with the Dinov2 RAE embedder, samples diffusion
+noise using the configured scheduler, and exports the same plots previously
+produced by the in-loop debuggers.
 """
 
 import argparse
@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Dict, Optional, Tuple
 
 import torch
+import torch.nn.functional as F
 from PIL import Image
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -22,7 +23,11 @@ if str(REPO_ROOT) not in sys.path:
 
 from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
 
-from training.world_model_trainer import WorldModelTrainingConfig, load_training_config
+from training.world_model_trainer import (
+    WorldModelTrainingConfig,
+    RAEVisionConfig,
+    load_training_config,
+)
 from training.datasets import (
     DatasetConfig,
     _ensure_delta_timestamps,
@@ -30,7 +35,7 @@ from training.datasets import (
 from training.diffusion import DimensionShiftedUniformScheduler, sample_base_noise
 from visualization.diffusion import DiffusionVisualizer
 from visualization.transformer import TransformerVisualizer
-from vision.dino_v3 import DinoV3Embedder
+from rae_dino import RAE
 from world_model.transformer import WorldModelBackbone
 
 
@@ -126,6 +131,68 @@ def save_frame_sequence(frames: torch.Tensor, output_dir: Path) -> None:
         image.save(output_dir / f"frame_{idx:02d}.png")
 
 
+def _letterbox_frames(frames: torch.Tensor, target: int) -> torch.Tensor:
+    _, _, height, width = frames.shape
+    if height == target and width == target:
+        return frames
+
+    scale = target / max(height, width)
+    new_height = max(1, min(target, int(round(height * scale))))
+    new_width = max(1, min(target, int(round(width * scale))))
+
+    resized = F.interpolate(
+        frames,
+        size=(new_height, new_width),
+        mode="bilinear",
+        align_corners=False,
+    )
+
+    pad_height = target - new_height
+    pad_width = target - new_width
+    pad_top = pad_height // 2
+    pad_bottom = pad_height - pad_top
+    pad_left = pad_width // 2
+    pad_right = pad_width - pad_left
+
+    return F.pad(resized, (pad_left, pad_right, pad_top, pad_bottom), value=0.0)
+
+
+def _prepare_frames(
+    frames: torch.Tensor,
+    vision_cfg: RAEVisionConfig,
+    device: torch.device,
+) -> torch.Tensor:
+    frames = frames.to(device=device, dtype=torch.float32)
+    if frames.max() > 1.5:
+        frames = frames / 255.0
+    frames = frames.clamp(0.0, 1.0)
+    if vision_cfg.preserve_aspect_ratio:
+        frames = _letterbox_frames(frames, vision_cfg.target_size)
+    else:
+        frames = F.interpolate(
+            frames,
+            size=(vision_cfg.target_size, vision_cfg.target_size),
+            mode="bilinear",
+            align_corners=False,
+        )
+    return frames
+
+
+def _build_autoencoder(vision_cfg: RAEVisionConfig, device: torch.device) -> RAE:
+    autoencoder = RAE(
+        encoder_input_size=vision_cfg.target_size,
+        dinov2_path=vision_cfg.encoder_repo_id,
+        decoder_config_path=vision_cfg.decoder_config,
+        decoder_patch_size=vision_cfg.decoder_patch_size,
+        pretrained_decoder_path=vision_cfg.decoder_weights_path,
+        normalization_stat_path=vision_cfg.normalization_stats_path,
+        noise_tau=vision_cfg.noise_tau,
+    )
+    autoencoder.eval()
+    autoencoder.to(device)
+    return autoencoder
+
+
 def build_sequence_tensors(
     sample: Dict[str, torch.Tensor],
     cfg: WorldModelTrainingConfig,
@@ -182,14 +249,16 @@ def main() -> None:
     sample, dataset_info = load_dataset_sequence(config, args.sample_index)
     frames, actions_delta, camera_key = build_sequence_tensors(sample, config, device, max_sequence_length)
 
-    embedder = DinoV3Embedder(config.vision)
-    embedder.to(device)
-    embedder.eval()
+    autoencoder = _build_autoencoder(config.vision, device)
+    processed_frames = _prepare_frames(frames, config.vision, device)
 
     with torch.no_grad():
-        latents = embedder(frames)
-    if latents.ndim != 3:
-        raise ValueError(f"Expected latents tensor with 3 dims, got {tuple(latents.shape)}.")
+        latents = autoencoder.encode(processed_frames)
+    if latents.ndim == 4:
+        batch, channels, height, width = latents.shape
+        latents = latents.view(batch, channels, height * width).transpose(1, 2).contiguous()
+    elif latents.ndim != 3:
+        raise ValueError(f"Unexpected latent shape {tuple(latents.shape)} returned by the autoencoder.")
 
     latents_batch = latents.unsqueeze(0)
     actions_batch = actions_delta.unsqueeze(0).to(latents_batch.dtype)
@@ -238,7 +307,7 @@ def main() -> None:
         spatial_mask=spatial_mask,
     )
 
-    save_frame_sequence(frames, frames_dir)
+    save_frame_sequence(processed_frames, frames_dir)
 
     summary = {
         "device": str(device),

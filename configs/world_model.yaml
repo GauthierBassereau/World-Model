@@ -40,7 +40,10 @@ logging:
   output_dir: checkpoints
 
 vision:
-  repo_id: facebook/dinov3-vitb16-pretrain-lvd1689m
+  encoder_repo_id: facebook/dinov2-with-registers-base
+  decoder_config: rae_dino/decoder.json
+  decoder_patch_size: 16
+  target_size: 224
 
 world_model:
   input_dim: 768

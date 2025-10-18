@@ -1,8 +1,8 @@
 """
 Minimal training loop for the Dreamer-style world model.
 
-The trainer wires together the DINO tokenizer, LeRobot dataloaders, optimizer,
-and logging utilities (including Weights & Biases).
+The trainer wires together the Dinov2 RAE tokenizer, LeRobot dataloaders,
+optimizer, and logging utilities (including Weights & Biases).
 
 Config keys consumed here:
     trainer.max_steps
@@ -43,7 +43,7 @@ from training.diffusion import (
     DimensionShiftedUniformScheduler,
     sample_base_noise,
 )
-from vision.dino_v3 import DinoV3Embedder, DinoVisionConfig
+from rae_dino import RAE
 from world_model.transformer import TransformerDebugConfig, WorldModelConfig
 
 
@@ -69,7 +69,7 @@ class TrainerLoopConfig:
 
 @dataclass
 class LoggingConfig:
-    project: str = "dinowm"
+    project: str = "world_model"
     entity: Optional[str] = None
     run_name: Optional[str] = None
     log_interval: int = 10
@@ -89,13 +89,26 @@ class EMAConfig:
 
 
 @dataclass
+class RAEVisionConfig:
+    encoder_repo_id: str = "facebook/dinov2-base"
+    decoder_config: str = "vit_mae-base"
+    decoder_patch_size: int = 16
+    decoder_weights_path: Optional[str] = None
+    normalization_stats_path: Optional[str] = None
+    target_size: int = 224
+    encoder_normalize: bool = True
+    noise_tau: float = 0.0
+    preserve_aspect_ratio: bool = True
+
+
+@dataclass
 class WorldModelTrainingConfig:
     dataset: DatasetConfig = DatasetConfig()
     dataloader: DataloaderConfig = DataloaderConfig()
     optimizer: OptimizerConfig = OptimizerConfig()
     trainer: TrainerLoopConfig = TrainerLoopConfig()
     logging: LoggingConfig = LoggingConfig()
-    vision: DinoVisionConfig = DinoVisionConfig()
+    vision: RAEVisionConfig = RAEVisionConfig()
     diffusion: DiffusionConfig = DiffusionConfig()
     world_model: WorldModelConfig = WorldModelConfig()
     ema: EMAConfig = EMAConfig()
@@ -163,7 +176,7 @@ def load_training_config(path: str | Path) -> WorldModelTrainingConfig:
         optimizer=OptimizerConfig(**raw.get("optimizer", {})),
         trainer=TrainerLoopConfig(**raw.get("trainer", {})),
         logging=LoggingConfig(**logging_kwargs),
-        vision=DinoVisionConfig(**raw.get("vision", {})),
+        vision=RAEVisionConfig(**raw.get("vision", {})),
         diffusion=DiffusionConfig(**diffusion_kwargs),
         world_model=WorldModelConfig(**world_model_kwargs),
         ema=EMAConfig(**raw.get("ema", {})),
@@ -187,11 +200,11 @@ class WorldModelTrainer:
         self,
         config: WorldModelTrainingConfig,
         model: nn.Module,
-        embedder: Optional[DinoV3Embedder] = None,
+        autoencoder: Optional[RAE] = None,
     ) -> None:
         self.config = config
         self.model = model
-        self.embedder = embedder or DinoV3Embedder(config.vision)
+        self.autoencoder = autoencoder or self._build_autoencoder(config.vision)
         self.logger = _setup_logger()
         self.device = self._resolve_device()
         self.flow_cfg = config.diffusion
@@ -205,12 +218,14 @@ class WorldModelTrainer:
 
         self._seed_everything(config.trainer.seed)
         self.model.to(self.device)
-        self.embedder.to(self.device)
+        self.autoencoder.to(self.device)
 
         self.dataloader = build_world_model_dataloader(
             dataset_cfg=config.dataset,
             dataloader_cfg=config.dataloader,
-            embedder=self.embedder,
+            autoencoder=self.autoencoder,
+            target_size=self.config.vision.target_size,
+            preserve_aspect_ratio=self.config.vision.preserve_aspect_ratio,
             device=self.device,
         )
         self.optimizer = torch.optim.AdamW(
@@ -236,6 +251,21 @@ class WorldModelTrainer:
         self.wandb_run = self._init_wandb()
         if self.config.trainer.single_batch_overfit:
             self.logger.info("Single-batch overfit enabled; caching the first batch for repeated updates.")
+
+    def _build_autoencoder(self, cfg: RAEVisionConfig) -> RAE:
+        autoencoder = RAE(
+            encoder_input_size=cfg.target_size,
+            dinov2_path=cfg.encoder_repo_id,
+            decoder_config_path=cfg.decoder_config,
+            decoder_patch_size=cfg.decoder_patch_size,
+            pretrained_decoder_path=cfg.decoder_weights_path,
+            normalization_stat_path=cfg.normalization_stats_path,
+            noise_tau=cfg.noise_tau,
+        )
+        autoencoder.eval()
+        for param in autoencoder.parameters():
+            param.requires_grad_(False)
+        return autoencoder
 
     def _resolve_device(self) -> torch.device:
         if self.config.trainer.device:
@@ -485,8 +515,8 @@ class WorldModelTrainer:
 def train_from_config(
     config_path: Union[str, Path],
     model: nn.Module,
-    embedder: Optional[DinoV3Embedder] = None,
+    autoencoder: Optional[RAE] = None,
 ) -> None:
     config = load_training_config(config_path)
-    trainer = WorldModelTrainer(config, model, embedder)
+    trainer = WorldModelTrainer(config, model, autoencoder)
     trainer.train()
