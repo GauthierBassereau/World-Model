@@ -54,6 +54,8 @@ class LoggingConfig:
     checkpoint_interval: int = 1_000
     output_dir: str = "checkpoints"
     sample_interval: Optional[int] = 1_000
+    log_tau_histograms: bool = False
+    tau_log_limit: int = 0
 
 
 @dataclass

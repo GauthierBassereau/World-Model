@@ -34,12 +34,12 @@ class WorldModelLogger:
     def __init__(
         self,
         logging_cfg: "LoggingConfig",
-        noise_log_limit: int = 100,
     ) -> None:
         self.cfg = logging_cfg
         self.local = _create_local_logger()
         self.sample_interval = logging_cfg.sample_interval
-        self.noise_log_limit = noise_log_limit
+        self.log_tau = logging_cfg.log_tau_histograms
+        self.noise_log_limit = logging_cfg.tau_log_limit if logging_cfg.tau_log_limit > 0 else None
         self.noise_log_count = 0
         self.current_step = 0
         self.current_micro_step = 0
@@ -103,7 +103,11 @@ class WorldModelLogger:
             self.info("Dataloader contains %d steps.", steps)
 
         if self.wandb_run is not None:
-            self.wandb_run.log({"debug/dataloader_length": steps if steps is not None else "unknown"})
+            self.wandb_run.log(
+                {"debug/dataloader_length": steps if steps is not None else "unknown"},
+                step=0,
+                commit=False,
+            )
 
     def log_training_metrics(self, metrics: Dict[str, float]) -> None:
         if self.cfg.log_interval and self.current_step % self.cfg.log_interval == 0:
@@ -116,7 +120,9 @@ class WorldModelLogger:
                 )
 
     def log_distr_noise(self, tau: torch.Tensor, bins: int = 50) -> None:
-        if self.noise_log_count >= self.noise_log_limit:
+        if not self.log_tau:
+            return
+        if self.noise_log_limit is not None and self.noise_log_count >= self.noise_log_limit:
             return
 
         values = tau.detach().to(dtype=torch.float32).flatten()
@@ -153,10 +159,11 @@ class WorldModelLogger:
                         "std": std_val,
                         "min": min_val,
                         "max": max_val,
-                        "step": self.current_step,
                         "micro_step": self.current_micro_step,
                     },
-                }
+                },
+                step=self.current_step,
+                commit=False,
             )
 
         self.noise_log_count += 1
@@ -189,18 +196,17 @@ class WorldModelLogger:
         if self.wandb_run is None or self._wandb is None:
             return
 
-        video_frames = (frames.mul(255).to(torch.uint8)).permute(0, 2, 3, 1).cpu().numpy()
-        video = self._wandb.Video(video_frames, fps=4, format="mp4")
+        video_obj = None
+        if getattr(self._wandb, "Video", None) is None:
+            self.warning("moviepy missing; skipping video logging.")
+        else:
+            video_frames = (frames.mul(255).to(torch.uint8)).permute(0, 2, 3, 1).cpu().numpy()
+            video_obj = self._wandb.Video(video_frames, fps=4, format="mp4")
+            self.wandb_run.log({"sample/frames": video_obj}, step=self.current_step, commit=False)
 
         table = self._wandb.Table(columns=["frame", "tau"])
         tau_values = tau.detach().to(dtype=torch.float32).view(-1).cpu().tolist()
         for idx, value in enumerate(tau_values):
             table.add_data(idx, value)
 
-        self.wandb_run.log(
-            {
-                "sample/frames": video,
-                "sample/tau": table,
-            },
-            step=self.current_step,
-        )
+        self.wandb_run.log({"sample/tau": table}, step=self.current_step, commit=False)

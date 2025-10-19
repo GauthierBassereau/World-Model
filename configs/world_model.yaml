@@ -6,14 +6,14 @@ dataset:
   action_key: observation.state.cartesian_position
   episodes: [0, 1, 2, 3, 4, 5]
   sequence_length_distribution:
-    2: 0.7
-    4: 0.3
+    4: 0.7
+    8: 0.3
   frame_delta_seconds: 5.0 / 15.0
 
 dataloader:
   batch_size: 8
   shuffle: false
-  num_workers: 2
+  num_workers: 0
   pin_memory: true
 
 optimizer:
@@ -36,8 +36,8 @@ logging:
   project: world_model
   entity: null
   run_name: null
-  log_interval: 10
-  sample_interval: 10
+  log_interval: 50
+  sample_interval: 100
   checkpoint_interval: 1000
   output_dir: checkpoints
 
