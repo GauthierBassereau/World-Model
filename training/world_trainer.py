@@ -1,26 +1,4 @@
-"""
-Minimal training loop for the Dreamer-style world model.
-
-The trainer wires together the Dinov2 RAE tokenizer, LeRobot dataloaders,
-optimizer, and logging utilities (including Weights & Biases).
-
-Config keys consumed here:
-    trainer.max_steps
-    trainer.grad_accum_steps
-    trainer.precision
-    trainer.seed
-    trainer.device
-    trainer.single_batch_overfit
-    optimizer.lr / betas / weight_decay / eps / grad_clip_norm
-    logging.project / entity / run_name / log_interval / checkpoint_interval / output_dir
-    diffusion.min_signal / max_signal / base_dimension / noise_mean / noise_std
-    diffusion.debug.enabled / output_dir / histogram_bins / max_updates
-    ema.enabled / decay / device
-"""
-
 import copy
-import logging
-import time
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
@@ -31,7 +9,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import yaml
 
-from training.datasets import (
+from rae_dino.rae import RAE
+from training.dataset import (
     DataloaderConfig,
     DatasetConfig,
     WorldModelBatch,
@@ -39,26 +18,25 @@ from training.datasets import (
 )
 from training.diffusion import (
     DiffusionConfig,
-    DiffusionDebugConfig,
     DimensionShiftedUniformScheduler,
     sample_base_noise,
 )
-from rae_dino import RAE
-from world_model.transformer import TransformerDebugConfig, WorldModelConfig
+from world_model.transformer import WorldModelConfig
 
+from training.logger import WorldModelLogger
 
 @dataclass
 class OptimizerConfig:
     lr: float = 1e-4
     betas: Tuple[float, float] = (0.9, 0.95)
-    weight_decay: float = 0.1
+    weight_decay: float = 0.0
     eps: float = 1e-8
     grad_clip_norm: Optional[float] = 1.0
 
 
 @dataclass
 class TrainerLoopConfig:
-    max_steps: int = 10_000
+    max_steps: Optional[int] = 10_000
     grad_accum_steps: int = 1
     precision: str = "bf16"
     seed: int = 1234
@@ -75,6 +53,7 @@ class LoggingConfig:
     log_interval: int = 10
     checkpoint_interval: int = 1_000
     output_dir: str = "checkpoints"
+    sample_interval: Optional[int] = 1_000
 
 
 @dataclass
@@ -90,15 +69,13 @@ class EMAConfig:
 
 @dataclass
 class RAEVisionConfig:
-    encoder_repo_id: str = "facebook/dinov2-base"
+    encoder_repo_id: str = "facebook/dinov2-with-registers-base"
     decoder_config: str = "vit_mae-base"
     decoder_patch_size: int = 16
     decoder_weights_path: Optional[str] = None
     normalization_stats_path: Optional[str] = None
     target_size: int = 224
-    encoder_normalize: bool = True
     noise_tau: float = 0.0
-    preserve_aspect_ratio: bool = True
 
 
 @dataclass
@@ -112,70 +89,19 @@ class WorldModelTrainingConfig:
     diffusion: DiffusionConfig = DiffusionConfig()
     world_model: WorldModelConfig = WorldModelConfig()
     ema: EMAConfig = EMAConfig()
-
-
-def _setup_logger() -> logging.Logger:
-    logger = logging.getLogger("world_model_trainer")
-    if logger.handlers:
-        return logger
-
-    logger.setLevel(logging.INFO)
-    handler = logging.StreamHandler()
-    handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s"))
-    logger.addHandler(handler)
-    logger.propagate = False
-    return logger
-
-
 def load_training_config(path: str | Path) -> WorldModelTrainingConfig:
     with open(path, "r", encoding="utf-8") as handle:
         raw: Dict[str, Any] = yaml.safe_load(handle)
 
     diffusion_kwargs = dict(raw.get("diffusion", {}))
-    if "tau_min" in diffusion_kwargs and "min_signal" not in diffusion_kwargs:
-        diffusion_kwargs["min_signal"] = diffusion_kwargs.pop("tau_min")
-    if "tau_max" in diffusion_kwargs and "max_signal" not in diffusion_kwargs:
-        diffusion_kwargs["max_signal"] = diffusion_kwargs.pop("tau_max")
-    if "tau_distribution" in diffusion_kwargs:
-        distribution = diffusion_kwargs.pop("tau_distribution")
-        if distribution != "uniform":
-            raise ValueError("Only uniform diffusion schedules are supported.")
-    diffusion_kwargs.pop("tau_power", None)
-    diffusion_kwargs.pop("ramp_slope", None)
-    diffusion_kwargs.pop("ramp_intercept", None)
-    if isinstance(diffusion_kwargs.get("debug"), dict):
-        debug_kwargs = dict(diffusion_kwargs["debug"])
-        if "histogram_bins" in debug_kwargs and "num_hist_bins" not in debug_kwargs:
-            debug_kwargs["num_hist_bins"] = debug_kwargs.pop("histogram_bins")
-        debug_kwargs.pop("max_updates", None)
-        diffusion_kwargs["debug"] = DiffusionDebugConfig(**debug_kwargs)
-
-    if "debug" in raw:
-        logging.getLogger("world_model_trainer").warning(
-            "Top-level 'debug' config is deprecated; use diffusion.debug instead."
-        )
-
     world_model_kwargs = dict(raw.get("world_model", {}))
-    debug_section_raw = world_model_kwargs.get("debug", {})
-    if isinstance(debug_section_raw, TransformerDebugConfig):
-        debug_section = asdict(debug_section_raw)
-    elif isinstance(debug_section_raw, dict):
-        debug_section = dict(debug_section_raw)
-    else:
-        debug_section = {}
-    if "num_tokens" in world_model_kwargs:
-        debug_section.setdefault("num_tokens", world_model_kwargs.pop("num_tokens"))
-    world_model_kwargs["debug"] = TransformerDebugConfig(**debug_section)
-
-    logging_kwargs = dict(raw.get("logging", {}))
-    logging_kwargs.pop("use_wandb", None)
 
     cfg = WorldModelTrainingConfig(
         dataset=DatasetConfig(**raw.get("dataset", {})),
         dataloader=DataloaderConfig(**raw.get("dataloader", {})),
         optimizer=OptimizerConfig(**raw.get("optimizer", {})),
         trainer=TrainerLoopConfig(**raw.get("trainer", {})),
-        logging=LoggingConfig(**logging_kwargs),
+        logging=LoggingConfig(**raw.get("logging", {})),
         vision=RAEVisionConfig(**raw.get("vision", {})),
         diffusion=DiffusionConfig(**diffusion_kwargs),
         world_model=WorldModelConfig(**world_model_kwargs),
@@ -183,7 +109,6 @@ def load_training_config(path: str | Path) -> WorldModelTrainingConfig:
     )
     cfg.diffusion.validate()
     cfg.ema.validate()
-    cfg.world_model.debug.validate()
     return cfg
 
 
@@ -205,7 +130,7 @@ class WorldModelTrainer:
         self.config = config
         self.model = model
         self.autoencoder = autoencoder or self._build_autoencoder(config.vision)
-        self.logger = _setup_logger()
+        self.logger = WorldModelLogger(config.logging)
         self.device = self._resolve_device()
         self.flow_cfg = config.diffusion
         self.scheduler = DimensionShiftedUniformScheduler(self.flow_cfg)
@@ -219,13 +144,13 @@ class WorldModelTrainer:
         self._seed_everything(config.trainer.seed)
         self.model.to(self.device)
         self.autoencoder.to(self.device)
+        self.autoencoder.eval()
+        for param in self.autoencoder.parameters():
+            param.requires_grad_(False)
 
         self.dataloader = build_world_model_dataloader(
             dataset_cfg=config.dataset,
             dataloader_cfg=config.dataloader,
-            autoencoder=self.autoencoder,
-            target_size=self.config.vision.target_size,
-            preserve_aspect_ratio=self.config.vision.preserve_aspect_ratio,
             device=self.device,
         )
         self.optimizer = torch.optim.AdamW(
@@ -235,25 +160,23 @@ class WorldModelTrainer:
             weight_decay=config.optimizer.weight_decay,
             eps=config.optimizer.eps,
         )
-        self.use_scaler = config.trainer.precision == "fp16" and self.device.type == "cuda"
+        self.use_scaler = config.trainer.precision == "fp16" and self.device.type == "cuda" # don't need to use scaler with bf16 since it rarely overflows in practice (from very safe source)
         self.use_autocast = config.trainer.precision in {"bf16", "fp16"} and self.device.type == "cuda"
-        self.autocast_dtype = (
-            torch.bfloat16 if config.trainer.precision == "bf16" else torch.float16
-        )
-        if self.use_scaler:
-            self.scaler = torch.amp.GradScaler(device_type="cuda", enabled=True)
-        else:
-            self.scaler = None
+        self.autocast_dtype = torch.bfloat16 if config.trainer.precision == "bf16" else torch.float16
+        self.scaler = torch.amp.GradScaler(enabled=self.use_scaler)
+
         self.global_step = 0
         self._maybe_load_checkpoint()
         if self.ema_cfg.enabled:
             self._init_ema_model()
-        self.wandb_run = self._init_wandb()
+        self.logger.init_wandb(_dataclass_to_dict(self.config))
         if self.config.trainer.single_batch_overfit:
-            self.logger.info("Single-batch overfit enabled; caching the first batch for repeated updates.")
+            self.logger.info("Single-batch overfit enabled; reusing the first batch for all updates.")
+
+        self.logger.log_dataloader(self.dataloader)
 
     def _build_autoencoder(self, cfg: RAEVisionConfig) -> RAE:
-        autoencoder = RAE(
+        return RAE(
             encoder_input_size=cfg.target_size,
             dinov2_path=cfg.encoder_repo_id,
             decoder_config_path=cfg.decoder_config,
@@ -262,16 +185,14 @@ class WorldModelTrainer:
             normalization_stat_path=cfg.normalization_stats_path,
             noise_tau=cfg.noise_tau,
         )
-        autoencoder.eval()
-        for param in autoencoder.parameters():
-            param.requires_grad_(False)
-        return autoencoder
 
     def _resolve_device(self) -> torch.device:
         if self.config.trainer.device:
             return torch.device(self.config.trainer.device)
         if torch.cuda.is_available():
             return torch.device("cuda")
+        if torch.backends.mps.is_available():
+            return torch.device("mps")
         return torch.device("cpu")
 
     def _seed_everything(self, seed: int) -> None:
@@ -281,8 +202,7 @@ class WorldModelTrainer:
 
     def _init_ema_model(self) -> None:
         ema_device = torch.device(self.ema_cfg.device) if self.ema_cfg.device else self.device
-        self.ema_model = copy.deepcopy(self.model)
-        self.ema_model.to(ema_device)
+        self.ema_model = copy.deepcopy(self.model).to(ema_device)
         for param in self.ema_model.parameters():
             param.requires_grad_(False)
         self._ema_param_pairs = [
@@ -296,18 +216,9 @@ class WorldModelTrainer:
         if self._ema_checkpoint_state is not None:
             self.ema_model.load_state_dict(self._ema_checkpoint_state)
             self._ema_checkpoint_state = None
-            origin = "loaded from checkpoint"
-        else:
-            origin = "initialized from current model weights"
-        self.logger.info(
-            "EMA enabled with decay %.6f on %s (%s)",
-            self.ema_cfg.decay,
-            ema_device,
-            origin,
-        )
 
     def _update_ema(self) -> None:
-        if self.ema_model is None:
+        if not self.ema_model:
             return
         decay = self.ema_cfg.decay
         if decay >= 1.0:
@@ -324,47 +235,45 @@ class WorldModelTrainer:
                     source = source.to(ema_buffer.device)
                 ema_buffer.data.copy_(source)
 
-    def _init_wandb(self):
-        import wandb
-
-        wandb_run = wandb.init(
-            project=self.config.logging.project,
-            entity=self.config.logging.entity,
-            name=self.config.logging.run_name,
-            config=_dataclass_to_dict(self.config),
-        )
-        return wandb_run
-
     def train(self) -> None:
-        if self.global_step >= self.config.trainer.max_steps:
+        total_steps = self._resolve_total_steps()
+        if self.global_step >= total_steps:
             self.logger.info(
                 "Checkpoint already at or beyond max_steps (%d >= %d); nothing to do.",
                 self.global_step,
-                self.config.trainer.max_steps,
+                total_steps,
             )
             self.close()
             return
 
         self.logger.info(
             "Starting world model training for %d steps on %s (resuming at step %d)",
-            self.config.trainer.max_steps,
+            total_steps,
             self.device,
             self.global_step,
         )
         data_iter = iter(self.dataloader)
 
-        for step in range(self.global_step + 1, self.config.trainer.max_steps + 1):
-            self.optimizer.zero_grad(set_to_none=True)
+        for step in range(self.global_step + 1, total_steps + 1):
+            self.logger.start_step(step)
+            self.model.train()
+            self.optimizer.zero_grad(set_to_none=True) # set_to_none for potential memory savings hehe
             accum_metrics: Dict[str, float] = {}
-            for _ in range(self.config.trainer.grad_accum_steps):
-                batch_start_time = time.perf_counter()
+
+            for accum_idx in range(self.config.trainer.grad_accum_steps):
+                self.logger.start_micro_step(accum_idx)
                 batch, data_iter = self._next_batch(data_iter)
-                metrics = self._train_micro_step(batch)
-                metrics["batch_time_sec"] = time.perf_counter() - batch_start_time
+                metrics = self._train_micro_step(
+                    batch,
+                )
                 for key, value in metrics.items():
                     accum_metrics[key] = accum_metrics.get(key, 0.0) + value
+
             if self.config.optimizer.grad_clip_norm:
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.optimizer.grad_clip_norm)
+                torch.nn.utils.clip_grad_norm_(
+                    self.model.parameters(),
+                    self.config.optimizer.grad_clip_norm,
+                )
 
             if self.use_scaler:
                 self.scaler.step(self.optimizer)
@@ -378,7 +287,7 @@ class WorldModelTrainer:
             mean_metrics = {
                 key: value / self.config.trainer.grad_accum_steps for key, value in accum_metrics.items()
             }
-            self._log_step(mean_metrics)
+            self.logger.log_training_metrics(mean_metrics)
 
             if (
                 self.config.logging.checkpoint_interval
@@ -388,31 +297,34 @@ class WorldModelTrainer:
 
         self.logger.info("Finished training")
 
-    def _train_micro_step(self, batch: WorldModelBatch) -> Dict[str, float]:
-        sequence_latents = batch.sequence_latents.to(self.device)
-        sequence_actions = batch.sequence_actions.to(self.device)
+    def _train_micro_step(
+        self,
+        batch: WorldModelBatch,
+    ) -> Dict[str, float]:
+        frames_cpu = batch.sequence_frames
 
-        actions_tensor: Optional[torch.Tensor]
-        action_mask: Optional[torch.Tensor] = None
-        if getattr(self.model, "action_proj", None) is not None:
-            actions_tensor = sequence_actions
-            if batch.actions_dropped_mask is not None:
-                mask = (~batch.actions_dropped_mask).to(sequence_latents.device)
-                if mask.ndim == 1:
-                    mask = mask.unsqueeze(1).expand(-1, sequence_actions.shape[1])
-                elif mask.shape != sequence_actions.shape[:2]:
-                    raise ValueError(
-                        "actions_dropped_mask must broadcast to [B, T] when actions are provided."
-                    )
-                action_mask = mask
-        else:
-            actions_tensor = None
+        frames = frames_cpu.to(self.device, non_blocking=True)
+        actions = batch.sequence_actions.to(self.device, non_blocking=True)
+        single_frame_mask = (
+            batch.single_frame_mask.to(self.device, non_blocking=True)
+            if batch.single_frame_mask is not None
+            else None
+        )
+        actions_mask = (
+            batch.actions_mask.to(self.device, non_blocking=True)
+            if batch.actions_mask is not None
+            else None
+        )
 
-        tau = self.scheduler.sample(sequence_latents)
-        base_noise = sample_base_noise(sequence_latents, self.flow_cfg)
+        latents = self._encode_frames(frames)
+
+        tau = self.scheduler.sample(latents)
+        base_noise = sample_base_noise(latents, self.flow_cfg)
         tau_factor = tau.unsqueeze(-1).unsqueeze(-1)
-        noisy_latents = (1.0 - tau_factor) * base_noise + tau_factor * sequence_latents
-        target_velocity = sequence_latents - base_noise
+        noisy_latents = (1.0 - tau_factor) * base_noise + tau_factor * latents
+        target_velocity = latents - base_noise
+        self.logger.log_distr_noise(tau)
+        self.logger.log_sample_sequence(frames=frames_cpu[0], tau=tau[0])
 
         if self.use_autocast:
             autocast_ctx = torch.autocast(
@@ -422,15 +334,16 @@ class WorldModelTrainer:
             )
         else:
             autocast_ctx = nullcontext()
+
         with autocast_ctx:
             outputs = self.model(
                 noisy_latents,
                 noise_levels=tau,
-                actions=actions_tensor,
-                action_mask=action_mask,
+                actions=actions,
+                single_frame_mask=single_frame_mask,
+                action_mask=actions_mask,
             )
             pred_velocity = outputs.get("pred_velocity")
-
             if pred_velocity.dtype != target_velocity.dtype:
                 target_velocity = target_velocity.to(pred_velocity.dtype)
             loss = F.mse_loss(pred_velocity, target_velocity)
@@ -446,16 +359,29 @@ class WorldModelTrainer:
             "signal_level": float(tau.mean().detach().cpu()),
         }
 
+    @torch.no_grad()
+    def _encode_frames(self, frames: torch.Tensor) -> torch.Tensor:
+        if frames.ndim != 5:
+            raise ValueError(f"Expected frames with shape [B, T, C, H, W], got {tuple(frames.shape)}.")
+        batch, steps, channels, height, width = frames.shape
+        flat = frames.view(batch * steps, channels, height, width)
+        latents = self.autoencoder.encode(flat)
+        if latents.ndim != 3:
+            raise ValueError(
+                f"Autoencoder returned shape {tuple(latents.shape)}; expected [N, tokens, dim]."
+            )
+        tokens, dim = latents.shape[1], latents.shape[2]
+        return latents.view(batch, steps, tokens, dim)
+
     def _next_batch(self, data_iter):
         if self.config.trainer.single_batch_overfit:
             if self._cached_overfit_batch is None:
-                try:
-                    batch = next(data_iter)
-                except StopIteration:
-                    data_iter = iter(self.dataloader)
-                    batch = next(data_iter)
+                batch, data_iter = self._fetch_batch(data_iter)
                 self._cached_overfit_batch = batch
             return self._cached_overfit_batch, data_iter
+        return self._fetch_batch(data_iter)
+
+    def _fetch_batch(self, data_iter):
         try:
             batch = next(data_iter)
         except StopIteration:
@@ -463,15 +389,21 @@ class WorldModelTrainer:
             batch = next(data_iter)
         return batch, data_iter
 
-    def _log_step(self, metrics: Dict[str, float]) -> None:
-        if self.global_step % self.config.logging.log_interval == 0:
-            message = " ".join(f"{key}={value:.5f}" for key, value in metrics.items())
-            self.logger.info("step=%d %s", self.global_step, message)
-            if self.wandb_run:
-                self.wandb_run.log(
-                    {f"train/{key}": value for key, value in metrics.items()},
-                    step=self.global_step,
-                )
+    def _resolve_total_steps(self) -> int:
+        configured = self.config.trainer.max_steps
+        if configured is not None:
+            return configured
+        try:
+            total = len(self.dataloader)
+        except TypeError as exc:
+            raise ValueError(
+                "TrainerLoopConfig.max_steps is None but the dataloader does not expose a length."
+            ) from exc
+        if total <= 0:
+            raise ValueError(
+                "TrainerLoopConfig.max_steps resolved to zero steps; check dataset configuration."
+            )
+        return total
 
     def _save_checkpoint(self, step: int) -> None:
         output_dir = Path(self.config.logging.output_dir)
@@ -491,9 +423,7 @@ class WorldModelTrainer:
         self.logger.info("Saved checkpoint to %s", checkpoint_path)
 
     def close(self) -> None:
-        if self.wandb_run:
-            self.wandb_run.finish()
-            self.wandb_run = None
+        self.logger.close()
 
     def _maybe_load_checkpoint(self) -> None:
         checkpoint_path = self.config.trainer.resume_checkpoint
@@ -509,7 +439,6 @@ class WorldModelTrainer:
             self._ema_checkpoint_state = ckpt["ema_model"]
         elif self.ema_cfg.enabled:
             self._ema_checkpoint_state = None
-        self.logger.info("Resumed training state from %s at step %d", checkpoint_path, self.global_step)
 
 
 def train_from_config(

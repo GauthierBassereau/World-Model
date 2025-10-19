@@ -6,28 +6,29 @@ dataset:
   action_key: observation.state.cartesian_position
   episodes: [0, 1, 2, 3, 4, 5]
   sequence_length_distribution:
-    2: 1.0
+    2: 0.7
+    4: 0.3
   frame_delta_seconds: 5.0 / 15.0
 
 dataloader:
   batch_size: 8
   shuffle: false
-  num_workers: 0
+  num_workers: 2
   pin_memory: true
 
 optimizer:
   lr: 1.0e-4
   betas: [0.9, 0.95]
-  weight_decay: 0.01
+  weight_decay: 0.0
   eps: 1.0e-08
   grad_clip_norm: 1.0
 
 trainer:
-  max_steps: 10000
+  max_steps: null # null means no limit
   grad_accum_steps: 1
-  precision: fp32
+  precision: bf16
   seed: 1234
-  device: mps
+  device: cuda
   resume_checkpoint: null
   single_batch_overfit: false
 
@@ -36,12 +37,13 @@ logging:
   entity: null
   run_name: null
   log_interval: 10
+  sample_interval: 10
   checkpoint_interval: 1000
   output_dir: checkpoints
 
 vision:
   encoder_repo_id: facebook/dinov2-with-registers-base
-  decoder_config: rae_dino/decoder.json
+  decoder_config: rae_dino/decoder/config.json
   decoder_patch_size: 16
   target_size: 224
 
@@ -54,16 +56,10 @@ world_model:
   num_heads: 8
   mlp_multiplier: 4.0
   temporal_attention_interval: 4
-  temporal_context: 10  # Number of past frames temporal attention may attend; ensure the longest dataset clip comfortably exceeds this.
+  temporal_context: 2  # Number of past frames temporal attention may attend; ensure the longest dataset clip comfortably exceeds this.
   rope_base: 10000.0
   attn_logit_soft_cap: 50.0
   qk_norm_eps: 1.0e-06
-  debug:
-    enabled: true
-    output_dir: debug/transformer
-    dummy_time_steps: 15
-    num_patch_plots: 1
-    num_tokens: 8  # only used for debug reports
 
 diffusion:
   min_signal: 0.0
@@ -71,14 +67,8 @@ diffusion:
   base_dimension: 4096
   noise_mean: 0.0   # Set noise_mean=0.0 and noise_std=1.0 to recover a unit Gaussian prior.
   noise_std: 1.0
-  debug:
-    enabled: true
-    output_dir: debug/diffusion
-    num_hist_bins: 60
-    schedule_plot_points: 256
-    max_time_series: 8
 
 ema:
-  enabled: true
-  decay: 0.999
+  enabled: false
+  decay: 0.998
   device: null
