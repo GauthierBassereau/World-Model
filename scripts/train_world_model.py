@@ -1,15 +1,7 @@
-"""
-CLI entry point for world model training.
-
-Usage:
-    python scripts/train_world_model.py --config configs/world_model.yaml
-"""
-
 import argparse
-import logging
 from pathlib import Path
 
-from training.world_model_trainer import (
+from training.world_trainer import (
     WorldModelTrainer,
     load_training_config,
 )
@@ -46,7 +38,6 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 
     config = load_training_config(args.config)
     if args.run_name:
