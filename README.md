@@ -9,7 +9,7 @@
 
 - Image encoder -> Dinov2 RAE autoencoder
 - World model's architecure -> Dreamer 4
-- World model's trianing -> DiT-RAE mixed with Shortcute Forcing from Dreamer 4
+- World model's training -> Shortcut Forcing from Dreamer 4
 - MPC on dino features -> DINO-WM
 
 ## 3. Integrated Architecture
