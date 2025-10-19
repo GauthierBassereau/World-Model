@@ -354,6 +354,7 @@ class WorldModelTrainer:
             noisy_latent=noisy_latents[0, 0].detach(),
             denoised_latent=denoised_latents[0, 0],
             decode_latent=self.autoencoder.decode,
+            noise_level=tau[0, 0].detach(),
         )
 
         if self.use_scaler:

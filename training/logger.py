@@ -176,6 +176,7 @@ class WorldModelLogger:
         noisy_latent: torch.Tensor,
         denoised_latent: torch.Tensor,
         decode_latent: Callable[[torch.Tensor], torch.Tensor],
+        noise_level: Optional[torch.Tensor],
     ) -> None:
         if self.sample_interval is None or self.sample_interval <= 0:
             return
@@ -243,6 +244,7 @@ class WorldModelLogger:
                 "sample/target": self._wandb.Image(target_image, caption="target"),
                 "sample/noisy": self._wandb.Image(noisy_image_np, caption="noisy"),
                 "sample/denoised": self._wandb.Image(denoised_image_np, caption="denoised"),
+                "sample/noise_level": float(noise_level),
             },
             step=self.current_step,
             commit=False,

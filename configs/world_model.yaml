@@ -8,16 +8,22 @@ trainer:
   single_batch_overfit: true
 
 optimizer:
-  lr: 1.0e-4
+  lr: 1.0e-3
   betas: [0.9, 0.95]
   weight_decay: 0.0
   eps: 1.0e-08
   grad_clip_norm: 1.0
 
+dataloader:
+  batch_size: 1
+  shuffle: false
+  num_workers: 0
+  pin_memory: true
+
 diffusion:
   min_signal: 0.0
   max_signal: 1.0
-  base_dimension: 4096
+  base_dimension: 4096 # from RAE paper, to determine noise schedule depending on latent dimension
   noise_mean: 0.0   # Set noise_mean=0.0 and noise_std=1.0 to recover a unit Gaussian prior.
   noise_std: 1.0
 
@@ -31,16 +37,10 @@ logging:
   entity: null
   run_name: null
   log_interval: 50
-  sample_interval: 500
+  sample_interval: 100
   checkpoint_interval: 1000
   output_dir: checkpoints
-  tau_log_limit: 200
-
-dataloader:
-  batch_size: 8
-  shuffle: false
-  num_workers: 0
-  pin_memory: true
+  tau_log_limit: 500
 
 dataset:
   repo_id: lerobot/droid_1.0.1
@@ -48,10 +48,13 @@ dataset:
     - observation.images.exterior_1_left
     - observation.images.exterior_2_left
   action_key: observation.state.cartesian_position
+  action_representation: "delta"
   episodes: [0, 1, 2, 3, 4, 5]
   sequence_length_distribution:
     2: 1.0
   frame_delta_seconds: 5.0 / 15.0
+  single_frame_probability: 0.0
+  drop_action_probability: 0.0
 
 vision:
   encoder_repo_id: facebook/dinov2-with-registers-base
