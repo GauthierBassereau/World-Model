@@ -6,8 +6,7 @@ dataset:
   action_key: observation.state.cartesian_position
   episodes: [0, 1, 2, 3, 4, 5]
   sequence_length_distribution:
-    4: 0.7
-    8: 0.3
+    2: 1.0
   frame_delta_seconds: 5.0 / 15.0
 
 dataloader:
@@ -30,16 +29,18 @@ trainer:
   seed: 1234
   device: cuda
   resume_checkpoint: null
-  single_batch_overfit: false
+  single_batch_overfit: true
 
 logging:
   project: world_model
   entity: null
   run_name: null
   log_interval: 50
-  sample_interval: 100
+  sample_interval: 500
   checkpoint_interval: 1000
   output_dir: checkpoints
+  log_tau_histograms: True
+  tau_log_limit: 200
 
 vision:
   encoder_repo_id: facebook/dinov2-with-registers-base
@@ -52,8 +53,8 @@ world_model:
   latent_dim: 1024
   action_dim: 6
   num_registers: 4
-  depth: 12
-  num_heads: 8
+  depth: 24
+  num_heads: 16
   mlp_multiplier: 4.0
   temporal_attention_interval: 4
   temporal_context: 2  # Number of past frames temporal attention may attend; ensure the longest dataset clip comfortably exceeds this.
