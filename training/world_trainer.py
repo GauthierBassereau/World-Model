@@ -54,7 +54,6 @@ class LoggingConfig:
     checkpoint_interval: int = 1_000
     output_dir: str = "checkpoints"
     sample_interval: Optional[int] = 1_000
-    log_tau_histograms: bool = True
     tau_log_limit: int = 200
 
 
@@ -326,7 +325,6 @@ class WorldModelTrainer:
         noisy_latents = (1.0 - tau_factor) * base_noise + tau_factor * latents
         target_velocity = latents - base_noise
         self.logger.log_distr_noise(tau)
-        self.logger.log_sample_sequence(frames=frames_cpu[0], tau=tau[0])
 
         if self.use_autocast:
             autocast_ctx = torch.autocast(
@@ -350,6 +348,13 @@ class WorldModelTrainer:
                 target_velocity = target_velocity.to(pred_velocity.dtype)
             loss = F.mse_loss(pred_velocity, target_velocity)
             scaled_loss = loss / self.config.trainer.grad_accum_steps
+        denoised_latents = (base_noise + pred_velocity).detach()
+        self.logger.log_sample_sequence(
+            frame=frames_cpu[0, 0],
+            noisy_latent=noisy_latents[0, 0].detach(),
+            denoised_latent=denoised_latents[0, 0],
+            decode_latent=self.autoencoder.decode,
+        )
 
         if self.use_scaler:
             self.scaler.scale(scaled_loss).backward()

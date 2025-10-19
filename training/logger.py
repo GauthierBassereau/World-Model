@@ -7,8 +7,9 @@ optimization loop.
 """
 
 import logging
-from typing import Any, Dict, Optional, TYPE_CHECKING
+from typing import Any, Callable, Dict, Optional, TYPE_CHECKING
 
+import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
@@ -38,11 +39,13 @@ class WorldModelLogger:
         self.cfg = logging_cfg
         self.local = _create_local_logger()
         self.sample_interval = logging_cfg.sample_interval
-        self.log_tau = logging_cfg.log_tau_histograms
         self.noise_log_limit = logging_cfg.tau_log_limit if logging_cfg.tau_log_limit > 0 else None
         self.noise_log_count = 0
         self.current_step = 0
         self.current_micro_step = 0
+        self._tau_running_mean = 0.0
+        self._tau_running_std = 0.0
+        self._tau_stat_count = 0
         self.wandb_run: Optional["wandb.sdk.wandb_run.Run"] = None
         self._wandb = None
 
@@ -120,8 +123,6 @@ class WorldModelLogger:
                 )
 
     def log_distr_noise(self, tau: torch.Tensor, bins: int = 50) -> None:
-        if not self.log_tau:
-            return
         if self.noise_log_limit is not None and self.noise_log_count >= self.noise_log_limit:
             return
 
@@ -135,8 +136,12 @@ class WorldModelLogger:
         std_val = float(values.std(unbiased=False).item()) if values.numel() > 1 else 0.0
         hist = torch.histc(values, bins=bins, min=min_val, max=max_val) if values.numel() > 1 else values
 
+        self._tau_stat_count += 1
+        self._tau_running_mean += (mean_val - self._tau_running_mean) / self._tau_stat_count
+        self._tau_running_std += (std_val - self._tau_running_std) / self._tau_stat_count
+
         self.info(
-            "step=%d micro_step=%d | tau mean=%.4f std=%.4f min=%.4f max=%.4f bins=%d",
+            "step=%d micro_step=%d | tau mean=%.4f std=%.4f min=%.4f max=%.4f bins=%d | running mean=%.4f std=%.4f",
             self.current_step,
             self.current_micro_step,
             mean_val,
@@ -144,6 +149,8 @@ class WorldModelLogger:
             min_val,
             max_val,
             bins if values.numel() > 1 else 1,
+            self._tau_running_mean,
+            self._tau_running_std,
         )
         self.debug(
             "Tau histogram counts: %s",
@@ -151,62 +158,92 @@ class WorldModelLogger:
         )
 
         if self.wandb_run is not None and self._wandb is not None:
-            self.wandb_run.log(
-                {
-                    "debug/tau_hist": self._wandb.Histogram(values.cpu().numpy()),
-                    "debug/tau_stats": {
-                        "mean": mean_val,
-                        "std": std_val,
-                        "min": min_val,
-                        "max": max_val,
-                        "micro_step": self.current_micro_step,
-                    },
-                },
-                step=self.current_step,
-                commit=False,
-            )
+            logs: Dict[str, Any] = {
+                "noise/tau_mean": mean_val,
+                "noise/tau_std": std_val,
+                "noise/tau_running_mean": self._tau_running_mean,
+                "noise/tau_running_std": self._tau_running_std,
+            }
+            if values.numel() > 1:
+                logs["noise/tau_histogram"] = self._wandb.Histogram(values.cpu().numpy())
+            self.wandb_run.log(logs, step=self.current_step, commit=False)
 
         self.noise_log_count += 1
 
-    def log_sample_sequence(self, frames: torch.Tensor, tau: torch.Tensor) -> None:
+    def log_sample_sequence(
+        self,
+        frame: torch.Tensor,
+        noisy_latent: torch.Tensor,
+        denoised_latent: torch.Tensor,
+        decode_latent: Callable[[torch.Tensor], torch.Tensor],
+    ) -> None:
         if self.sample_interval is None or self.sample_interval <= 0:
             return
         if self.current_step % self.sample_interval != 0 or self.current_micro_step != 0:
             return
 
-        frames = frames.detach().to(dtype=torch.float32)
-        if frames.ndim != 4:
+        frame = frame.detach().to(dtype=torch.float32)
+        if frame.ndim != 3:
             self.warning(
-                "log_sample_sequence expected frames with shape [T, C, H, W], got %s",
-                tuple(frames.shape),
+                "log_sample_sequence expected frame with shape [C, H, W], got %s",
+                tuple(frame.shape),
             )
             return
 
-        if frames.max() > 1.5:
-            frames = frames / 255.0
-        frames = frames.clamp(0.0, 1.0)
+        if frame.max() > 1.5:
+            frame = frame / 255.0
+        frame = frame.clamp(0.0, 1.0)
 
         self.info(
-            "Logging sample sequence at step=%d micro_step=%d (frames=%d).",
+            "Logging sample reconstruction at step=%d micro_step=%d.",
             self.current_step,
             self.current_micro_step,
-            frames.shape[0],
         )
 
         if self.wandb_run is None or self._wandb is None:
             return
 
-        video_obj = None
-        if getattr(self._wandb, "Video", None) is None:
-            self.warning("moviepy missing; skipping video logging.")
-        else:
-            video_frames = (frames.mul(255).to(torch.uint8)).permute(0, 2, 3, 1).cpu().numpy()
-            video_obj = self._wandb.Video(video_frames, fps=4, format="mp4")
-            self.wandb_run.log({"sample/frames": video_obj}, step=self.current_step, commit=False)
+        decode_owner = getattr(decode_latent, "__self__", None)
+        decode_device = noisy_latent.device
+        if decode_owner is not None:
+            try:
+                decode_device = next(decode_owner.parameters()).device
+            except (StopIteration, AttributeError):  # pragma: no cover - defensive
+                decode_device = noisy_latent.device
 
-        table = self._wandb.Table(columns=["frame", "tau"])
-        tau_values = tau.detach().to(dtype=torch.float32).view(-1).cpu().tolist()
-        for idx, value in enumerate(tau_values):
-            table.add_data(idx, value)
+        def _decode_single(latent: torch.Tensor) -> torch.Tensor:
+            latent = latent.detach().unsqueeze(0).to(decode_device)
+            with torch.no_grad():
+                decoded = decode_latent(latent)
+            if decoded.ndim != 4 or decoded.shape[0] != 1:
+                raise ValueError(
+                    "decode_latent expected to return tensor with shape [1, C, H, W], "
+                    f"got {tuple(decoded.shape)}."
+                )
+            return decoded.squeeze(0).to(torch.float32)
 
-        self.wandb_run.log({"sample/tau": table}, step=self.current_step, commit=False)
+        try:
+            noisy_image = _decode_single(noisy_latent)
+            denoised_image = _decode_single(denoised_latent)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            self.warning("Failed to decode latents for sample logging: %s", exc)
+            return
+
+        def _to_uint8_image(tensor: torch.Tensor) -> np.ndarray:
+            tensor = tensor.detach().clamp(0.0, 1.0)
+            array = tensor.mul(255).to(torch.uint8).permute(1, 2, 0).cpu().numpy()
+            return array
+
+        target_image = _to_uint8_image(frame)
+        noisy_image_np = _to_uint8_image(noisy_image)
+        denoised_image_np = _to_uint8_image(denoised_image)
+
+        self.wandb_run.log(
+            {
+                "sample/target": self._wandb.Image(target_image, caption="target"),
+                "sample/noisy": self._wandb.Image(noisy_image_np, caption="noisy"),
+                "sample/denoised": self._wandb.Image(denoised_image_np, caption="denoised"),
+            },
+            step=self.current_step,
+            commit=False,
+        )
