@@ -14,20 +14,10 @@
 
 ## 3. Integrated Architecture
 
-### 3.1 Observation Pipeline
-- Freeze the Dinov2 RAE autoencoder and integrate it directly inside the LeRobot dataset loader so frames arrive as patch tokens.
-- Return the 16×16 patch grid tokens (dim 768); append Dreamer-style register tokens for global aggregation.
-- Letterbox input frames to 224×224 before encoding to preserve aspect ratio while matching the Dinov2 patch geometry.
-
-### 3.2 Dynamics Transformer
+- Freeze the Dinov2 encoder and use MAE decoder from RAE paper.
 - Use the Dreamer V4 block-causal transformer without policy heads, alternating spatial-only and temporal-only attention layers.
 - Temporal layers share KV caches (GQA) for efficiency; employ QKNorm, attention logit soft capping, pre-layer RMSNorm, and SwiGLU MLPs.
 - Sequence per step: `[register tokens | latent tokens | shortcut tokens | action tokens]`, with learned embeddings standing in for unknown actions on raw clips.
-- Optimize the shortcut forcing objective (Equation 7 in Dreamer 4) with x-prediction, flow matching, bootstrap terms, and four shortcut steps (`K = 4`).
-
-### 3.3 Decoder for Visualization
-- From DiT RAE paper, ViT decoder from MAE.
-- Train the decoder on frozen latents with L2 + LPIPS + GAN
 
 ## 4. Data Strategy
 
