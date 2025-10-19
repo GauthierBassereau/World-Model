@@ -167,7 +167,12 @@ class LeRobotSequenceCollator:
                 torch.tensor(use_single_frame, dtype=torch.bool, device=self.device)
             )
             actions_mask.append(
-                torch.tensor(not (use_single_frame or drop_actions), dtype=torch.bool, device=self.device)
+                torch.full(
+                    (target_length,),
+                    not (use_single_frame or drop_actions),
+                    dtype=torch.bool,
+                    device=self.device,
+                )
             )
 
         return WorldModelBatch(
