@@ -32,7 +32,7 @@ class DatasetConfig:
     episodes: Optional[Sequence[int]] = None
     sequence_length_distribution: Dict[int, float] = field(default_factory=lambda: {4: 1.0})
     frame_delta_seconds: float | str = 5.0 / 15.0
-    single_frame_probability: float = 0.0
+    independant_frame_probability: float = 0.0
     drop_action_probability: float = 0.0
 
     def __post_init__(self) -> None:
@@ -55,7 +55,7 @@ class DatasetConfig:
 class WorldModelBatch:
     sequence_frames: torch.Tensor
     sequence_actions: torch.Tensor
-    single_frame_mask: torch.Tensor
+    independant_frame_mask: torch.Tensor
     actions_mask: torch.Tensor
 
 
@@ -108,8 +108,8 @@ class LeRobotSequenceCollator:
             raise ValueError("DatasetConfig.cameras must contain at least one camera key.")
         if not self.cfg.action_key:
             raise ValueError("DatasetConfig.action_key must be provided to fetch actions.")
-        if not 0.0 <= self.cfg.single_frame_probability <= 1.0:
-            raise ValueError("DatasetConfig.single_frame_probability must be between 0 and 1.")
+        if not 0.0 <= self.cfg.independant_frame_probability <= 1.0:
+            raise ValueError("DatasetConfig.independant_frame_probability must be between 0 and 1.")
         if not 0.0 <= self.cfg.drop_action_probability <= 1.0:
             raise ValueError("DatasetConfig.drop_action_probability must be between 0 and 1.")
 
@@ -142,7 +142,7 @@ class LeRobotSequenceCollator:
 
         frame_sequences: List[torch.Tensor] = []
         action_sequences: List[torch.Tensor] = []
-        single_frame_mask: List[torch.Tensor] = []
+        independant_frame_mask: List[torch.Tensor] = []
         actions_mask: List[torch.Tensor] = []
 
         for sample in samples:
@@ -150,26 +150,26 @@ class LeRobotSequenceCollator:
             frames = self._prepare_frames(sample, camera_key, target_length)
             actions = self._prepare_actions(sample, target_length)
 
-            use_single_frame = random.random() < self.cfg.single_frame_probability
+            use_independant_frame = random.random() < self.cfg.independant_frame_probability
             drop_actions = random.random() < self.cfg.drop_action_probability
 
-            if use_single_frame:
+            if use_independant_frame:
                 frame_index = random.randrange(target_length)
                 static_frame = frames[frame_index].unsqueeze(0)
                 frames = static_frame.repeat(target_length, 1, 1, 1)
 
-            if use_single_frame or drop_actions:
+            if use_independant_frame or drop_actions:
                 actions.zero_()
 
             frame_sequences.append(frames)
             action_sequences.append(actions)
-            single_frame_mask.append(
-                torch.tensor(use_single_frame, dtype=torch.bool, device=self.device)
+            independant_frame_mask.append(
+                torch.tensor(use_independant_frame, dtype=torch.bool, device=self.device)
             )
             actions_mask.append(
                 torch.full(
                     (target_length,),
-                    not (use_single_frame or drop_actions),
+                    not (use_independant_frame or drop_actions),
                     dtype=torch.bool,
                     device=self.device,
                 )
@@ -178,7 +178,7 @@ class LeRobotSequenceCollator:
         return WorldModelBatch(
             sequence_frames=torch.stack(frame_sequences, dim=0),
             sequence_actions=torch.stack(action_sequences, dim=0),
-            single_frame_mask=torch.stack(single_frame_mask, dim=0),
+            independant_frame_mask=torch.stack(independant_frame_mask, dim=0),
             actions_mask=torch.stack(actions_mask, dim=0),
         )
 

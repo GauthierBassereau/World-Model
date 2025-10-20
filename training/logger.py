@@ -24,7 +24,7 @@ def _create_local_logger() -> logging.Logger:
     logger.setLevel(logging.INFO)
     handler = logging.StreamHandler()
     handler.setFormatter(
-        logging.Formatter("\x1b[90m%(asctime)s | %(levelname)s | %(message)s\x1b[0m")
+        logging.Formatter("\x1b[90m%(asctime)s\x1b[0m | %(levelname)s | %(message)s")
     )
     logger.addHandler(handler)
     logger.propagate = False

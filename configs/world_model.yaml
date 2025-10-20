@@ -17,7 +17,7 @@ optimizer:
 dataloader:
   batch_size: 1
   shuffle: false
-  num_workers: 0
+  num_workers: 0 # need to check why but I get errors with num_workers > 0
   pin_memory: true
 
 diffusion:
@@ -53,7 +53,7 @@ dataset:
   sequence_length_distribution:
     2: 1.0
   frame_delta_seconds: 5.0 / 15.0
-  single_frame_probability: 0.0
+  independant_frame_probability: 0.0 # not implemented yet, it does nothing in world model backbone
   drop_action_probability: 0.0
 
 vision:
@@ -71,7 +71,7 @@ world_model:
   num_heads: 16
   mlp_multiplier: 4.0
   temporal_attention_interval: 4
-  temporal_context: 2  # Number of past frames temporal attention may attend; ensure the longest dataset clip comfortably exceeds this.
+  temporal_context_length: 2
   rope_base: 10000.0
   attn_logit_soft_cap: 50.0
   qk_norm_eps: 1.0e-06
