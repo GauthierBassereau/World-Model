@@ -55,7 +55,7 @@ class DatasetConfig:
 class WorldModelBatch:
     sequence_frames: torch.Tensor
     sequence_actions: torch.Tensor
-    independant_frame_mask: torch.Tensor
+    independant_frames_mask: torch.Tensor
     actions_mask: torch.Tensor
 
 
@@ -178,7 +178,7 @@ class LeRobotSequenceCollator:
         return WorldModelBatch(
             sequence_frames=torch.stack(frame_sequences, dim=0),
             sequence_actions=torch.stack(action_sequences, dim=0),
-            independant_frame_mask=torch.stack(independant_frames_mask, dim=0),
+            independant_frames_mask=torch.stack(independant_frames_mask, dim=0),
             actions_mask=torch.stack(actions_mask, dim=0),
         )
 

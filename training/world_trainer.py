@@ -370,7 +370,7 @@ class WorldModelTrainer:
                 noise_levels=tau,
                 actions=actions,
                 independant_frames_mask=independant_frames_mask,
-                action_mask=actions_mask,
+                actions_mask=actions_mask,
             )
             pred_velocity = outputs.get("pred_velocity")
             if pred_velocity.dtype != target_velocity.dtype:

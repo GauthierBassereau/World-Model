@@ -153,7 +153,7 @@ class WorldModelLogger:
         self._tau_running_mean += (mean_val - self._tau_running_mean) / self._tau_stat_count
         self._tau_running_std += (std_val - self._tau_running_std) / self._tau_stat_count
 
-        self.info(
+        self.debug(
             "step=%d micro_step=%d | tau mean=%.4f std=%.4f min=%.4f max=%.4f bins=%d | running mean=%.4f std=%.4f",
             self.current_step,
             self.current_micro_step,
@@ -250,7 +250,7 @@ class WorldModelLogger:
         if seq_actions is not None:
             model_kwargs["actions"] = seq_actions
         if seq_action_mask is not None:
-            model_kwargs["action_mask"] = seq_action_mask
+            model_kwargs["actions_mask"] = seq_action_mask
         if seq_indep is not None:
             model_kwargs["independant_frames_mask"] = seq_indep
 
@@ -282,11 +282,12 @@ class WorldModelLogger:
             key: self._wandb.Video(value, fps=fps_value, format="mp4") for key, value in videos.items()
         }
         self.wandb_run.log(wandb_videos, step=self.current_step, commit=False)
-
+        
     def _decode_sequence(self, latents: torch.Tensor) -> torch.Tensor:
         if latents.ndim != 3:
             raise ValueError("Expected latents with shape [T, tokens, dim] for decoding.")
-        decoded = self._decode_latents(latents.contiguous())
+        with torch.no_grad():
+            decoded = self._decode_latents(latents.contiguous())
         if decoded.ndim != 4:
             raise ValueError("Decoder returned tensor with unexpected shape.")
         return decoded
@@ -294,6 +295,15 @@ class WorldModelLogger:
     def _video_from_frames(self, frames: torch.Tensor) -> np.ndarray:
         if frames.ndim != 4:
             raise ValueError("Frames must have shape [T, C, H, W].")
+        # self.info(
+        # f"""
+
+        # Decoded frames shape: {frames.shape}
+        # max: {torch.max(frames)}
+        # min: {torch.min(frames)}
+        # mean: {torch.mean(frames)}
+
+        # """)
         array = (
             frames.detach()
             .to(dtype=torch.float32)
@@ -301,7 +311,6 @@ class WorldModelLogger:
             .mul(255.0)
             .round()
             .to(dtype=torch.uint8)
-            .permute(0, 2, 3, 1)
             .cpu()
             .numpy()
         )
