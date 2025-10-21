@@ -259,8 +259,8 @@ class TransformerBlock(nn.Module):
             spatial_sin, 
             attn_mask=spatial_mask
         )
-
         spatial_out = spatial_out * update_mask
+
         x = x + spatial_out
 
         if self.use_temporal:
@@ -271,11 +271,12 @@ class TransformerBlock(nn.Module):
                 attn_mask=temporal_mask,
             )
             temporal_out = temporal_out * update_mask
+            
             x = x + temporal_out
 
         mlp_out = self.mlp(self.mlp_norm(x))
-        if update_mask is not None:
-            mlp_out = mlp_out * update_mask
+        mlp_out = mlp_out * update_mask
+            
         x = x + mlp_out
         
         return x

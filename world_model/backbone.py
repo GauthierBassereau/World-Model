@@ -115,17 +115,17 @@ class WorldModelBackbone(nn.Module):
     ) -> torch.Tensor:
         mask = torch.tril(
             torch.ones(time_steps, time_steps, dtype=torch.bool, device=device),
-            diagonal=0,
+            diagonal=-1, # no same frame attention
         )
         if context_length is not None and context_length < time_steps:
-            context_band = torch.triu(mask, diagonal=-(context_length - 1))
+            context_band = torch.triu(mask, diagonal=-(context_length))
             mask = mask & context_band
         mask = mask.unsqueeze(0).unsqueeze(0).expand(batch_size, 1, time_steps, time_steps).clone() # need to clone so each batch has its own storage since some are different.
         
         if independant_frames_mask is not None:
             independent = independant_frames_mask.to(device=device, dtype=torch.bool).view(batch_size, 1, 1, 1)
-            identity_mask = torch.eye(time_steps, dtype=torch.bool, device=device).view(1, 1, time_steps, time_steps)
-            mask = torch.where(independent, identity_mask, mask) # Sequences marked as independent only keep intra-frame temporal attention, which in this case there is actually none, but cleaner like this
+            all_false = torch.zeros_like(mask, dtype=torch.bool)
+            mask = torch.where(independent, all_false, mask)
 
         return mask # [B, 1, T, T] # need for expanding batch size since not the same temporal mask for all batch (independant frame)
 
