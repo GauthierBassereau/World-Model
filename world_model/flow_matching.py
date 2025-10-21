@@ -5,7 +5,7 @@ from typing import Optional, Union
 
 import torch
 
-# ------------------ Scheduler and Noise sampler
+# ------------------------------------------------------------------ Scheduler and Noise sampler
 @dataclass
 class DiffusionConfig:
     min_signal: float = 0.0
@@ -81,10 +81,10 @@ def sample_base_noise(latents: torch.Tensor, config: DiffusionConfig) -> torch.T
     return noise * std + mean
 
 
-# ------------------- ODE Solver
+# ------------------------------------------------------------------ ODE Solver
 @dataclass
 class EulerSolverConfig:
-    step_size: float = 1.0
+    step_size: float = 0.02 # 50 steps
     min_signal: float = 0.0
     max_signal: float = 1.0
 

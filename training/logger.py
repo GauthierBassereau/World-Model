@@ -11,7 +11,10 @@ from typing import Any, Callable, Dict, Optional, TYPE_CHECKING
 
 import numpy as np
 import torch
+import torch.nn as nn
 from torch.utils.data import DataLoader
+
+from world_model.flow_matching import DiffusionConfig, EulerSolver, EulerSolverConfig
 
 if TYPE_CHECKING:
     from training.world_trainer import LoggingConfig
@@ -36,6 +39,10 @@ class WorldModelLogger:
     def __init__(
         self,
         logging_cfg: "LoggingConfig",
+        diffusion_cfg: DiffusionConfig,
+        euler_cfg: EulerSolverConfig,
+        decode_fn: Callable[[torch.Tensor], torch.Tensor],
+        sample_fps: Optional[float] = None,
     ) -> None:
         self.cfg = logging_cfg
         self.local = _create_local_logger()
@@ -49,6 +56,14 @@ class WorldModelLogger:
         self._tau_stat_count = 0
         self.wandb_run: Optional["wandb.sdk.wandb_run.Run"] = None
         self._wandb = None
+        if (
+            euler_cfg.min_signal != diffusion_cfg.min_signal
+            or euler_cfg.max_signal != diffusion_cfg.max_signal
+        ):
+            raise ValueError("Euler solver bounds must match diffusion bounds.")
+        self._solver = EulerSolver(euler_cfg)
+        self._decode_latents = decode_fn
+        self._sample_fps = sample_fps
 
     # ------------------------------------------------------------------ helpers
     def info(self, message: str, *args: Any, **kwargs: Any) -> None:
@@ -167,3 +182,132 @@ class WorldModelLogger:
             self.wandb_run.log(logs, step=self.current_step, commit=False)
 
         self.noise_log_count += 1
+
+    # ------------------------------------------------------------------ visual logging
+    def maybe_log_micro_step_video(
+        self,
+        model: nn.Module,
+        *,
+        latents: torch.Tensor,
+        noisy_latents: torch.Tensor,
+        frames: torch.Tensor,
+        noise_levels: torch.Tensor,
+        actions: Optional[torch.Tensor] = None,
+        actions_mask: Optional[torch.Tensor] = None,
+        independant_frames_mask: Optional[torch.Tensor] = None,
+    ) -> None:
+        if (
+            self.sample_interval is None
+            or self.wandb_run is None
+            or self._wandb is None
+            or self.current_step % self.sample_interval != 0
+            or self.current_micro_step != 0
+        ):
+            return
+
+        if self._decode_latents is None:
+            return
+
+        if frames.ndim != 5 or latents.ndim != 4 or noisy_latents.ndim != 4:
+            return
+
+        batch_size = frames.shape[0]
+        candidate_idx: Optional[int] = None
+        for idx in range(batch_size):
+            independent = False
+            if independant_frames_mask is not None:
+                mask = independant_frames_mask[idx]
+                independent = bool(mask.detach().bool().item())
+            if independent:
+                continue
+            has_actions = True
+            if actions_mask is not None:
+                mask_row = actions_mask[idx]
+                has_actions = bool(torch.all(mask_row.detach().bool()).item())
+            if not has_actions:
+                continue
+            candidate_idx = idx
+            break
+
+        if candidate_idx is None:
+            return
+
+        seq_frames = frames[candidate_idx].detach()
+        seq_noisy_latents = noisy_latents[candidate_idx : candidate_idx + 1].detach()
+        seq_noise_levels = noise_levels[candidate_idx : candidate_idx + 1].detach()
+
+        seq_actions = actions[candidate_idx : candidate_idx + 1].detach() if actions is not None else None
+        seq_action_mask = (
+            actions_mask[candidate_idx : candidate_idx + 1].detach() if actions_mask is not None else None
+        )
+        seq_indep = (
+            independant_frames_mask[candidate_idx : candidate_idx + 1].detach()
+            if independant_frames_mask is not None
+            else None
+        )
+
+        model_kwargs: Dict[str, torch.Tensor] = {}
+        if seq_actions is not None:
+            model_kwargs["actions"] = seq_actions
+        if seq_action_mask is not None:
+            model_kwargs["action_mask"] = seq_action_mask
+        if seq_indep is not None:
+            model_kwargs["independant_frames_mask"] = seq_indep
+
+        was_training = model.training
+        if was_training:
+            model.eval()
+
+        with torch.no_grad():
+            denoised_latents = self._solver.sample(
+                model,
+                seq_noisy_latents,
+                initial_signal=seq_noise_levels,
+                **model_kwargs,
+            ).squeeze(0)
+
+        if was_training:
+            model.train()
+
+        noisy_decoded = self._decode_sequence(seq_noisy_latents.squeeze(0))
+        denoised_decoded = self._decode_sequence(denoised_latents)
+
+        videos = {
+            "samples/original_frames": self._video_from_frames(seq_frames),
+            "samples/noisy_reconstruction": self._video_from_frames(noisy_decoded),
+            "samples/denoised_reconstruction": self._video_from_frames(denoised_decoded),
+        }
+        fps_value = self._resolve_fps()
+        wandb_videos = {
+            key: self._wandb.Video(value, fps=fps_value, format="mp4") for key, value in videos.items()
+        }
+        self.wandb_run.log(wandb_videos, step=self.current_step, commit=False)
+
+    def _decode_sequence(self, latents: torch.Tensor) -> torch.Tensor:
+        if latents.ndim != 3:
+            raise ValueError("Expected latents with shape [T, tokens, dim] for decoding.")
+        decoded = self._decode_latents(latents.contiguous())
+        if decoded.ndim != 4:
+            raise ValueError("Decoder returned tensor with unexpected shape.")
+        return decoded
+
+    def _video_from_frames(self, frames: torch.Tensor) -> np.ndarray:
+        if frames.ndim != 4:
+            raise ValueError("Frames must have shape [T, C, H, W].")
+        array = (
+            frames.detach()
+            .to(dtype=torch.float32)
+            .clamp(0.0, 1.0)
+            .mul(255.0)
+            .round()
+            .to(dtype=torch.uint8)
+            .permute(0, 2, 3, 1)
+            .cpu()
+            .numpy()
+        )
+        return array
+
+    def _resolve_fps(self) -> int:
+        if self._sample_fps is None:
+            return 10
+        return max(1, int(round(self._sample_fps)))

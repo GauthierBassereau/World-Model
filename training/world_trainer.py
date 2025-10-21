@@ -19,6 +19,7 @@ from training.dataset import (
 from world_model.flow_matching import (
     DiffusionConfig,
     DimensionShiftedUniformScheduler,
+    EulerSolverConfig,
     sample_base_noise,
 )
 from world_model.backbone import WorldModelConfig
@@ -133,7 +134,6 @@ class WorldModelTrainer:
         self.config = config
         self.model = model
         self.autoencoder = autoencoder or self._build_autoencoder(config.vision)
-        self.logger = WorldModelLogger(config.logging)
         self.device = self._resolve_device()
         self.flow_cfg = config.diffusion
         self.scheduler = DimensionShiftedUniformScheduler(self.flow_cfg)
@@ -150,6 +150,21 @@ class WorldModelTrainer:
         self.autoencoder.eval()
         for param in self.autoencoder.parameters():
             param.requires_grad_(False)
+
+        euler_cfg = EulerSolverConfig(
+            step_size=EulerSolverConfig().step_size,
+            min_signal=self.flow_cfg.min_signal,
+            max_signal=self.flow_cfg.max_signal,
+        )
+        frame_delta = self.config.dataset.frame_delta_seconds
+        sample_fps = 1.0 / frame_delta if frame_delta > 0 else None
+        self.logger = WorldModelLogger(
+            config.logging,
+            diffusion_cfg=self.flow_cfg,
+            euler_cfg=euler_cfg,
+            decode_fn=self.autoencoder.decode,
+            sample_fps=sample_fps,
+        )
 
         self.dataloader = build_world_model_dataloader(
             dataset_cfg=config.dataset,
@@ -327,6 +342,18 @@ class WorldModelTrainer:
         noisy_latents = (1.0 - tau_factor) * base_noise + tau_factor * latents
         target_velocity = latents - base_noise
         self.logger.log_distr_noise(tau)
+        self.logger.maybe_log_micro_step_video(
+            self.model,
+            latents=latents.detach(),
+            noisy_latents=noisy_latents.detach(),
+            frames=frames_cpu.detach(),
+            noise_levels=tau.detach(),
+            actions=actions.detach() if actions is not None else None,
+            actions_mask=actions_mask.detach() if actions_mask is not None else None,
+            independant_frames_mask=independant_frames_mask.detach()
+            if independant_frames_mask is not None
+            else None,
+        )
 
         if self.use_autocast:
             autocast_ctx = torch.autocast(
