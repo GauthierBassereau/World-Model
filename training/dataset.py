@@ -32,7 +32,7 @@ class DatasetConfig:
     episodes: Optional[Sequence[int]] = None
     sequence_length_distribution: Dict[int, float] = field(default_factory=lambda: {4: 1.0})
     frame_delta_seconds: float | str = 5.0 / 15.0
-    independant_frame_probability: float = 0.0
+    independant_frames_probability: float = 0.0
     drop_action_probability: float = 0.0
 
     def __post_init__(self) -> None:
@@ -142,7 +142,7 @@ class LeRobotSequenceCollator:
 
         frame_sequences: List[torch.Tensor] = []
         action_sequences: List[torch.Tensor] = []
-        independant_frame_mask: List[torch.Tensor] = []
+        independant_frames_mask: List[torch.Tensor] = []
         actions_mask: List[torch.Tensor] = []
 
         for sample in samples:
@@ -163,7 +163,7 @@ class LeRobotSequenceCollator:
 
             frame_sequences.append(frames)
             action_sequences.append(actions)
-            independant_frame_mask.append(
+            independant_frames_mask.append(
                 torch.tensor(use_independant_frame, dtype=torch.bool, device=self.device)
             )
             actions_mask.append(
@@ -178,7 +178,7 @@ class LeRobotSequenceCollator:
         return WorldModelBatch(
             sequence_frames=torch.stack(frame_sequences, dim=0),
             sequence_actions=torch.stack(action_sequences, dim=0),
-            independant_frame_mask=torch.stack(independant_frame_mask, dim=0),
+            independant_frame_mask=torch.stack(independant_frames_mask, dim=0),
             actions_mask=torch.stack(actions_mask, dim=0),
         )
 

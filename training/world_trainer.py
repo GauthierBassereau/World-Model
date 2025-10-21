@@ -21,7 +21,7 @@ from training.diffusion import (
     DimensionShiftedUniformScheduler,
     sample_base_noise,
 )
-from world_model.transformer import WorldModelConfig
+from world_model.backbone import WorldModelConfig
 
 from training.logger import WorldModelLogger
 
@@ -306,9 +306,9 @@ class WorldModelTrainer:
 
         frames = frames_cpu.to(self.device, non_blocking=True)
         actions = batch.sequence_actions.to(self.device, non_blocking=True)
-        independant_frame_mask = (
-            batch.independant_frame_mask.to(self.device, non_blocking=True)
-            if batch.independant_frame_mask is not None
+        independant_frames_mask = (
+            batch.independant_frames_mask.to(self.device, non_blocking=True)
+            if batch.independant_frames_mask is not None
             else None
         )
         actions_mask = (
@@ -340,7 +340,7 @@ class WorldModelTrainer:
                 noisy_latents,
                 noise_levels=tau,
                 actions=actions,
-                single_frame_mask=independant_frame_mask,
+                independant_frames_mask=independant_frames_mask,
                 action_mask=actions_mask,
             )
             pred_velocity = outputs.get("pred_velocity")

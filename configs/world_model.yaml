@@ -53,7 +53,7 @@ dataset:
   sequence_length_distribution:
     2: 1.0
   frame_delta_seconds: 5.0 / 15.0
-  independant_frame_probability: 0.0 # not implemented yet, it does nothing in world model backbone
+  independant_frames_probability: 0.0 # not implemented yet, it does nothing in world model backbone
   drop_action_probability: 0.0
 
 vision:
