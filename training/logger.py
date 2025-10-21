@@ -295,15 +295,6 @@ class WorldModelLogger:
     def _video_from_frames(self, frames: torch.Tensor) -> np.ndarray:
         if frames.ndim != 4:
             raise ValueError("Frames must have shape [T, C, H, W].")
-        # self.info(
-        # f"""
-
-        # Decoded frames shape: {frames.shape}
-        # max: {torch.max(frames)}
-        # min: {torch.min(frames)}
-        # mean: {torch.mean(frames)}
-
-        # """)
         array = (
             frames.detach()
             .to(dtype=torch.float32)

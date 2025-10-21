@@ -2,7 +2,7 @@ logging:
   project: world_model
   entity: null
   run_name: null
-  log_interval: 50
+  log_interval: 25
   sample_interval: 100
   checkpoint_interval: 1000
   output_dir: checkpoints
@@ -10,11 +10,11 @@ logging:
 
 trainer:
   max_steps: null # null means no limit
-  grad_accum_steps: 64
+  grad_accum_steps: 128
   precision: bf16
   seed: 230503
   device: cuda
-  resume_checkpoint: checkpoints/world_model_step_003000.pt
+  resume_checkpoint: null
   single_batch_overfit: true
 
 dataloader:
@@ -41,7 +41,7 @@ dataset:
   sequence_length_distribution: # Dreamerv4 doesn't specify the proportion but I'll guess 0.8 short batches at the begginning and towards the end go to full long batches probably. For now let's keep small batches, will implement the evolution of this distribution later.
     2: 1.0
   frame_delta_seconds: 5.0 / 15.0
-  independant_frames_probability: 0.0 #0.3 # from Dreamerv4
+  independant_frames_probability: 0.0 # 0.3 # from Dreamerv4
   drop_action_probability: 0.0 # 0.85 # from Dreamerv4
 
 diffusion:
@@ -65,12 +65,12 @@ world_model:
   latent_dim: 1024 # From RAE paper this needs to be > input_dim
   action_dim: 6
   num_registers: 4
-  depth: 18
+  depth: 12
   num_heads: 16
   mlp_multiplier: 4.0
   temporal_attention_interval: 4
-  temporal_context_length: 4
-  rope_base: 10000.0
+  temporal_context_length: 2
+  rope_base: 1000.0
   attn_logit_soft_cap: 50.0
   qk_norm_eps: 1.0e-06
 

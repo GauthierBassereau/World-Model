@@ -47,14 +47,12 @@ class WorldModelBackbone(nn.Module):
 
         # The default base action token is a learned embedding, and each action is simply added to it after projection
         self.base_action_embed = nn.Parameter(torch.empty(self.config.latent_dim))
-        nn.init.normal_(self.base_action_embed, std=0.02)
 
         self.action_proj = nn.Linear(self.config.action_dim, self.config.latent_dim)
 
         self.register_tokens = nn.Parameter(
             torch.empty(self.config.num_registers, self.config.latent_dim)
         )
-        nn.init.normal_(self.register_tokens, std=0.02)
 
         blocks = []
         for layer_idx in range(self.config.depth):
@@ -74,6 +72,35 @@ class WorldModelBackbone(nn.Module):
 
         self.final_norm = RMSNorm(self.config.latent_dim)
         self.output_proj = nn.Linear(self.config.latent_dim, self.config.input_dim)
+        
+        self.initialize_weights()
+        
+    def initialize_weights(self):
+        def _basic_init(module):
+            if isinstance(module, nn.Linear):
+                torch.nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.constant_(module.bias, 0)
+        self.apply(_basic_init)
+        
+        nn.init.normal_(self.base_action_embed, std=0.02)
+        nn.init.normal_(self.register_tokens, std=0.02)
+        
+        nn.init.zeros_(self.noise_embed[-1].weight)
+        nn.init.zeros_(self.noise_embed[-1].bias)
+        
+        with torch.no_grad():
+            self.action_proj.weight.mul_(0.1) # making it small
+        nn.init.zeros_(self.action_proj.bias)
+        
+        for block in self.layers:
+            nn.init.zeros_(block.spatial_attn.out_proj.weight)
+            if block.temporal_attn is not None:
+                nn.init.zeros_(block.temporal_attn.out_proj.weight)
+            nn.init.zeros_(block.mlp.w3.weight)
+        
+        nn.init.zeros_(self.output_proj.weight)
+        nn.init.zeros_(self.output_proj.bias)
 
     @staticmethod
     def _build_spatial_mask(

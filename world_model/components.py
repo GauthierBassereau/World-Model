@@ -53,13 +53,14 @@ class RMSNorm(nn.Module):
 class SwiGLUMlp(nn.Module):
     def __init__(self, dim: int, hidden_dim: int) -> None:
         super().__init__()
-        self.w1 = nn.Linear(dim, hidden_dim, bias=False)
-        self.w2 = nn.Linear(dim, hidden_dim, bias=False)
-        self.proj = nn.Linear(hidden_dim, dim, bias=False)
+        self.w12 = nn.Linear(dim, 2*hidden_dim, bias=False)
+        self.w3 = nn.Linear(hidden_dim, dim, bias=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        gated = F.silu(self.w1(x)) * self.w2(x)
-        return self.proj(gated)
+        x12 = self.w12(x)
+        x1, x2 = x12.chunk(2, dim=-1)
+        hidden = F.silu(x1) * x2
+        return self.w3(hidden)
 
 
 class SpatialAttention(nn.Module):

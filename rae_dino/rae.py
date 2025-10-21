@@ -26,7 +26,7 @@ class RAE(nn.Module):
     ):
         super().__init__()
         print(f"encoder_config_path: {dinov2_path}")
-        proc = AutoImageProcessor.from_pretrained(dinov2_path)
+        proc = AutoImageProcessor.from_pretrained(dinov2_path, use_fast=False)
         self.encoder_mean = torch.tensor(proc.image_mean).view(1, 3, 1, 1)
         self.encoder_std = torch.tensor(proc.image_std).view(1, 3, 1, 1)
         self.encoder = Dinov2withNorm(dinov2_path)
