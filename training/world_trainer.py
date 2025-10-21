@@ -16,7 +16,7 @@ from training.dataset import (
     WorldModelBatch,
     build_world_model_dataloader,
 )
-from training.diffusion import (
+from world_model.flow_matching import (
     DiffusionConfig,
     DimensionShiftedUniformScheduler,
     sample_base_noise,

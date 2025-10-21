@@ -1,10 +1,27 @@
-import math
+from dataclasses import dataclass
 
 import torch
+import math
+from typing import Protocol
 
-from .config import DiffusionConfig
 
+@dataclass
+class DiffusionConfig:
+    min_signal: float = 0.0
+    max_signal: float = 1.0
+    base_dimension: int = 4_096
+    noise_mean: float = 0.0
+    noise_std: float = 1.0
 
+    def validate(self) -> None:
+        if not 0.0 <= self.min_signal < self.max_signal <= 1.0:
+            raise ValueError("Expected 0.0 <= min_signal < max_signal <= 1.0 for flow matching.")
+        if self.base_dimension <= 0:
+            raise ValueError("diffusion.base_dimension must be strictly positive.")
+        std_tensor = torch.as_tensor(self.noise_std, dtype=torch.float32)
+        if torch.any(std_tensor <= 0):
+            raise ValueError("diffusion.noise_std must be strictly positive.")
+        
 class DimensionShiftedUniformScheduler:
     """
     Uniform signal sampler with the dimension-dependent shift introduced in DiT-RAE.
@@ -45,3 +62,32 @@ class DimensionShiftedUniformScheduler:
         max_signal = self._max_signal.to(device=device, dtype=base.dtype)
         shifted = base * (max_signal - min_signal) + min_signal
         return shifted.to(dtype=dtype)
+
+
+def sample_base_noise(latents: torch.Tensor, config: DiffusionConfig) -> torch.Tensor:
+    """Sample the base noise prior used for flow matching."""
+    mean = torch.as_tensor(
+        config.noise_mean,
+        device=latents.device,
+        dtype=latents.dtype,
+    )
+    std = torch.as_tensor(
+        config.noise_std,
+        device=latents.device,
+        dtype=latents.dtype,
+    )
+    noise = torch.randn_like(latents)
+    return noise * std + mean
+
+
+class DiffusionSolver(Protocol):
+    def sample(self, model, latents: torch.Tensor) -> torch.Tensor:
+        ...
+
+
+@dataclass
+class EulerSolver:
+    step_size: float = 1.0
+
+    def sample(self, model, latents: torch.Tensor) -> torch.Tensor:
+        raise NotImplementedError("EulerSolver is a placeholder; implement sampling before use.")

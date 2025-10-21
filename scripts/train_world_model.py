@@ -5,7 +5,7 @@ from training.world_trainer import (
     WorldModelTrainer,
     load_training_config,
 )
-from world_model.transformer import WorldModelBackbone
+from world_model.backbone import WorldModelBackbone
 
 
 def parse_args() -> argparse.Namespace:
@@ -45,7 +45,7 @@ def main() -> None:
     if args.resume:
         config.trainer.resume_checkpoint = str(args.resume)
     if args.single_batch_overfit:
-        config.trainer.single_batch_overfit = True
+        config.trainer.single_batch_overfit = True              
 
     model = WorldModelBackbone(config.world_model)
     trainer = WorldModelTrainer(config, model)
