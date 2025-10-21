@@ -90,6 +90,8 @@ class WorldModelTrainingConfig:
     diffusion: DiffusionConfig = DiffusionConfig()
     world_model: WorldModelConfig = WorldModelConfig()
     ema: EMAConfig = EMAConfig()
+    
+    
 def load_training_config(path: str | Path) -> WorldModelTrainingConfig:
     with open(path, "r", encoding="utf-8") as handle:
         raw: Dict[str, Any] = yaml.safe_load(handle)
@@ -348,14 +350,6 @@ class WorldModelTrainer:
                 target_velocity = target_velocity.to(pred_velocity.dtype)
             loss = F.mse_loss(pred_velocity, target_velocity)
             scaled_loss = loss / self.config.trainer.grad_accum_steps
-        denoised_latents = (base_noise + pred_velocity).detach()
-        self.logger.log_sample_sequence(
-            frame=frames_cpu[0, 0],
-            noisy_latent=noisy_latents[0, 0].detach(),
-            denoised_latent=denoised_latents[0, 0],
-            decode_latent=self.autoencoder.decode,
-            noise_level=tau[0, 0].detach(),
-        )
 
         if self.use_scaler:
             self.scaler.scale(scaled_loss).backward()

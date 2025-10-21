@@ -13,7 +13,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--config",
         type=Path,
-        default=Path("configs/world_model.yaml"),
+        default=Path("configs/pretraining.yaml"),
         help="Path to the YAML config file.",
     )
     parser.add_argument(

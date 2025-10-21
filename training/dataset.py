@@ -108,8 +108,8 @@ class LeRobotSequenceCollator:
             raise ValueError("DatasetConfig.cameras must contain at least one camera key.")
         if not self.cfg.action_key:
             raise ValueError("DatasetConfig.action_key must be provided to fetch actions.")
-        if not 0.0 <= self.cfg.independant_frame_probability <= 1.0:
-            raise ValueError("DatasetConfig.independant_frame_probability must be between 0 and 1.")
+        if not 0.0 <= self.cfg.independant_frames_probability <= 1.0:
+            raise ValueError("DatasetConfig.independant_frames_probability must be between 0 and 1.")
         if not 0.0 <= self.cfg.drop_action_probability <= 1.0:
             raise ValueError("DatasetConfig.drop_action_probability must be between 0 and 1.")
 
@@ -150,7 +150,7 @@ class LeRobotSequenceCollator:
             frames = self._prepare_frames(sample, camera_key, target_length)
             actions = self._prepare_actions(sample, target_length)
 
-            use_independant_frame = random.random() < self.cfg.independant_frame_probability
+            use_independant_frame = random.random() < self.cfg.independant_frames_probability
             drop_actions = random.random() < self.cfg.drop_action_probability
 
             if use_independant_frame:

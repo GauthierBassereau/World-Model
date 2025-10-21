@@ -15,7 +15,8 @@ from torch.utils.data import DataLoader
 
 if TYPE_CHECKING:
     from training.world_trainer import LoggingConfig
-
+    import wandb
+    
 
 def _create_local_logger() -> logging.Logger:
     logger = logging.getLogger("world_model_trainer")
@@ -67,9 +68,6 @@ class WorldModelLogger:
             import wandb  # type: ignore[attr-defined]
         except ImportError:
             self.info("Weights & Biases not available; skipping logging.")
-            self._wandb = None
-            self.wandb_run = None
-            return None
         self._wandb = wandb
         self.wandb_run = wandb.init(
             project=self.cfg.project,
@@ -169,83 +167,3 @@ class WorldModelLogger:
             self.wandb_run.log(logs, step=self.current_step, commit=False)
 
         self.noise_log_count += 1
-
-    def log_sample_sequence(
-        self,
-        frame: torch.Tensor,
-        noisy_latent: torch.Tensor,
-        denoised_latent: torch.Tensor,
-        decode_latent: Callable[[torch.Tensor], torch.Tensor],
-        noise_level: Optional[torch.Tensor],
-    ) -> None:
-        if self.sample_interval is None or self.sample_interval <= 0:
-            return
-        if self.current_step % self.sample_interval != 0 or self.current_micro_step != 0:
-            return
-
-        frame = frame.detach().to(dtype=torch.float32)
-        if frame.ndim != 3:
-            self.warning(
-                "log_sample_sequence expected frame with shape [C, H, W], got %s",
-                tuple(frame.shape),
-            )
-            return
-
-        if frame.max() > 1.5:
-            frame = frame / 255.0
-        frame = frame.clamp(0.0, 1.0)
-
-        self.info(
-            "Logging sample reconstruction at step=%d micro_step=%d.",
-            self.current_step,
-            self.current_micro_step,
-        )
-
-        if self.wandb_run is None or self._wandb is None:
-            return
-
-        decode_owner = getattr(decode_latent, "__self__", None)
-        decode_device = noisy_latent.device
-        if decode_owner is not None:
-            try:
-                decode_device = next(decode_owner.parameters()).device
-            except (StopIteration, AttributeError):  # pragma: no cover - defensive
-                decode_device = noisy_latent.device
-
-        def _decode_single(latent: torch.Tensor) -> torch.Tensor:
-            latent = latent.detach().unsqueeze(0).to(decode_device)
-            with torch.no_grad():
-                decoded = decode_latent(latent)
-            if decoded.ndim != 4 or decoded.shape[0] != 1:
-                raise ValueError(
-                    "decode_latent expected to return tensor with shape [1, C, H, W], "
-                    f"got {tuple(decoded.shape)}."
-                )
-            return decoded.squeeze(0).to(torch.float32)
-
-        try:
-            noisy_image = _decode_single(noisy_latent)
-            denoised_image = _decode_single(denoised_latent)
-        except Exception as exc:  # pragma: no cover - defensive logging
-            self.warning("Failed to decode latents for sample logging: %s", exc)
-            return
-
-        def _to_uint8_image(tensor: torch.Tensor) -> np.ndarray:
-            tensor = tensor.detach().clamp(0.0, 1.0)
-            array = tensor.mul(255).to(torch.uint8).permute(1, 2, 0).cpu().numpy()
-            return array
-
-        target_image = _to_uint8_image(frame)
-        noisy_image_np = _to_uint8_image(noisy_image)
-        denoised_image_np = _to_uint8_image(denoised_image)
-
-        self.wandb_run.log(
-            {
-                "sample/target": self._wandb.Image(target_image, caption="target"),
-                "sample/noisy": self._wandb.Image(noisy_image_np, caption="noisy"),
-                "sample/denoised": self._wandb.Image(denoised_image_np, caption="denoised"),
-                "sample/noise_level": float(noise_level),
-            },
-            step=self.current_step,
-            commit=False,
-        )

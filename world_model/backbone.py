@@ -134,14 +134,14 @@ class WorldModelBackbone(nn.Module):
         noisy_latents: torch.Tensor, # [Batch, Sequence, Tokens, Dimension]
         noise_levels: torch.Tensor, # [B, S, 1]
         actions: Optional[torch.Tensor] = None, # [B, S, D]
-        # --------- specific arguments for training purposes
+        # ------------------ specific arguments for training purposes
         independant_frames_mask: Optional[torch.Tensor] = None, # [B, 1]
         actions_mask: Optional[torch.Tensor] = None, # [B, 1]
     ) -> Dict[str, torch.Tensor]:
         batch_size, time_steps, latent_tokens, _ = noisy_latents.shape
         device = noisy_latents.device
 
-        # --------- preprocess the inputs and create tokens sequences
+        # ------------------ preprocess the inputs and create tokens sequences
         noisy_tokens = self.input_proj(noisy_latents)
         
         actions_embed = self.base_action_embed.view(1, 1, 1, -1).expand(batch_size, time_steps, 1, -1)
@@ -160,7 +160,7 @@ class WorldModelBackbone(nn.Module):
         x = torch.cat((register_tokens, noise_tokens, action_tokens, noisy_tokens), dim=2)
         tokens_per_frame = x.shape[2]
 
-        # --------- create attention masks and positional encodings
+        # ------------------ create attention masks and positional encodings
         spatial_mask = self._build_spatial_mask(
             latent_tokens, 
             self.config.num_registers, 
