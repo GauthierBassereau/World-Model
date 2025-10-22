@@ -3,7 +3,6 @@ from typing import Dict, Optional
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from world_model.components import (
     TransformerBlock,

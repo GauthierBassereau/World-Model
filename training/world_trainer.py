@@ -194,15 +194,7 @@ class WorldModelTrainer:
         self.logger.log_dataloader(self.dataloader)
 
     def _build_autoencoder(self, cfg: RAEVisionConfig) -> RAE:
-        return RAE(
-            encoder_input_size=cfg.target_size,
-            dinov2_path=cfg.encoder_repo_id,
-            decoder_config_path=cfg.decoder_config,
-            decoder_patch_size=cfg.decoder_patch_size,
-            pretrained_decoder_path=cfg.decoder_weights_path,
-            normalization_stat_path=cfg.normalization_stats_path,
-            noise_tau=cfg.noise_tau,
-        )
+        return RAE()
 
     def _resolve_device(self) -> torch.device:
         if self.config.trainer.device:

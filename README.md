@@ -30,3 +30,4 @@ Todos:
   - Create a proper evaluation module.
   - Add a DH head to backbone following RAE paper.
   - Need to rewrite the attentions with fused kernels
+  - Need to rewrite the attention module and simply permute the input so it becomes either spatial or temporal I am really dumb for not doing that before

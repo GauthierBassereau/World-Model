@@ -12,6 +12,7 @@ from typing import Any, Callable, Dict, Optional, TYPE_CHECKING
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from world_model.flow_matching import DiffusionConfig, EulerSolver, EulerSolverConfig
@@ -233,6 +234,7 @@ class WorldModelLogger:
             return
 
         seq_frames = frames[candidate_idx].detach()
+        seq_latents = latents[candidate_idx : candidate_idx + 1].detach()
         seq_noisy_latents = noisy_latents[candidate_idx : candidate_idx + 1].detach()
         seq_noise_levels = noise_levels[candidate_idx : candidate_idx + 1].detach()
 
@@ -264,13 +266,17 @@ class WorldModelLogger:
                 seq_noisy_latents,
                 initial_signal=seq_noise_levels,
                 **model_kwargs,
-            ).squeeze(0)
+            )
 
         if was_training:
             model.train()
 
         noisy_decoded = self._decode_sequence(seq_noisy_latents.squeeze(0))
-        denoised_decoded = self._decode_sequence(denoised_latents)
+        denoised_decoded = self._decode_sequence(denoised_latents.squeeze(0))
+
+        noisy_clean_mse = float(F.mse_loss(seq_noisy_latents, seq_latents).item())
+        denoised_clean_mse = float(F.mse_loss(denoised_latents, seq_latents).item())
+        signal_level = float(seq_noise_levels.mean().item())
 
         videos = {
             "samples/original_frames": self._video_from_frames(seq_frames),
@@ -281,7 +287,22 @@ class WorldModelLogger:
         wandb_videos = {
             key: self._wandb.Video(value, fps=fps_value, format="mp4") for key, value in videos.items()
         }
-        self.wandb_run.log(wandb_videos, step=self.current_step, commit=False)
+        if self.wandb_run is not None:
+            scalar_logs = {
+                "samples/selected_signal_level": signal_level,
+                "samples/noisy_clean_mse": noisy_clean_mse,
+                "samples/denoised_clean_mse": denoised_clean_mse,
+            }
+            self.wandb_run.log(scalar_logs, step=self.current_step, commit=False)
+            self.wandb_run.log(wandb_videos, step=self.current_step, commit=False)
+        self.info(
+            "step=%d candidate_idx=%d signal=%.4f mse(noisy,clean)=%.6f mse(denoised,clean)=%.6f",
+            self.current_step,
+            candidate_idx,
+            signal_level,
+            noisy_clean_mse,
+            denoised_clean_mse,
+        )
         
     def _decode_sequence(self, latents: torch.Tensor) -> torch.Tensor:
         if latents.ndim != 3:

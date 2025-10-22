@@ -14,7 +14,7 @@ trainer:
   precision: bf16
   seed: 230503
   device: cuda
-  resume_checkpoint: null
+  resume_checkpoint: checkpoints/world_model_step_002000.pt
   single_batch_overfit: true
 
 dataloader:
@@ -25,7 +25,7 @@ dataloader:
 
 optimizer:
   lr: 2.0e-4
-  betas: [0.9, 0.95]
+  betas: [0.9, 0.99] # 0.9, 0.95
   weight_decay: 0.0
   eps: 1.0e-08
   grad_clip_norm: 1.0
@@ -52,7 +52,7 @@ diffusion:
   noise_std: 1.0
 
 ema:
-  enabled: false # Not sure Dreamerv4 uses it, but usually Flow matching training is better with it so...
+  enabled: true # Not sure Dreamerv4 uses it, but usually Flow matching training is better with it so...
   decay: 0.998
   device: null
 
