@@ -32,6 +32,7 @@ optimizer:
 
 dataset:
   repo_id: lerobot/droid_1.0.1
+  use_streaming: true
   cameras:
     - observation.images.exterior_1_left
     - observation.images.exterior_2_left

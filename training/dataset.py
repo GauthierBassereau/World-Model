@@ -22,6 +22,7 @@ class DataloaderConfig:
 @dataclass
 class DatasetConfig:
     repo_id: str = "lerobot/droid_1.0.1"
+    use_streaming: bool = False
     cameras: Sequence[str] = (
         "observation.images.exterior_1_left",
         "observation.images.exterior_2_left",
@@ -265,17 +266,29 @@ def build_world_model_dataloader(
     device = device or torch.device("cpu")
     metadata = LeRobotDatasetMetadata(dataset_cfg.repo_id)
     delta_timestamps = _ensure_delta_timestamps(dataset_cfg, metadata)
-    dataset = LeRobotDataset(
-        dataset_cfg.repo_id,
-        episodes=list(dataset_cfg.episodes) if dataset_cfg.episodes else None,
-        delta_timestamps=delta_timestamps,
-    )
+    if dataset_cfg.use_streaming:
+        from lerobot.datasets.streaming_dataset import StreamingLeRobotDataset
+
+        dataset = StreamingLeRobotDataset(
+            dataset_cfg.repo_id,
+            episodes=list(dataset_cfg.episodes) if dataset_cfg.episodes else None,
+            delta_timestamps=delta_timestamps,
+            shuffle=dataloader_cfg.shuffle,
+        )
+        shuffle = False
+    else:
+        dataset = LeRobotDataset(
+            dataset_cfg.repo_id,
+            episodes=list(dataset_cfg.episodes) if dataset_cfg.episodes else None,
+            delta_timestamps=delta_timestamps,
+        )
+        shuffle = dataloader_cfg.shuffle
 
     collate = LeRobotSequenceCollator(dataset_cfg, device=device)
     return DataLoader(
         dataset,
         batch_size=dataloader_cfg.batch_size,
-        shuffle=dataloader_cfg.shuffle,
+        shuffle=shuffle,
         num_workers=dataloader_cfg.num_workers,
         pin_memory=dataloader_cfg.pin_memory,
         collate_fn=collate,

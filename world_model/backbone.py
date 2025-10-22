@@ -21,7 +21,7 @@ class WorldModelConfig:
     mlp_multiplier: float = 4.0
     temporal_attention_interval: int = 4
     temporal_context_length: int = 30
-    rope_base: float = 10_000.0
+    rope_base: float = 1000.0
     qk_norm_eps: float = 1e-6
 
 

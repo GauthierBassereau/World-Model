@@ -7,13 +7,14 @@ optimization loop.
 """
 
 import logging
-from typing import Any, Callable, Dict, Optional, TYPE_CHECKING
+from typing import Any, Callable, Dict, Iterable, Optional, TYPE_CHECKING
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
+from torch.optim import Optimizer
 
 from world_model.flow_matching import DiffusionConfig, EulerSolver, EulerSolverConfig
 
@@ -135,6 +136,34 @@ class WorldModelLogger:
                     {f"train/{key}": value for key, value in metrics.items()},
                     step=self.current_step,
                 )
+
+    def process_gradients(
+        self,
+        *,
+        model: nn.Module,
+        optimizer: Optimizer,
+        scaler: Optional[torch.amp.GradScaler] = None,
+        clip_norm: Optional[float] = None,
+    ) -> Dict[str, float]:
+        if scaler is not None:
+            scaler.unscale_(optimizer)
+
+        params_with_grad = [param for param in model.parameters() if param.grad is not None]
+        if not params_with_grad:
+            return {}
+
+        if clip_norm is not None:
+            total_norm = torch.nn.utils.clip_grad_norm_(params_with_grad, clip_norm)
+        else:
+            total_norm = self._compute_grad_norm(params_with_grad)
+            if total_norm is None:
+                return {}
+
+        if isinstance(total_norm, torch.Tensor):
+            grad_norm = float(total_norm.detach().cpu().item())
+        else:
+            grad_norm = float(total_norm)
+        return {"grad_norm": grad_norm}
 
     def log_distr_noise(self, tau: torch.Tensor, bins: int = 50) -> None:
         if self.noise_log_limit is not None and self.noise_log_count >= self.noise_log_limit:
@@ -332,3 +361,16 @@ class WorldModelLogger:
         if self._sample_fps is None:
             return 10
         return max(1, int(round(self._sample_fps)))
+
+    @staticmethod
+    def _compute_grad_norm(parameters: Iterable[torch.nn.Parameter]) -> Optional[float]:
+        norm_sq: Optional[torch.Tensor] = None
+        for param in parameters:
+            grad = param.grad
+            if grad is None:
+                continue
+            value = grad.detach().float().pow(2).sum()
+            norm_sq = value if norm_sq is None else norm_sq + value
+        if norm_sq is None:
+            return None
+        return float(norm_sq.sqrt().item())

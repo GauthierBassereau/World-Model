@@ -14,7 +14,7 @@ class RAE(nn.Module):
         self,
         # ---- encoder configs ----
         dinov2_path: str = "facebook/dinov2-with-registers-base",
-        encoder_input_size: int = 224,  # always 224 for Dinov2
+        encoder_input_size: int = 224,  # always 224 because decoder is expecting this.
         # ---- decoder configs ----
         decoder_config_path: str = "rae_dino/decoder/config.json",
         decoder_patch_size: int = 16,

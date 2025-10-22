@@ -279,11 +279,12 @@ class WorldModelTrainer:
                 for key, value in metrics.items():
                     accum_metrics[key] = accum_metrics.get(key, 0.0) + value
 
-            if self.config.optimizer.grad_clip_norm:
-                torch.nn.utils.clip_grad_norm_(
-                    self.model.parameters(),
-                    self.config.optimizer.grad_clip_norm,
-                )
+            grad_metrics = self.logger.process_gradients(
+                model=self.model,
+                optimizer=self.optimizer,
+                scaler=self.scaler if self.use_scaler else None,
+                clip_norm=self.config.optimizer.grad_clip_norm,
+            )
 
             if self.use_scaler:
                 self.scaler.step(self.optimizer)
@@ -297,6 +298,8 @@ class WorldModelTrainer:
             mean_metrics = {
                 key: value / self.config.trainer.grad_accum_steps for key, value in accum_metrics.items()
             }
+            if grad_metrics:
+                mean_metrics.update(grad_metrics)
             self.logger.log_training_metrics(mean_metrics)
 
             if (

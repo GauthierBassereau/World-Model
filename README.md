@@ -26,6 +26,6 @@ Potential very interesting datasets:
   - agibot_alpha (https://huggingface.co/datasets/cadene/agibot_alpha_v30)
 
 Todos:
-  - Change from v prediction to x prediction following dreamerv4 paper, need to understand the maths behind too because I am really not sure about the why.
-  - Create a proper evaluation module.
+  - Evaluation
+  - Change from v prediction to x prediction following dreamerv4 paper, see exactly how they do it.
   - Add a DH head to backbone following RAE paper.
