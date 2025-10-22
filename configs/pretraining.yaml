@@ -71,7 +71,6 @@ world_model:
   temporal_attention_interval: 4
   temporal_context_length: 2
   rope_base: 1000.0
-  attn_logit_soft_cap: 50.0
   qk_norm_eps: 1.0e-06
 
 ode_solver: # this is for logging and evaluation

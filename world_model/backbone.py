@@ -22,7 +22,6 @@ class WorldModelConfig:
     temporal_attention_interval: int = 4
     temporal_context_length: int = 30
     rope_base: float = 10_000.0
-    attn_logit_soft_cap: float = 50.0
     qk_norm_eps: float = 1e-6
 
 
@@ -37,7 +36,7 @@ class WorldModelBackbone(nn.Module):
             else nn.Identity()
         )
 
-        # For now it is a simple SiLU MLP, like used in other diffusion models, but need to check I think there are more options
+        # For now it is a simple SiLU MLP, like used in other diffusion models, but need to check I think there are more options, see in RAE and Lightning DiT they talk about GaussianFourierEmbedding
         self.noise_embed = nn.Sequential(
             nn.Linear(1, self.config.latent_dim),
             nn.SiLU(),
@@ -61,7 +60,6 @@ class WorldModelBackbone(nn.Module):
                     dim=self.config.latent_dim,
                     num_heads=self.config.num_heads,
                     mlp_multiplier=self.config.mlp_multiplier,
-                    attn_logit_soft_cap=self.config.attn_logit_soft_cap,
                     qk_norm_eps=self.config.qk_norm_eps,
                     use_temporal=use_temporal,
                     frozen_prefix_tokens=self.config.num_registers + 2,
@@ -212,6 +210,7 @@ class WorldModelBackbone(nn.Module):
             str(device),
         )
 
+        # ------------------ finally layers
         for block in self.layers:
             x = block(
                 x,

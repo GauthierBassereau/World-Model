@@ -29,5 +29,3 @@ Todos:
   - Change from v prediction to x prediction following dreamerv4 paper, need to understand the maths behind too because I am really not sure about the why.
   - Create a proper evaluation module.
   - Add a DH head to backbone following RAE paper.
-  - Need to rewrite the attentions with fused kernels
-  - Need to rewrite the attention module and simply permute the input so it becomes either spatial or temporal I am really dumb for not doing that before
