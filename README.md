@@ -19,13 +19,18 @@
 - Temporal layers share KV caches (GQA) for efficiency; employ QKNorm, attention logit soft capping, pre-layer RMSNorm, and SwiGLU MLPs.
 - Sequence per step: `[register tokens | latent tokens | shortcut tokens | action tokens]`, with learned embeddings standing in for unknown actions on raw clips.
 
----
+## 4. Data
 
-Potential very interesting datasets:
-  - airoa-moma (https://huggingface.co/datasets/airoa-org/airoa-moma)
-  - agibot_alpha (https://huggingface.co/datasets/cadene/agibot_alpha_v30)
+1/ Learning diverse world dynamics, interactions between objects -> Ego4D, Something-Something V2, EPIC-KITCHENS
+2/ Learning robot interactions + action conditioning with world -> DROID, SOAR, agibot_alpha
+
+Note: in Ego4D, SSv2 and EPIC-KITCHENS, we could also learn language conditioning, adding some vla data could be interesting too
+
+---
 
 Todos:
   - Evaluation
-  - Change from v prediction to x prediction following dreamerv4 paper, see exactly how they do it.
+  - Change from v prediction to x prediction following dreamerv4 paper.
+  - the noise schedule is not the same at all in RAE and Dreamerv4, might need some experiments.
   - Add a DH head to backbone following RAE paper.
+  - Shortcut forcing
