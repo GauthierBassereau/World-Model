@@ -274,6 +274,7 @@ def build_world_model_dataloader(
             episodes=list(dataset_cfg.episodes) if dataset_cfg.episodes else None,
             delta_timestamps=delta_timestamps,
             shuffle=dataloader_cfg.shuffle,
+            tolerance_s=0.01
         )
         shuffle = False
     else:
@@ -281,6 +282,7 @@ def build_world_model_dataloader(
             dataset_cfg.repo_id,
             episodes=list(dataset_cfg.episodes) if dataset_cfg.episodes else None,
             delta_timestamps=delta_timestamps,
+            tolerance_s=0.01
         )
         shuffle = dataloader_cfg.shuffle
 

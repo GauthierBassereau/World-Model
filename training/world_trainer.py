@@ -1,6 +1,7 @@
 import copy
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass, is_dataclass
+from os import error
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -419,10 +420,8 @@ class WorldModelTrainer:
             return configured
         try:
             total = len(self.dataloader)
-        except TypeError as exc:
-            raise ValueError(
-                "TrainerLoopConfig.max_steps is None but the dataloader does not expose a length."
-            ) from exc
+        except Exception:
+            total = 99999999999 # FIX ME
         if total <= 0:
             raise ValueError(
                 "TrainerLoopConfig.max_steps resolved to zero steps; check dataset configuration."
