@@ -38,6 +38,7 @@ class WorldModelEvaluator:
         autoencoder: RAE,
         device: Optional[torch.device] = None,
         solver_cfg: Optional[EulerSolverConfig] = None,
+        context_signal_level: Optional[float] = None,
     ) -> None:
         self.training_cfg = training_cfg
         self.model = model.eval()
@@ -54,6 +55,16 @@ class WorldModelEvaluator:
         self.diffusion_cfg: DiffusionConfig = training_cfg.diffusion
         self.solver_cfg = solver_cfg or EulerSolverConfig()
         self.solver = EulerSolver(self.solver_cfg)
+        resolved_signal = (
+            self.solver_cfg.max_signal if context_signal_level is None else float(context_signal_level)
+        )
+        min_signal = float(self.solver_cfg.min_signal)
+        max_signal = float(self.solver_cfg.max_signal)
+        if resolved_signal < min_signal or resolved_signal > max_signal:
+            raise ValueError(
+                f"context_signal_level={resolved_signal} must lie within [{min_signal}, {max_signal}]."
+            )
+        self.context_signal_level = resolved_signal
 
     # --------------------------------------------------------------------- factory
     @classmethod
@@ -72,6 +83,7 @@ class WorldModelEvaluator:
             autoencoder=autoencoder,
             device=device,
             solver_cfg=cfg.solver,
+            context_signal_level=cfg.context_signal_level,
         )
         evaluator._load_checkpoint(checkpoint_path, use_ema=cfg.use_ema_weights)
         return evaluator
@@ -349,7 +361,7 @@ class WorldModelEvaluator:
 
         context_noise = torch.full(
             (batch, current_len),
-            fill_value=self.solver_cfg.max_signal,
+            fill_value=self.context_signal_level,
             device=device,
             dtype=dtype,
         )

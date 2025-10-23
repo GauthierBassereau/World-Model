@@ -14,6 +14,7 @@ class EvaluatorConfig:
     device: Optional[str] = None
     use_ema_weights: bool = True
     solver: EulerSolverConfig = field(default_factory=EulerSolverConfig)
+    context_signal_level: float = 0.9
 
 
 @dataclass
