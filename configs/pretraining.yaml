@@ -32,13 +32,13 @@ optimizer:
 
 dataset:
   repo_id: lerobot/droid_1.0.1
-  use_streaming: true
+  use_streaming: false
   cameras:
     - observation.images.exterior_1_left
     - observation.images.exterior_2_left
   action_key: observation.state.cartesian_position
   action_representation: "delta"
-  episodes: null
+  episodes: [1, 2, 3, 4, 5]
   sequence_length_distribution: # Dreamerv4 doesn't specify the proportion but I'll guess 0.8 short batches at the begginning and towards the end go to full long batches probably. For now let's keep small batches, will implement the evolution of this distribution later.
     4: 0.8
     6: 0.2

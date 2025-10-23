@@ -79,15 +79,7 @@ class WorldModelEvaluator:
     @staticmethod
     def _build_autoencoder(cfg: WorldModelTrainingConfig) -> RAE:
         vision = cfg.vision
-        autoencoder = RAE(
-            dinov2_path=vision.encoder_repo_id,
-            encoder_input_size=vision.target_size,
-            decoder_config_path=vision.decoder_config,
-            decoder_patch_size=vision.decoder_patch_size,
-            pretrained_decoder_path=vision.decoder_weights_path,
-            noise_tau=0.0,
-            normalization_stat_path=vision.normalization_stats_path,
-        )
+        autoencoder = RAE()
         autoencoder.eval()
         return autoencoder
 

@@ -271,7 +271,7 @@ def build_world_model_dataloader(
 
         dataset = StreamingLeRobotDataset(
             dataset_cfg.repo_id,
-            episodes=list(dataset_cfg.episodes) if dataset_cfg.episodes else None,
+            episodes=None,
             delta_timestamps=delta_timestamps,
             shuffle=dataloader_cfg.shuffle,
             tolerance_s=0.01
