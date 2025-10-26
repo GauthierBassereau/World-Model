@@ -21,8 +21,8 @@
 
 ## 4. Data
 
-1/ Learning diverse world dynamics, interactions between objects -> HowTo100M, Ego4D, Something-Something V2, EPIC-KITCHENS
-2/ Learning robot interactions + action conditioning with world -> DROID, SOAR, agibot_alpha
+-  Learning diverse world dynamics, interactions between objects -> HowTo100M, Ego4D, Something-Something V2, EPIC-KITCHENS
+-  Learning robot interactions + action conditioning with world -> DROID, SOAR, agibot_alpha
 
 Note: most of this dataset have language instruction for each task -> I wonder how fast the WM can learn to condition its generation on text instead of action.
 

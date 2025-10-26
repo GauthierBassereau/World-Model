@@ -276,9 +276,7 @@ class WorldModelTrainer:
             for accum_idx in range(self.config.trainer.grad_accum_steps):
                 self.logger.start_micro_step(accum_idx)
                 batch, data_iter = self._next_batch(data_iter)
-                metrics = self._train_micro_step(
-                    batch,
-                )
+                metrics = self._train_micro_step(batch)
                 for key, value in metrics.items():
                     accum_metrics[key] = accum_metrics.get(key, 0.0) + value
 
@@ -334,7 +332,7 @@ class WorldModelTrainer:
 
         latents = self._encode_frames(frames)
 
-        tau, tau_weights = self.scheduler.sample(latents) # High singal level -> tau around 1
+        tau, tau_weights = self.scheduler.sample(latents) # High signal level -> tau around 1
         base_noise = sample_base_noise(latents, self.flow_cfg)
         tau_factor = tau.unsqueeze(-1).unsqueeze(-1)
         noisy_latents = (1.0 - tau_factor) * base_noise + tau_factor * latents

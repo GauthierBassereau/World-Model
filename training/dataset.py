@@ -28,9 +28,12 @@ class DatasetConfig:
         "observation.images.exterior_2_left",
     )
     camera_probabilities: Optional[Dict[str, float]] = None
-    action_key: Optional[str] = "observation.state.cartesian_position"
+    action_keys: Sequence[str] = (
+        "observation.state.cartesian_position",
+        "observation.state.gripper_position",
+    )
     action_representation: ActionRepresentation = "delta"
-    episodes: Optional[Sequence[int]] = None
+    episodes: Optional[Sequence[int]] = None # None -> all
     sequence_length_distribution: Dict[int, float] = field(default_factory=lambda: {4: 1.0})
     frame_delta_seconds: float | str = 5.0 / 15.0
     independant_frames_probability: float = 0.0
@@ -46,6 +49,14 @@ class DatasetConfig:
             int(length): float(weight)
             for length, weight in self.sequence_length_distribution.items()
         }
+        keys: Sequence[str]
+        if isinstance(self.action_keys, str):
+            keys = (self.action_keys,)
+        else:
+            keys = tuple(self.action_keys)
+        if not keys:
+            raise ValueError("DatasetConfig.action_keys must contain at least one key.")
+        self.action_keys = keys
         if self.action_representation not in {"delta", "position"}:
             raise ValueError(
                 "DatasetConfig.action_representation must be either 'delta' or 'position'."
@@ -91,8 +102,8 @@ def _ensure_delta_timestamps(
     offsets = [-step * i for i in range(max_length - 1, -1, -1)]
     delta = {camera: list(offsets) for camera in dataset_cfg.cameras}
 
-    if dataset_cfg.action_key:
-        delta[dataset_cfg.action_key] = list(offsets)
+    for key in dataset_cfg.action_keys:
+        delta[key] = list(offsets)
     return delta
 
 
@@ -107,8 +118,8 @@ class LeRobotSequenceCollator:
 
         if not self.cfg.cameras:
             raise ValueError("DatasetConfig.cameras must contain at least one camera key.")
-        if not self.cfg.action_key:
-            raise ValueError("DatasetConfig.action_key must be provided to fetch actions.")
+        if not self.cfg.action_keys:
+            raise ValueError("DatasetConfig.action_keys must contain at least one key.")
         if not 0.0 <= self.cfg.independant_frames_probability <= 1.0:
             raise ValueError("DatasetConfig.independant_frames_probability must be between 0 and 1.")
         if not 0.0 <= self.cfg.drop_action_probability <= 1.0:
@@ -208,17 +219,27 @@ class LeRobotSequenceCollator:
         sample: Dict[str, torch.Tensor],
         target_length: int,
     ) -> torch.Tensor:
-        actions = sample[self.cfg.action_key].to(self.device)
-        if actions.ndim == 1:
-            actions = actions.unsqueeze(-1)
-        if actions.ndim != 2:
-            raise ValueError(f"Expected actions of shape [T, D], got {tuple(actions.shape)}.")
-        if actions.shape[0] != self.max_sequence_length:
-            raise ValueError(
-                f"Expected action sequence of length {self.max_sequence_length}, got {actions.shape[0]}."
-            )
+        action_parts: List[torch.Tensor] = []
+        for key in self.cfg.action_keys:
+            if key not in sample:
+                raise KeyError(f"Sample is missing required action key '{key}'.")
+            part = sample[key].to(self.device)
+            if part.ndim == 1:
+                part = part.unsqueeze(-1)
+            if part.ndim != 2:
+                raise ValueError(
+                    f"Expected action '{key}' to have shape [T, D], got {tuple(part.shape)}."
+                )
+            if part.shape[0] != self.max_sequence_length:
+                raise ValueError(
+                    f"Action '{key}' has length {part.shape[0]}, expected {self.max_sequence_length}."
+                )
+            action_parts.append(part.to(torch.float32))
 
-        actions = actions.to(torch.float32)[-target_length:].contiguous()
+        if not action_parts:
+            raise ValueError("No action data collected; check DatasetConfig.action_keys.")
+
+        actions = torch.cat(action_parts, dim=-1)[-target_length:].contiguous()
         if self.cfg.action_representation == "delta":
             deltas = actions[1:] - actions[:-1]
             result = torch.zeros(

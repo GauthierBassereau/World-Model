@@ -36,15 +36,17 @@ dataset:
   cameras:
     - observation.images.exterior_1_left
     - observation.images.exterior_2_left
-  action_key: observation.state.cartesian_position
+  action_keys:
+    - observation.state.cartesian_position
+    - observation.state.gripper_position
   action_representation: "delta"
   episodes: [1, 2, 3, 4, 5]
   sequence_length_distribution: # Dreamerv4 doesn't specify the proportion but I'll guess 0.8 short batches at the begginning and towards the end go to full long batches probably. For now let's keep small batches, will implement the evolution of this distribution later.
     4: 0.8
     6: 0.2
   frame_delta_seconds: 5.0 / 15.0
-  independant_frames_probability: 0.3 # 0.3 # from Dreamerv4
-  drop_action_probability: 0.85 # 0.85 # from Dreamerv4
+  independant_frames_probability: 0.3 # from Dreamerv4
+  drop_action_probability: 0.8 # from Dreamerv4, this should be enough
 
 diffusion:
   base_dimension: 4096 # from RAE paper, to determine noise schedule depending on effective latent dimension
@@ -66,7 +68,7 @@ vision:
 world_model: # ~400M parameters
   input_dim: 768
   latent_dim: 1024 # From RAE paper this needs to be > input_dim
-  action_dim: 6
+  action_dim: 7 # 6 for cartesian position + 1 for gripper
   num_registers: 4
   depth: 24
   num_heads: 16
