@@ -104,6 +104,12 @@ def main() -> None:
     rae.to(device)
     rae.eval()
 
+    encoder_params = sum(p.numel() for p in rae.encoder.parameters())
+    decoder_params = sum(p.numel() for p in rae.decoder.parameters())
+    print(f"Number of parameters in encoder: {encoder_params}")
+    print(f"Number of parameters in decoder: {decoder_params}")
+    
+
     image_tensor = load_image(args.image_path, device)
 
     with torch.no_grad():

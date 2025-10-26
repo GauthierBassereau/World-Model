@@ -17,7 +17,7 @@ class WorldModelConfig:
     action_dim: int = 6
     num_registers: int = 4
     depth: int = 24
-    num_heads: int = 12
+    num_heads: int = 16
     mlp_multiplier: float = 4.0
     temporal_attention_interval: int = 4
     temporal_context_length: int = 30
@@ -224,3 +224,10 @@ class WorldModelBackbone(nn.Module):
         pred_velocity = self.output_proj(latents)
         
         return {"pred_velocity": pred_velocity}
+
+
+if __name__ == "__main__":
+    config = WorldModelConfig()
+    model = WorldModelBackbone(config)
+    total_parameters = sum(param.numel() for param in model.parameters() if param.requires_grad)
+    print(f"Trainable parameters with default config: {total_parameters:,}")

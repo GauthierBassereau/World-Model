@@ -21,16 +21,19 @@
 
 ## 4. Data
 
-1/ Learning diverse world dynamics, interactions between objects -> Ego4D, Something-Something V2, EPIC-KITCHENS
+1/ Learning diverse world dynamics, interactions between objects -> HowTo100M, Ego4D, Something-Something V2, EPIC-KITCHENS
 2/ Learning robot interactions + action conditioning with world -> DROID, SOAR, agibot_alpha
 
-Note: in Ego4D, SSv2 and EPIC-KITCHENS, we could also learn language conditioning, adding some vla data could be interesting too
+Note: most of this dataset have language instruction for each task -> I wonder how fast the WM can learn to condition its generation on text instead of action.
 
 ---
 
 Todos:
-  - Evaluation
-  - Change from v prediction to x prediction following dreamerv4 paper.
-  - the noise schedule is not the same at all in RAE and Dreamerv4, might need some experiments.
-  - Add a DH head to backbone following RAE paper.
+  - Use weighting of loss depending on noise instead of noise scheduler, I do not know why this is not the standard
+  - Change from v prediction to x prediction following dreamerv4 paper
+  - Add gripper value to actions !
+  - Review evaluation code, for now has been vibe-coded by codex, add an eval pipeline to the trainer too
+  - Make something to visualize the attention masks
+  - Add one of the non-robot dataset
+  - Add a DH head to backbone following RAE paper
   - Shortcut forcing

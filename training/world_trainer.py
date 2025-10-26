@@ -1,7 +1,7 @@
 import copy
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass, is_dataclass
-from os import error
+from functools import partial
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -71,24 +71,12 @@ class EMAConfig:
 
 
 @dataclass
-class RAEVisionConfig:
-    encoder_repo_id: str = "facebook/dinov2-with-registers-base"
-    decoder_config: str = "vit_mae-base"
-    decoder_patch_size: int = 16
-    decoder_weights_path: Optional[str] = None
-    normalization_stats_path: Optional[str] = None
-    target_size: int = 224
-    noise_tau: float = 0.0
-
-
-@dataclass
 class WorldModelTrainingConfig:
     dataset: DatasetConfig = DatasetConfig()
     dataloader: DataloaderConfig = DataloaderConfig()
     optimizer: OptimizerConfig = OptimizerConfig()
     trainer: TrainerLoopConfig = TrainerLoopConfig()
     logging: LoggingConfig = LoggingConfig()
-    vision: RAEVisionConfig = RAEVisionConfig()
     diffusion: DiffusionConfig = DiffusionConfig()
     world_model: WorldModelConfig = WorldModelConfig()
     ema: EMAConfig = EMAConfig()
@@ -107,7 +95,6 @@ def load_training_config(path: str | Path) -> WorldModelTrainingConfig:
         optimizer=OptimizerConfig(**raw.get("optimizer", {})),
         trainer=TrainerLoopConfig(**raw.get("trainer", {})),
         logging=LoggingConfig(**raw.get("logging", {})),
-        vision=RAEVisionConfig(**raw.get("vision", {})),
         diffusion=DiffusionConfig(**diffusion_kwargs),
         world_model=WorldModelConfig(**world_model_kwargs),
         ema=EMAConfig(**raw.get("ema", {})),
@@ -179,10 +166,25 @@ class WorldModelTrainer:
             weight_decay=config.optimizer.weight_decay,
             eps=config.optimizer.eps,
         )
+        autocast_enabled = config.trainer.precision in {"bf16", "fp16"} and self.device.type == "cuda"
+        autocast_dtype = torch.bfloat16 if config.trainer.precision == "bf16" else torch.float16
+        if autocast_enabled:
+            self._autocast_scope = partial(
+                torch.autocast,
+                device_type=self.device.type,
+                dtype=autocast_dtype,
+                enabled=True,
+            )
+        else:
+            self._autocast_scope = nullcontext  
         self.use_scaler = config.trainer.precision == "fp16" and self.device.type == "cuda" # don't need to use scaler with bf16 since it rarely overflows in practice (from very safe source)
-        self.use_autocast = config.trainer.precision in {"bf16", "fp16"} and self.device.type == "cuda"
-        self.autocast_dtype = torch.bfloat16 if config.trainer.precision == "bf16" else torch.float16
         self.scaler = torch.amp.GradScaler(enabled=self.use_scaler)
+        self.logger.info(
+            "AMP settings: autocast=%s (dtype=%s), grad_scaler=%s",
+            autocast_enabled,
+            autocast_dtype if autocast_enabled else None,
+            self.use_scaler,
+        )
 
         self.global_step = 0
         self._maybe_load_checkpoint()
@@ -194,7 +196,7 @@ class WorldModelTrainer:
 
         self.logger.log_dataloader(self.dataloader)
 
-    def _build_autoencoder(self, cfg: RAEVisionConfig) -> RAE:
+    def _build_autoencoder(self) -> RAE:
         return RAE()
 
     def _resolve_device(self) -> torch.device:
@@ -342,7 +344,6 @@ class WorldModelTrainer:
             self.model,
             latents=latents.detach(),
             noisy_latents=noisy_latents.detach(),
-            frames=frames_cpu.detach(),
             noise_levels=tau.detach(),
             actions=actions.detach() if actions is not None else None,
             actions_mask=actions_mask.detach() if actions_mask is not None else None,
@@ -351,16 +352,7 @@ class WorldModelTrainer:
             else None,
         )
 
-        if self.use_autocast:
-            autocast_ctx = torch.autocast(
-                device_type=self.device.type,
-                dtype=self.autocast_dtype,
-                enabled=True,
-            )
-        else:
-            autocast_ctx = nullcontext()
-
-        with autocast_ctx:
+        with self._autocast_scope():
             outputs = self.model(
                 noisy_latents,
                 noise_levels=tau,
@@ -374,10 +366,8 @@ class WorldModelTrainer:
             loss = F.mse_loss(pred_velocity, target_velocity)
             scaled_loss = loss / self.config.trainer.grad_accum_steps
 
-        if self.use_scaler:
-            self.scaler.scale(scaled_loss).backward()
-        else:
-            scaled_loss.backward()
+
+        self.scaler.scale(scaled_loss).backward()
 
         return {
             "loss": float(loss.detach().cpu()),
@@ -386,15 +376,9 @@ class WorldModelTrainer:
 
     @torch.no_grad()
     def _encode_frames(self, frames: torch.Tensor) -> torch.Tensor:
-        if frames.ndim != 5:
-            raise ValueError(f"Expected frames with shape [B, T, C, H, W], got {tuple(frames.shape)}.")
         batch, steps, channels, height, width = frames.shape
         flat = frames.view(batch * steps, channels, height, width)
         latents = self.autoencoder.encode(flat)
-        if latents.ndim != 3:
-            raise ValueError(
-                f"Autoencoder returned shape {tuple(latents.shape)}; expected [N, tokens, dim]."
-            )
         tokens, dim = latents.shape[1], latents.shape[2]
         return latents.view(batch, steps, tokens, dim)
 
@@ -410,6 +394,7 @@ class WorldModelTrainer:
         try:
             batch = next(data_iter)
         except StopIteration:
+            self.logger.warning("Data iterator exhausted (StopIteration); reinitializing dataloader iterator.")
             data_iter = iter(self.dataloader)
             batch = next(data_iter)
         return batch, data_iter
@@ -420,7 +405,7 @@ class WorldModelTrainer:
             return configured
         try:
             total = len(self.dataloader)
-        except Exception:
+        except Exception: # for iter dataset (i.e. LeRobotStreaming), there is no length...
             total = 99999999999 # FIX ME
         if total <= 0:
             raise ValueError(

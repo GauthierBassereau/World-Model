@@ -66,6 +66,7 @@ class WorldModelLogger:
         self._solver = EulerSolver(euler_cfg)
         self._decode_latents = decode_fn
         self._sample_fps = sample_fps
+        self._sample_logged_this_step = False
 
     # ------------------------------------------------------------------ helpers
     def info(self, message: str, *args: Any, **kwargs: Any) -> None:
@@ -104,6 +105,7 @@ class WorldModelLogger:
     def start_step(self, step: int) -> None:
         self.current_step = step
         self.current_micro_step = 0
+        self._sample_logged_this_step = False
 
     def start_micro_step(self, micro_step: int) -> None:
         self.current_micro_step = micro_step
@@ -220,7 +222,6 @@ class WorldModelLogger:
         *,
         latents: torch.Tensor,
         noisy_latents: torch.Tensor,
-        frames: torch.Tensor,
         noise_levels: torch.Tensor,
         actions: Optional[torch.Tensor] = None,
         actions_mask: Optional[torch.Tensor] = None,
@@ -231,17 +232,17 @@ class WorldModelLogger:
             or self.wandb_run is None
             or self._wandb is None
             or self.current_step % self.sample_interval != 0
-            or self.current_micro_step != 0
+            or self._sample_logged_this_step
         ):
             return
 
         if self._decode_latents is None:
             return
 
-        if frames.ndim != 5 or latents.ndim != 4 or noisy_latents.ndim != 4:
+        if latents.ndim != 4 or noisy_latents.ndim != 4:
             return
 
-        batch_size = frames.shape[0]
+        batch_size = latents.shape[0]
         candidate_idx: Optional[int] = None
         for idx in range(batch_size):
             independent = False
@@ -262,7 +263,6 @@ class WorldModelLogger:
         if candidate_idx is None:
             return
 
-        seq_frames = frames[candidate_idx].detach()
         seq_latents = latents[candidate_idx : candidate_idx + 1].detach()
         seq_noisy_latents = noisy_latents[candidate_idx : candidate_idx + 1].detach()
         seq_noise_levels = noise_levels[candidate_idx : candidate_idx + 1].detach()
@@ -301,6 +301,7 @@ class WorldModelLogger:
             model.train()
 
         noisy_decoded = self._decode_sequence(seq_noisy_latents.squeeze(0))
+        clean_decoded = self._decode_sequence(seq_latents.squeeze(0))
         denoised_decoded = self._decode_sequence(denoised_latents.squeeze(0))
 
         noisy_clean_mse = float(F.mse_loss(seq_noisy_latents, seq_latents).item())
@@ -308,7 +309,7 @@ class WorldModelLogger:
         signal_level = float(seq_noise_levels.mean().item())
 
         videos = {
-            "samples/original_frames": self._video_from_frames(seq_frames),
+            "samples/clean_reconstruction": self._video_from_frames(clean_decoded),
             "samples/noisy_reconstruction": self._video_from_frames(noisy_decoded),
             "samples/denoised_reconstruction": self._video_from_frames(denoised_decoded),
         }
@@ -332,7 +333,7 @@ class WorldModelLogger:
             noisy_clean_mse,
             denoised_clean_mse,
         )
-        
+        self._sample_logged_this_step = True
     def _decode_sequence(self, latents: torch.Tensor) -> torch.Tensor:
         if latents.ndim != 3:
             raise ValueError("Expected latents with shape [T, tokens, dim] for decoding.")

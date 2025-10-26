@@ -11,6 +11,7 @@ class DiffusionConfig:
     min_signal: float = 0.0
     max_signal: float = 1.0
     base_dimension: int = 4_096
+    effective_latent_dimension: int = 196_608 # 768*16*16
     noise_mean: float = 0.0
     noise_std: float = 1.0
 
@@ -22,7 +23,8 @@ class DiffusionConfig:
         std_tensor = torch.as_tensor(self.noise_std, dtype=torch.float32)
         if torch.any(std_tensor <= 0):
             raise ValueError("diffusion.noise_std must be strictly positive.")
-        
+
+
 class DimensionShiftedUniformScheduler:
     """
     Uniform signal sampler with the dimension-dependent shift introduced in DiT-RAE.
@@ -30,39 +32,26 @@ class DimensionShiftedUniformScheduler:
     The scheduler draws baseline values from U(0, 1) and shifts them according to the effective
     latent dimensionality before mapping to [min_signal, max_signal].
     """
-
     def __init__(self, config: DiffusionConfig) -> None:
         self.config = config
         self._min_signal = torch.tensor(config.min_signal, dtype=torch.float32)
         self._max_signal = torch.tensor(config.max_signal, dtype=torch.float32)
+        self.alpha = math.sqrt(float(config.effective_latent_dimension) / float(self.config.base_dimension))
 
     def sample(self, latents: torch.Tensor) -> torch.Tensor:
-        if latents.ndim != 4:
-            raise ValueError("Expected latents to have shape [B, T, tokens, dim].")
-
         batch, steps, tokens, dim = latents.shape
-        if tokens <= 0 or dim <= 0:
-            raise ValueError("Latents must contain at least one token with non-zero dimension.")
-
         device = latents.device
         dtype = latents.dtype
 
-        base = torch.rand((batch, steps), device=device, dtype=torch.float32)
+        base = torch.rand((batch, steps), dtype=torch.float32)
 
-        effective_dim = float(tokens * dim)
-        alpha = math.sqrt(effective_dim / float(self.config.base_dimension))
-        if not math.isfinite(alpha) or alpha <= 0.0:
-            raise ValueError(
-                f"Invalid dimension shift factor derived from tokens={tokens}, dim={dim}, "
-                f"base_dimension={self.config.base_dimension}."
-            )
-        if not math.isclose(alpha, 1.0):
-            base = (alpha * base) / (1.0 + (alpha - 1.0) * base)
+        if not math.isclose(self.alpha, 1.0):
+            base = (self.alpha * base) / (1.0 + (self.alpha - 1.0) * base)
 
-        min_signal = self._min_signal.to(device=device, dtype=base.dtype)
-        max_signal = self._max_signal.to(device=device, dtype=base.dtype)
+        min_signal = self._min_signal
+        max_signal = self._max_signal
         shifted = base * (max_signal - min_signal) + min_signal
-        return shifted.to(dtype=dtype)
+        return shifted.to(device=device, dtype=dtype)
 
 
 def sample_base_noise(latents: torch.Tensor, config: DiffusionConfig) -> torch.Tensor:
