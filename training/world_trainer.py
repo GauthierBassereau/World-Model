@@ -141,8 +141,8 @@ class WorldModelTrainer:
 
         euler_cfg = EulerSolverConfig(
             step_size=EulerSolverConfig().step_size,
-            min_signal=self.flow_cfg.min_signal,
-            max_signal=self.flow_cfg.max_signal,
+            min_signal=0.0,
+            max_signal=1.0,
         )
         frame_delta = self.config.dataset.frame_delta_seconds
         sample_fps = 1.0 / frame_delta if frame_delta > 0 else None
@@ -176,7 +176,7 @@ class WorldModelTrainer:
                 enabled=True,
             )
         else:
-            self._autocast_scope = nullcontext  
+            self._autocast_scope = nullcontext
         self.use_scaler = config.trainer.precision == "fp16" and self.device.type == "cuda" # don't need to use scaler with bf16 since it rarely overflows in practice (from very safe source)
         self.scaler = torch.amp.GradScaler(enabled=self.use_scaler)
         self.logger.info(
@@ -334,12 +334,11 @@ class WorldModelTrainer:
 
         latents = self._encode_frames(frames)
 
-        tau = self.scheduler.sample(latents)
+        tau, tau_weights = self.scheduler.sample(latents) # High singal level -> tau around 1
         base_noise = sample_base_noise(latents, self.flow_cfg)
         tau_factor = tau.unsqueeze(-1).unsqueeze(-1)
         noisy_latents = (1.0 - tau_factor) * base_noise + tau_factor * latents
-        target_velocity = latents - base_noise
-        self.logger.log_distr_noise(tau)
+        self.logger.log_distr_noise(tau, weights=tau_weights)
         self.logger.maybe_log_micro_step_video(
             self.model,
             latents=latents.detach(),
@@ -360,14 +359,19 @@ class WorldModelTrainer:
                 independant_frames_mask=independant_frames_mask,
                 actions_mask=actions_mask,
             )
-            pred_velocity = outputs.get("pred_velocity")
-            if pred_velocity.dtype != target_velocity.dtype:
-                target_velocity = target_velocity.to(pred_velocity.dtype)
-            loss = F.mse_loss(pred_velocity, target_velocity)
+            pred_clean_latents = outputs.get("pred_clean_latents")
+            if pred_clean_latents.dtype != latents.dtype:
+                latents = latents.to(pred_clean_latents.dtype)
+                tau_weights = tau_weights.to(pred_clean_latents.dtype)
+            mse = F.mse_loss(pred_clean_latents, latents, reduction="none")
+            mse = mse.mean(dim=(-1, -2))
+            loss = (mse * tau_weights.to(mse.dtype)).mean()
             scaled_loss = loss / self.config.trainer.grad_accum_steps
 
-
-        self.scaler.scale(scaled_loss).backward()
+        if self.use_scaler:
+            self.scaler.scale(scaled_loss).backward()
+        else:
+            scaled_loss.backward()
 
         return {
             "loss": float(loss.detach().cpu()),

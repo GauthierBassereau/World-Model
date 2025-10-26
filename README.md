@@ -29,8 +29,6 @@ Note: most of this dataset have language instruction for each task -> I wonder h
 ---
 
 Todos:
-  - Use weighting of loss depending on noise instead of noise scheduler, I do not know why this is not the standard
-  - Change from v prediction to x prediction following dreamerv4 paper
   - Add gripper value to actions !
   - Review evaluation code, for now has been vibe-coded by codex, add an eval pipeline to the trainer too
   - Make something to visualize the attention masks

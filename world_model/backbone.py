@@ -221,9 +221,9 @@ class WorldModelBackbone(nn.Module):
             )
 
         latents = self.final_norm(x[..., self.config.num_registers + 2 :, :])
-        pred_velocity = self.output_proj(latents)
-        
-        return {"pred_velocity": pred_velocity}
+        pred_clean_latents = self.output_proj(latents)
+
+        return {"pred_clean_latents": pred_clean_latents}
 
 
 if __name__ == "__main__":

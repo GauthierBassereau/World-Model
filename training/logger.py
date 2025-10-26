@@ -53,16 +53,10 @@ class WorldModelLogger:
         self.noise_log_count = 0
         self.current_step = 0
         self.current_micro_step = 0
-        self._tau_running_mean = 0.0
-        self._tau_running_std = 0.0
-        self._tau_stat_count = 0
         self.wandb_run: Optional["wandb.sdk.wandb_run.Run"] = None
         self._wandb = None
-        if (
-            euler_cfg.min_signal != diffusion_cfg.min_signal
-            or euler_cfg.max_signal != diffusion_cfg.max_signal
-        ):
-            raise ValueError("Euler solver bounds must match diffusion bounds.")
+        if not (euler_cfg.min_signal == 0.0 and euler_cfg.max_signal == 1.0):
+            raise ValueError("Euler solver bounds must be [0.0, 1.0].")
         self._solver = EulerSolver(euler_cfg)
         self._decode_latents = decode_fn
         self._sample_fps = sample_fps
@@ -167,7 +161,12 @@ class WorldModelLogger:
             grad_norm = float(total_norm)
         return {"grad_norm": grad_norm}
 
-    def log_distr_noise(self, tau: torch.Tensor, bins: int = 50) -> None:
+    def log_distr_noise(
+        self,
+        tau: torch.Tensor,
+        weights: Optional[torch.Tensor] = None,
+        bins: int = 50,
+    ) -> None:
         if self.noise_log_limit is not None and self.noise_log_count >= self.noise_log_limit:
             return
 
@@ -175,43 +174,49 @@ class WorldModelLogger:
         if values.numel() == 0:
             return
 
-        min_val = float(values.min().item())
-        max_val = float(values.max().item())
-        mean_val = float(values.mean().item())
-        std_val = float(values.std(unbiased=False).item()) if values.numel() > 1 else 0.0
-        hist = torch.histc(values, bins=bins, min=min_val, max=max_val) if values.numel() > 1 else values
-
-        self._tau_stat_count += 1
-        self._tau_running_mean += (mean_val - self._tau_running_mean) / self._tau_stat_count
-        self._tau_running_std += (std_val - self._tau_running_std) / self._tau_stat_count
-
-        self.debug(
-            "step=%d micro_step=%d | tau mean=%.4f std=%.4f min=%.4f max=%.4f bins=%d | running mean=%.4f std=%.4f",
-            self.current_step,
-            self.current_micro_step,
-            mean_val,
-            std_val,
-            min_val,
-            max_val,
-            bins if values.numel() > 1 else 1,
-            self._tau_running_mean,
-            self._tau_running_std,
-        )
-        self.debug(
-            "Tau histogram counts: %s",
-            hist.tolist() if values.numel() > 1 else [float(values.item())],
-        )
+        weight_values: Optional[torch.Tensor] = None
+        if weights is not None:
+            if weights.shape != tau.shape:
+                raise ValueError("Weights tensor must match tau shape for logging.")
+            weight_values = weights.detach().to(dtype=torch.float32).flatten()
 
         if self.wandb_run is not None and self._wandb is not None:
-            logs: Dict[str, Any] = {
-                "noise/tau_mean": mean_val,
-                "noise/tau_std": std_val,
-                "noise/tau_running_mean": self._tau_running_mean,
-                "noise/tau_running_std": self._tau_running_std,
-            }
-            if values.numel() > 1:
-                logs["noise/tau_histogram"] = self._wandb.Histogram(values.cpu().numpy())
-            self.wandb_run.log(logs, step=self.current_step, commit=False)
+            logs: Dict[str, Any] = {}
+            edges = torch.linspace(0.0, 1.0, bins + 1, device=values.device)
+            centers = 0.5 * (edges[:-1] + edges[1:])
+            if weight_values is not None:
+                indices = torch.bucketize(values, edges, right=True) - 1
+                indices = indices.clamp(min=0, max=bins - 1)
+                weight_hist = torch.zeros(bins, device=values.device, dtype=torch.float32)
+                weight_hist.scatter_add_(0, indices, weight_values)
+                histogram = torch.stack([centers, weight_hist], dim=1)
+                logs["noise/tau_weight_histogram"] = self._wandb.Table(
+                    data=histogram.detach().cpu().tolist(),
+                    columns=["tau", "weight_sum"],
+                )
+                self.debug(
+                    "Logged tau-weight histogram for %d samples (bins=%d).",
+                    int(weight_values.numel()),
+                    bins,
+                )
+            else:
+                indices = torch.bucketize(values, edges, right=True) - 1
+                indices = indices.clamp(min=0, max=bins - 1)
+                counts = torch.zeros(bins, device=values.device, dtype=torch.float32)
+                ones = torch.ones_like(values)
+                counts.scatter_add_(0, indices, ones)
+                histogram = torch.stack([centers, counts], dim=1)
+                logs["noise/tau_histogram"] = self._wandb.Table(
+                    data=histogram.detach().cpu().tolist(),
+                    columns=["tau", "count"],
+                )
+                self.debug(
+                    "Logged tau histogram for %d samples (bins=%d).",
+                    int(values.numel()),
+                    bins,
+                )
+            if logs:
+                self.wandb_run.log(logs, step=self.current_step, commit=False)
 
         self.noise_log_count += 1
 

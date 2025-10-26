@@ -47,11 +47,12 @@ dataset:
   drop_action_probability: 0.85 # 0.85 # from Dreamerv4
 
 diffusion:
-  min_signal: 0.0
-  max_signal: 1.0
   base_dimension: 4096 # from RAE paper, to determine noise schedule depending on effective latent dimension
   noise_mean: 0.0   # Set noise_mean=0.0 and noise_std=1.0 to recover a unit Gaussian prior.
   noise_std: 1.0
+  signal_weighting: dimension # {"dimension", "linear", "none"}; "dimension" reproduces the DiT-RAE schedule via importance weights
+  linear_weight_slope: 0.9 # used when signal_weighting == "linear"; weight(s) = intercept + slope * s with s in [0, 1]
+  linear_weight_intercept: 0.1
 
 ema:
   enabled: true # Not sure Dreamerv4 uses it, but usually Flow matching training is better with it so...
@@ -73,7 +74,7 @@ world_model: # ~400M parameters
   temporal_attention_interval: 4
   temporal_context_length: 4
   rope_base: 1000.0
-  qk_norm_eps: 1.0e-06 # RAE doesn't use qk norm...
+  qk_norm_eps: 1.0e-06 # Put None for no QK norm, RAE doesn't use, Dreamerv4 does, but I think it is better to use for this kind of world model rollouts, safer.
 
 ode_solver: # this is for logging and evaluation
   step_size: float = 0.02 # 50 steps generation

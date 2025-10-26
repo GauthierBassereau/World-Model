@@ -424,10 +424,11 @@ class WorldModelEvaluator:
                 actions_mask=full_mask,
                 independant_frames_mask=independent_mask,
             )
-            velocity = outputs.get("pred_velocity")
-            if velocity is None:
-                raise RuntimeError("Model output missing 'pred_velocity'.")
-            return {"pred_velocity": velocity[:, -1:, :, :]}
+            pred_clean = outputs.get("pred_clean_latents")
+            if pred_clean is None:
+                raise RuntimeError("Model output missing 'pred_clean_latents'.")
+            tail_length = latents.shape[1]
+            return {"pred_clean_latents": pred_clean[:, -tail_length:, :, :]}
 
         sampled = self.solver.sample(
             conditioned_forward,

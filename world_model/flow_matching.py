@@ -8,50 +8,74 @@ import torch
 # ------------------------------------------------------------------ Scheduler and Noise sampler
 @dataclass
 class DiffusionConfig:
-    min_signal: float = 0.0
-    max_signal: float = 1.0
     base_dimension: int = 4_096
     effective_latent_dimension: int = 196_608 # 768*16*16
     noise_mean: float = 0.0
     noise_std: float = 1.0
+    signal_weighting: str = "dimension"  # {"dimension", "linear", "none"}
+    linear_weight_slope: float = 0.9
+    linear_weight_intercept: float = 0.1
 
     def validate(self) -> None:
-        if not 0.0 <= self.min_signal < self.max_signal <= 1.0:
-            raise ValueError("Expected 0.0 <= min_signal < max_signal <= 1.0 for flow matching.")
         if self.base_dimension <= 0:
             raise ValueError("diffusion.base_dimension must be strictly positive.")
         std_tensor = torch.as_tensor(self.noise_std, dtype=torch.float32)
         if torch.any(std_tensor <= 0):
             raise ValueError("diffusion.noise_std must be strictly positive.")
+        mode = self.signal_weighting.lower()
+        if mode not in {"dimension", "linear", "none"}:
+            raise ValueError(
+                "diffusion.signal_weighting must be one of {'dimension', 'linear', 'none'}."
+            )
+        if mode == "linear":
+            intercept = float(self.linear_weight_intercept)
+            slope = float(self.linear_weight_slope)
+            if intercept < 0.0:
+                raise ValueError("Linear weighting intercept must be non-negative.")
+            if intercept + slope < 0.0:
+                raise ValueError("Linear weighting must remain non-negative over [0, 1].")
 
 
 class DimensionShiftedUniformScheduler:
     """
-    Uniform signal sampler with the dimension-dependent shift introduced in DiT-RAE.
+    Uniform signal sampler with optional importance weights matching the DiT-RAE schedule.
 
-    The scheduler draws baseline values from U(0, 1) and shifts them according to the effective
-    latent dimensionality before mapping to [min_signal, max_signal].
+    The scheduler draws baseline values from U(0, 1), keeps them in that range, and returns
+    per-sample weights so downstream losses can be reweighted without resampling.
     """
     def __init__(self, config: DiffusionConfig) -> None:
         self.config = config
-        self._min_signal = torch.tensor(config.min_signal, dtype=torch.float32)
-        self._max_signal = torch.tensor(config.max_signal, dtype=torch.float32)
         self.alpha = math.sqrt(float(config.effective_latent_dimension) / float(self.config.base_dimension))
+        self._weighting_mode = config.signal_weighting.lower()
+        self._linear_slope = float(config.linear_weight_slope)
+        self._linear_intercept = float(config.linear_weight_intercept)
 
-    def sample(self, latents: torch.Tensor) -> torch.Tensor:
+    def sample(self, latents: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         batch, steps, tokens, dim = latents.shape
         device = latents.device
         dtype = latents.dtype
 
-        base = torch.rand((batch, steps), dtype=torch.float32)
+        base = torch.rand((batch, steps), dtype=torch.float32, device=device)
 
-        if not math.isclose(self.alpha, 1.0):
-            base = (self.alpha * base) / (1.0 + (self.alpha - 1.0) * base)
+        weights = self._compute_weights(base)
+        weights = weights.to(device=device, dtype=dtype)
+        return base.to(device=device, dtype=dtype), weights
 
-        min_signal = self._min_signal
-        max_signal = self._max_signal
-        shifted = base * (max_signal - min_signal) + min_signal
-        return shifted.to(device=device, dtype=dtype)
+    def _compute_weights(self, base: torch.Tensor) -> torch.Tensor:
+        mode = self._weighting_mode
+        if mode == "none":
+            return torch.ones_like(base)
+        if mode == "linear":
+            weights = self._linear_intercept + self._linear_slope * base
+            return torch.clamp(weights, min=0.0)
+        if mode == "dimension":
+            if math.isclose(self.alpha, 1.0):
+                return torch.ones_like(base)
+            denom = self.alpha - (self.alpha - 1.0) * base
+            denom = torch.clamp(denom, min=1e-8)
+            weights = self.alpha / (denom * denom)
+            return weights
+        raise RuntimeError(f"Unsupported weighting mode: {mode}")
 
 
 def sample_base_noise(latents: torch.Tensor, config: DiffusionConfig) -> torch.Tensor:
@@ -176,17 +200,28 @@ class EulerSolver:
             model_inputs["noise_levels"] = noise_levels
             outputs = model(current_latents, **model_inputs)
             if not isinstance(outputs, dict):
-                raise TypeError("Model is expected to return a dict with a 'pred_velocity' entry.")
-            velocity = outputs.get("pred_velocity")
-            if velocity is None:
-                raise KeyError("Model output is missing required 'pred_velocity'.")
-            if velocity.shape != current_latents.shape:
+                raise TypeError("Model is expected to return a dict with a 'pred_clean_latents' entry.")
+            pred_clean = outputs.get("pred_clean_latents")
+            if pred_clean is None:
+                raise KeyError("Model output is missing required 'pred_clean_latents'.")
+            if pred_clean.shape != current_latents.shape:
                 raise ValueError(
-                    "Model returned 'pred_velocity' with shape "
-                    f"{tuple(velocity.shape)}, expected {tuple(current_latents.shape)}."
+                    "Model returned 'pred_clean_latents' with shape "
+                    f"{tuple(pred_clean.shape)}, expected {tuple(current_latents.shape)}."
                 )
-            if velocity.dtype != dtype:
-                velocity = velocity.to(dtype)
+            if pred_clean.dtype != dtype:
+                pred_clean = pred_clean.to(dtype)
+
+            denom = 1.0 - noise_levels
+            valid = denom > 1e-5
+            denom = torch.where(valid, denom, torch.ones_like(denom))
+            denom = denom.unsqueeze(-1).unsqueeze(-1)
+            velocity = (pred_clean - current_latents) / denom
+            velocity = torch.where(
+                valid.unsqueeze(-1).unsqueeze(-1),
+                velocity,
+                torch.zeros_like(velocity),
+            )
 
             delta = (target_signal - current_signal).clamp(min=0.0, max=cfg.step_size)
             delta_factor = delta.unsqueeze(-1).unsqueeze(-1)
