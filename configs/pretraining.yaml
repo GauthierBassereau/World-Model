@@ -9,7 +9,7 @@ logging:
   tau_log_limit: 500
 
 trainer:
-  max_steps: null # null means no limit
+  max_steps: null
   grad_accum_steps: 16
   precision: bf16
   seed: 230503
