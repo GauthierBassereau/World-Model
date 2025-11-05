@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """CLI utility to encode and decode a single image with the RAE."""
 
 import argparse

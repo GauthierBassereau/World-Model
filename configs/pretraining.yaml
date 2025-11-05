@@ -19,7 +19,7 @@ trainer:
 
 dataloader:
   batch_size: 8
-  shuffle: false
+  shuffle: true
   num_workers: 0 # need to check why but I get errors with num_workers > 0
   pin_memory: true
 
@@ -32,18 +32,22 @@ optimizer:
 
 dataset:
   repo_id: lerobot/droid_1.0.1
-  use_streaming: false
+  use_streaming: true
+  video_backend: null # torchcodec by default
   cameras:
     - observation.images.exterior_1_left
     - observation.images.exterior_2_left
   action_keys:
-    - observation.state.cartesian_position
-    - observation.state.gripper_position
+    - observation.state
   action_representation: "delta"
-  episodes: [1, 2, 3, 4, 5]
+  action_normalization: "mean_std" # {"min_max", "mean_std"}
+  action_normalization_params: 
+    mean: [0,0,0,0,0,0,0,0]
+    std: [0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2]
+  #episodes: null # [1, 2, 3, 4, 5]
   sequence_length_distribution: # Dreamerv4 doesn't specify the proportion but I'll guess 0.8 short batches at the begginning and towards the end go to full long batches probably. For now let's keep small batches, will implement the evolution of this distribution later.
-    4: 0.8
-    6: 0.2
+    9: 0.8
+    12: 0.2
   frame_delta_seconds: 5.0 / 15.0
   independant_frames_probability: 0.3 # from Dreamerv4
   drop_action_probability: 0.8 # from Dreamerv4, this should be enough

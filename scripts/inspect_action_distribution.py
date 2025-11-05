@@ -37,6 +37,15 @@ def parse_args() -> argparse.Namespace:
         help="Path where the histogram figure will be saved (default: action_distribution.png).",
     )
     parser.add_argument(
+        "--stats-output",
+        type=Path,
+        default=Path("configs/action_distribution_stats.pt"),
+        help=(
+            "Path where per-dimension action statistics (mean/std/min/max) will be saved "
+            "as a PyTorch file (default: action_distribution_stats.pt)."
+        ),
+    )
+    parser.add_argument(
         "--batch-size",
         type=int,
         default=None,
@@ -96,6 +105,7 @@ def collect_action_samples(
     seed: int,
 ) -> np.ndarray:
     action_vectors = []
+    last_report_count = -1
 
     iterator = iter(loader)
     with torch.no_grad():
@@ -115,10 +125,19 @@ def collect_action_samples(
 
             for vector in valid:
                 action_vectors.append(vector.cpu().numpy())
+                current_count = len(action_vectors)
+                if current_count != last_report_count:
+                    print(
+                        f"Collecting action vectors: {current_count}/{num_samples}",
+                        end="\r",
+                        flush=True,
+                    )
+                    last_report_count = current_count
                 if len(action_vectors) >= num_samples:
                     break
 
     stacked = np.stack(action_vectors, axis=0)
+    print()  # ensure the next print starts on a new line
     return stacked
 
 
@@ -153,6 +172,11 @@ def main() -> None:
         batch_size_override=args.batch_size,
         preserve_dropout=args.preserve_dropout,
     )
+    try:
+        dataset_length = len(loader.dataset)
+        print(f"Dataset length: {dataset_length}")
+    except TypeError:
+        print("Dataset length: unknown (dataset does not define __len__)")
     print(
         f"Sampling up to {args.num_samples} action vectors "
         f"using batch_size={dataloader_cfg.batch_size} from dataset..."
@@ -162,9 +186,27 @@ def main() -> None:
 
     means = samples.mean(axis=0)
     stds = samples.std(axis=0)
+    minimums = samples.min(axis=0)
+    maximums = samples.max(axis=0)
+
     print("Per-dimension summary statistics:")
-    for idx, (mean, std) in enumerate(zip(means, stds)):
-        print(f"  dim {idx:02d} | mean={mean:+.4f} std={std:.4f}")
+    for idx, (mean, std, min_val, max_val) in enumerate(zip(means, stds, minimums, maximums)):
+        print(
+            f"  dim {idx:02d} | mean={mean:+.4f} std={std:.4f} "
+            f"min={min_val:+.4f} max={max_val:+.4f}"
+        )
+
+    args.stats_output.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {
+            "mean": torch.tensor(means, dtype=torch.float32),
+            "std": torch.tensor(stds, dtype=torch.float32),
+            "min": torch.tensor(minimums, dtype=torch.float32),
+            "max": torch.tensor(maximums, dtype=torch.float32),
+        },
+        args.stats_output,
+    )
+    print(f"Statistics saved to {args.stats_output.resolve()}")
 
     plot_histograms(samples, args.output)
     print(f"Histogram saved to {args.output.resolve()}")

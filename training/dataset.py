@@ -9,6 +9,7 @@ from torch.utils.data import DataLoader
 from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
 
 ActionRepresentation = Literal["delta", "position"]
+ActionNormalizationType = Literal["min_max", "mean_std"]
 
 
 @dataclass
@@ -23,16 +24,18 @@ class DataloaderConfig:
 class DatasetConfig:
     repo_id: str = "lerobot/droid_1.0.1"
     use_streaming: bool = False
+    video_backend: str = None
     cameras: Sequence[str] = (
         "observation.images.exterior_1_left",
         "observation.images.exterior_2_left",
     )
     camera_probabilities: Optional[Dict[str, float]] = None
     action_keys: Sequence[str] = (
-        "observation.state.cartesian_position",
-        "observation.state.gripper_position",
+        "observation.state"
     )
     action_representation: ActionRepresentation = "delta"
+    action_normalization: Optional[ActionNormalizationType] = None
+    action_normalization_params: Optional[Dict[str, Sequence[float]]] = None
     episodes: Optional[Sequence[int]] = None # None -> all
     sequence_length_distribution: Dict[int, float] = field(default_factory=lambda: {4: 1.0})
     frame_delta_seconds: float | str = 5.0 / 15.0
@@ -61,6 +64,50 @@ class DatasetConfig:
             raise ValueError(
                 "DatasetConfig.action_representation must be either 'delta' or 'position'."
             )
+
+        if self.action_normalization not in {None, "min_max", "mean_std"}:
+            raise ValueError(
+                "DatasetConfig.action_normalization must be one of None, 'min_max', or 'mean_std'."
+            )
+        if self.action_normalization is None:
+            if self.action_normalization_params is not None:
+                raise ValueError(
+                    "action_normalization_params provided without a corresponding action_normalization."
+                )
+        else:
+            if self.action_normalization_params is None:
+                raise ValueError(
+                    "action_normalization_params must be provided when action_normalization is set."
+                )
+            expected_keys = {"min", "max"} if self.action_normalization == "min_max" else {"mean", "std"}
+            provided_keys = set(self.action_normalization_params.keys())
+            missing = expected_keys - provided_keys
+            extra = provided_keys - expected_keys
+            if missing:
+                raise ValueError(
+                    "action_normalization_params missing required entries: " + ", ".join(sorted(missing))
+                )
+            if extra:
+                raise ValueError(
+                    "action_normalization_params contains unexpected entries: " + ", ".join(sorted(extra))
+                )
+            first_key = next(iter(expected_keys))
+            first_value = self.action_normalization_params[first_key]
+            if not isinstance(first_value, Sequence):
+                raise TypeError(
+                    f"action_normalization_params['{first_key}'] must be a sequence of floats."
+                )
+            reference_length = len(first_value)
+            for key in expected_keys:
+                value = self.action_normalization_params[key]
+                if not isinstance(value, Sequence):
+                    raise TypeError(
+                        f"action_normalization_params['{key}'] must be a sequence of floats."
+                    )
+                if len(value) != reference_length:
+                    raise ValueError(
+                        "All action_normalization_params sequences must have the same length."
+                    )
 
 
 @dataclass
@@ -148,6 +195,8 @@ class LeRobotSequenceCollator:
         self.sequence_length_choices, self.sequence_length_probs = (
             self._build_sequence_length_distribution()
         )
+        self._normalization_dim: Optional[int] = None
+        self._normalization_params: Optional[Dict[str, torch.Tensor]] = None
 
     def __call__(self, samples: Iterable[Dict[str, torch.Tensor]]) -> WorldModelBatch:
         target_length = self._sample_sequence_length()
@@ -248,8 +297,62 @@ class LeRobotSequenceCollator:
                 device=deltas.device,
             )
             result[1:] = deltas
-            return result
+            actions = result
+        if self.cfg.action_normalization:
+            actions = self._normalize_actions(actions)
         return actions
+
+    def _normalize_actions(self, actions: torch.Tensor) -> torch.Tensor:
+        if not self.cfg.action_normalization:
+            return actions
+        self._ensure_normalization_tensors(actions.shape[-1])
+        if not self._normalization_params:
+            return actions
+        offset = self._normalization_params["offset"].to(
+            device=actions.device, dtype=actions.dtype
+        )
+        scale = self._normalization_params["scale"].to(
+            device=actions.device, dtype=actions.dtype
+        )
+        return (actions - offset) / scale
+
+    def _ensure_normalization_tensors(self, feature_dim: int) -> None:
+        if self._normalization_params is not None:
+            if self._normalization_dim != feature_dim:
+                raise ValueError(
+                    "Configured action normalization dimension does not match the action tensor."
+                )
+            return
+        params = self.cfg.action_normalization_params
+        if params is None:
+            raise ValueError("action_normalization_params are required for normalization.")
+        norm_type = self.cfg.action_normalization
+        if norm_type == "min_max":
+            raw_min = torch.as_tensor(params["min"], dtype=torch.float32, device=self.device)
+            raw_max = torch.as_tensor(params["max"], dtype=torch.float32, device=self.device)
+            if raw_min.ndim != 1 or raw_max.ndim != 1:
+                raise ValueError("min and max normalization parameters must be 1D sequences.")
+            if raw_min.shape[0] != feature_dim or raw_max.shape[0] != feature_dim:
+                raise ValueError("Normalization parameter length does not match action dimension.")
+            scale = raw_max - raw_min
+            if torch.any(scale <= 0):
+                raise ValueError("For min-max normalization, each max must be greater than min.")
+            offset = raw_min
+        elif norm_type == "mean_std":
+            raw_mean = torch.as_tensor(params["mean"], dtype=torch.float32, device=self.device)
+            raw_std = torch.as_tensor(params["std"], dtype=torch.float32, device=self.device)
+            if raw_mean.ndim != 1 or raw_std.ndim != 1:
+                raise ValueError("mean and std normalization parameters must be 1D sequences.")
+            if raw_mean.shape[0] != feature_dim or raw_std.shape[0] != feature_dim:
+                raise ValueError("Normalization parameter length does not match action dimension.")
+            if torch.any(raw_std <= 0):
+                raise ValueError("Standard deviation entries must be strictly positive.")
+            offset = raw_mean
+            scale = raw_std
+        else:
+            raise ValueError("Unsupported action normalization type provided.")
+        self._normalization_dim = feature_dim
+        self._normalization_params = {"offset": offset, "scale": scale}
 
     def _build_sequence_length_distribution(self) -> Tuple[List[int], List[float]]:
         choices: List[int] = []
@@ -295,7 +398,7 @@ def build_world_model_dataloader(
             episodes=None,
             delta_timestamps=delta_timestamps,
             shuffle=dataloader_cfg.shuffle,
-            tolerance_s=0.01
+            tolerance_s=0.01,
         )
         shuffle = False
     else:
@@ -303,7 +406,8 @@ def build_world_model_dataloader(
             dataset_cfg.repo_id,
             episodes=list(dataset_cfg.episodes) if dataset_cfg.episodes else None,
             delta_timestamps=delta_timestamps,
-            tolerance_s=0.01
+            tolerance_s=0.01,
+            video_backend=dataset_cfg.video_backend,
         )
         shuffle = dataloader_cfg.shuffle
 

@@ -10,4 +10,5 @@ __pycache__/
 
 archive/important_papers_text/
 wandb/
+logs/
 AGENTS.md
