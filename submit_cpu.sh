@@ -21,7 +21,7 @@ sbatch \
   --job-name="$name" \
   --output="logs/%x.out" \
   --nodes=1 --ntasks-per-node=1 \
-  --mem=32G --time=00:15:00 \
+  --mem=32G --time=00:05:00 \
   --export=ALL \
   --wrap "bash -lc '
     set -euo pipefail

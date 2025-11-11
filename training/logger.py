@@ -45,9 +45,11 @@ class WorldModelLogger:
         euler_cfg: EulerSolverConfig,
         decode_fn: Callable[[torch.Tensor], torch.Tensor],
         sample_fps: Optional[float] = None,
+        is_main_process: bool = True,
     ) -> None:
         self.cfg = logging_cfg
         self.local = _create_local_logger()
+        self.is_main_process = is_main_process
         self.sample_interval = logging_cfg.sample_interval
         self.noise_log_limit = logging_cfg.tau_log_limit if logging_cfg.tau_log_limit > 0 else None
         self.noise_log_count = 0
@@ -64,16 +66,21 @@ class WorldModelLogger:
 
     # ------------------------------------------------------------------ helpers
     def info(self, message: str, *args: Any, **kwargs: Any) -> None:
-        self.local.info(message, *args, **kwargs)
+        if self.is_main_process:
+            self.local.info(message, *args, **kwargs)
 
     def warning(self, message: str, *args: Any, **kwargs: Any) -> None:
-        self.local.warning(message, *args, **kwargs)
+        if self.is_main_process:
+            self.local.warning(message, *args, **kwargs)
 
     def debug(self, message: str, *args: Any, **kwargs: Any) -> None:
-        self.local.debug(message, *args, **kwargs)
+        if self.is_main_process:
+            self.local.debug(message, *args, **kwargs)
 
     # ------------------------------------------------------------------ lifecycle
     def init_wandb(self, config: Dict[str, Any]) -> Optional["wandb.sdk.wandb_run.Run"]:
+        if not self.is_main_process:
+            return None
         if self.wandb_run is not None or self._wandb is not None:
             return self.wandb_run
         try:
@@ -90,7 +97,7 @@ class WorldModelLogger:
         return self.wandb_run
 
     def close(self) -> None:
-        if self.wandb_run:
+        if self.is_main_process and self.wandb_run:
             self.wandb_run.finish()
         self.wandb_run = None
         self._wandb = None
@@ -106,6 +113,8 @@ class WorldModelLogger:
 
     # ------------------------------------------------------------------ logging hooks
     def log_dataloader(self, dataloader: DataLoader) -> None:
+        if not self.is_main_process:
+            return
         try:
             steps = len(dataloader)
         except TypeError:
@@ -124,6 +133,8 @@ class WorldModelLogger:
             )
 
     def log_training_metrics(self, metrics: Dict[str, float]) -> None:
+        if not self.is_main_process:
+            return
         if self.cfg.log_interval and self.current_step % self.cfg.log_interval == 0:
             message = " ".join(f"{key}={value:.5f}" for key, value in metrics.items())
             self.info("step=%d %s", self.current_step, message)
@@ -167,6 +178,8 @@ class WorldModelLogger:
         weights: Optional[torch.Tensor] = None,
         bins: int = 50,
     ) -> None:
+        if not self.is_main_process:
+            return
         if self.noise_log_limit is not None and self.noise_log_count >= self.noise_log_limit:
             return
 
@@ -232,6 +245,8 @@ class WorldModelLogger:
         actions_mask: Optional[torch.Tensor] = None,
         independant_frames_mask: Optional[torch.Tensor] = None,
     ) -> None:
+        if not self.is_main_process:
+            return
         if (
             self.sample_interval is None
             or self.wandb_run is None

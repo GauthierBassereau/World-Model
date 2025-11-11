@@ -10,12 +10,18 @@ logging:
 
 trainer:
   max_steps: null
-  grad_accum_steps: 16
+  grad_accum_steps: 4
   precision: bf16
   seed: 230503
   device: cuda
   resume_checkpoint: null
-  single_batch_overfit: false
+  single_batch_overfit: true
+  distributed:
+    enabled: false
+    backend: nccl
+    find_unused_parameters: false
+    broadcast_buffers: true
+    timeout_minutes: 30.0
 
 dataloader:
   batch_size: 8
@@ -43,20 +49,19 @@ dataset:
   action_normalization: "mean_std" # {"min_max", "mean_std"}
   action_normalization_params: 
     mean: [0,0,0,0,0,0,0,0]
-    std: [0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2]
+    std: [0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.1]
   #episodes: null # [1, 2, 3, 4, 5]
   sequence_length_distribution: # Dreamerv4 doesn't specify the proportion but I'll guess 0.8 short batches at the begginning and towards the end go to full long batches probably. For now let's keep small batches, will implement the evolution of this distribution later.
-    9: 0.8
-    12: 0.2
+    5: 1.0
   frame_delta_seconds: 5.0 / 15.0
-  independant_frames_probability: 0.3 # from Dreamerv4
-  drop_action_probability: 0.8 # from Dreamerv4, this should be enough
+  independant_frames_probability: 0.0 # from Dreamerv4
+  drop_action_probability: 0.0 # from Dreamerv4, this should be enough
 
 diffusion:
   base_dimension: 4096 # from RAE paper, to determine noise schedule depending on effective latent dimension
   noise_mean: 0.0   # Set noise_mean=0.0 and noise_std=1.0 to recover a unit Gaussian prior.
   noise_std: 1.0
-  signal_weighting: dimension # {"dimension", "linear", "none"}; "dimension" reproduces the DiT-RAE schedule via importance weights
+  signal_weighting: linear # {"dimension", "linear", "none"}; "dimension" reproduces the DiT-RAE schedule via importance weights
   linear_weight_slope: 0.9 # used when signal_weighting == "linear"; weight(s) = intercept + slope * s with s in [0, 1]
   linear_weight_intercept: 0.1
 

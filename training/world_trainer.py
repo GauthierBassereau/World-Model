@@ -1,13 +1,18 @@
 import copy
+import os
+import random
 from contextlib import nullcontext
-from dataclasses import asdict, dataclass, is_dataclass
+from dataclasses import asdict, dataclass, field, is_dataclass
 from functools import partial
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
+from datetime import timedelta
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel
 import yaml
 
 from rae_dino.rae import RAE
@@ -45,6 +50,16 @@ class TrainerLoopConfig:
     device: Optional[str] = None
     resume_checkpoint: Optional[str] = None
     single_batch_overfit: bool = False
+    distributed: "DistributedConfig" = field(default_factory=lambda: DistributedConfig())
+
+
+@dataclass
+class DistributedConfig:
+    enabled: bool = False
+    backend: str = "nccl"
+    find_unused_parameters: bool = False
+    broadcast_buffers: bool = True
+    timeout_minutes: float = 30.0
 
 
 @dataclass
@@ -88,12 +103,17 @@ def load_training_config(path: str | Path) -> WorldModelTrainingConfig:
 
     diffusion_kwargs = dict(raw.get("diffusion", {}))
     world_model_kwargs = dict(raw.get("world_model", {}))
+    trainer_kwargs = dict(raw.get("trainer", {}))
+    distributed_kwargs = trainer_kwargs.pop("distributed", {})
+    trainer_cfg = TrainerLoopConfig(**trainer_kwargs)
+    if distributed_kwargs:
+        trainer_cfg.distributed = DistributedConfig(**distributed_kwargs)
 
     cfg = WorldModelTrainingConfig(
         dataset=DatasetConfig(**raw.get("dataset", {})),
         dataloader=DataloaderConfig(**raw.get("dataloader", {})),
         optimizer=OptimizerConfig(**raw.get("optimizer", {})),
-        trainer=TrainerLoopConfig(**raw.get("trainer", {})),
+        trainer=trainer_cfg,
         logging=LoggingConfig(**raw.get("logging", {})),
         diffusion=DiffusionConfig(**diffusion_kwargs),
         world_model=WorldModelConfig(**world_model_kwargs),
@@ -122,7 +142,23 @@ class WorldModelTrainer:
         self.config = config
         self.model = model
         self.autoencoder = autoencoder or self._build_autoencoder(config.vision)
+        self.is_distributed = False
+        self.rank = 0
+        self.world_size = 1
+        self.local_rank = 0
+
+        if self.config.trainer.distributed.enabled:
+            self._init_distributed()
+
         self.device = self._resolve_device()
+        self.is_main_process = not self.is_distributed or self.rank == 0
+
+        self.model.to(self.device)
+        self.autoencoder.to(self.device)
+        self.autoencoder.eval()
+        for param in self.autoencoder.parameters():
+            param.requires_grad_(False)
+
         self.flow_cfg = config.diffusion
         self.scheduler = DimensionShiftedUniformScheduler(self.flow_cfg)
         self.ema_cfg = config.ema
@@ -131,13 +167,10 @@ class WorldModelTrainer:
         self._ema_buffer_pairs: List[Tuple[torch.Tensor, torch.Tensor]] = []
         self._ema_checkpoint_state: Optional[Dict[str, torch.Tensor]] = None
         self._cached_overfit_batch: Optional[WorldModelBatch] = None
+        self._sampler_epoch = 0
+        self._dataloader_iter = None
 
-        self._seed_everything(config.trainer.seed)
-        self.model.to(self.device)
-        self.autoencoder.to(self.device)
-        self.autoencoder.eval()
-        for param in self.autoencoder.parameters():
-            param.requires_grad_(False)
+        self._seed_everything(config.trainer.seed + self.rank)
 
         euler_cfg = EulerSolverConfig(
             step_size=EulerSolverConfig().step_size,
@@ -152,13 +185,18 @@ class WorldModelTrainer:
             euler_cfg=euler_cfg,
             decode_fn=self.autoencoder.decode,
             sample_fps=sample_fps,
+            is_main_process=self.is_main_process,
         )
 
         self.dataloader = build_world_model_dataloader(
             dataset_cfg=config.dataset,
             dataloader_cfg=config.dataloader,
             device=self.device,
+            rank=self.rank if self.is_distributed else None,
+            world_size=self.world_size if self.is_distributed else None,
+            seed=config.trainer.seed + self.rank,
         )
+        self._train_module: nn.Module
         self.optimizer = torch.optim.AdamW(
             self.model.parameters(),
             lr=config.optimizer.lr,
@@ -166,6 +204,18 @@ class WorldModelTrainer:
             weight_decay=config.optimizer.weight_decay,
             eps=config.optimizer.eps,
         )
+        if self.is_distributed:
+            if self.device.type != "cuda":
+                raise RuntimeError("Distributed training currently expects CUDA devices.")
+            self._train_module = DistributedDataParallel(
+                self.model,
+                device_ids=[self.device.index],
+                output_device=self.device.index,
+                broadcast_buffers=self.config.trainer.distributed.broadcast_buffers,
+                find_unused_parameters=self.config.trainer.distributed.find_unused_parameters,
+            )
+        else:
+            self._train_module = self.model
         autocast_enabled = config.trainer.precision in {"bf16", "fp16"} and self.device.type == "cuda"
         autocast_dtype = torch.bfloat16 if config.trainer.precision == "bf16" else torch.float16
         if autocast_enabled:
@@ -199,7 +249,34 @@ class WorldModelTrainer:
     def _build_autoencoder(self) -> RAE:
         return RAE()
 
+    def _init_distributed(self) -> None:
+        if not dist.is_available():
+            raise RuntimeError("torch.distributed is required for distributed training.")
+        if dist.is_initialized():
+            self.is_distributed = True
+            self.rank = dist.get_rank()
+            self.world_size = dist.get_world_size()
+            self.local_rank = int(os.environ.get("LOCAL_RANK", self.rank))
+            return
+        local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+        if not torch.cuda.is_available():
+            raise RuntimeError("Distributed training requires CUDA availability.")
+        torch.cuda.set_device(local_rank)
+        backend = self.config.trainer.distributed.backend
+        timeout = timedelta(minutes=self.config.trainer.distributed.timeout_minutes)
+        dist.init_process_group(
+            backend=backend,
+            init_method="env://",
+            timeout=timeout,
+        )
+        self.is_distributed = True
+        self.rank = dist.get_rank()
+        self.world_size = dist.get_world_size()
+        self.local_rank = local_rank
+
     def _resolve_device(self) -> torch.device:
+        if self.is_distributed:
+            return torch.device("cuda", self.local_rank)
         if self.config.trainer.device:
             return torch.device(self.config.trainer.device)
         if torch.cuda.is_available():
@@ -209,6 +286,7 @@ class WorldModelTrainer:
         return torch.device("cpu")
 
     def _seed_everything(self, seed: int) -> None:
+        random.seed(seed)
         torch.manual_seed(seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(seed)
@@ -265,17 +343,17 @@ class WorldModelTrainer:
             self.device,
             self.global_step,
         )
-        data_iter = iter(self.dataloader)
+        self._dataloader_iter = None
 
         for step in range(self.global_step + 1, total_steps + 1):
             self.logger.start_step(step)
-            self.model.train()
+            self._train_module.train()
             self.optimizer.zero_grad(set_to_none=True) # set_to_none for potential memory savings hehe
             accum_metrics: Dict[str, float] = {}
 
             for accum_idx in range(self.config.trainer.grad_accum_steps):
                 self.logger.start_micro_step(accum_idx)
-                batch, data_iter = self._next_batch(data_iter)
+                batch = self._next_batch()
                 metrics = self._train_micro_step(batch)
                 for key, value in metrics.items():
                     accum_metrics[key] = accum_metrics.get(key, 0.0) + value
@@ -301,6 +379,7 @@ class WorldModelTrainer:
             }
             if grad_metrics:
                 mean_metrics.update(grad_metrics)
+            mean_metrics = self._sync_metrics(mean_metrics)
             self.logger.log_training_metrics(mean_metrics)
 
             if (
@@ -337,20 +416,9 @@ class WorldModelTrainer:
         tau_factor = tau.unsqueeze(-1).unsqueeze(-1)
         noisy_latents = (1.0 - tau_factor) * base_noise + tau_factor * latents
         self.logger.log_distr_noise(tau, weights=tau_weights)
-        self.logger.maybe_log_micro_step_video(
-            self.model,
-            latents=latents.detach(),
-            noisy_latents=noisy_latents.detach(),
-            noise_levels=tau.detach(),
-            actions=actions.detach() if actions is not None else None,
-            actions_mask=actions_mask.detach() if actions_mask is not None else None,
-            independant_frames_mask=independant_frames_mask.detach()
-            if independant_frames_mask is not None
-            else None,
-        )
 
         with self._autocast_scope():
-            outputs = self.model(
+            outputs = self._train_module(
                 noisy_latents,
                 noise_levels=tau,
                 actions=actions,
@@ -371,6 +439,19 @@ class WorldModelTrainer:
         else:
             scaled_loss.backward()
 
+        if self.is_main_process:
+            self.logger.maybe_log_micro_step_video(
+                self.model,
+                latents=latents.detach(),
+                noisy_latents=noisy_latents.detach(),
+                noise_levels=tau.detach(),
+                actions=actions.detach() if actions is not None else None,
+                actions_mask=actions_mask.detach() if actions_mask is not None else None,
+                independant_frames_mask=independant_frames_mask.detach()
+                if independant_frames_mask is not None
+                else None,
+            )
+
         return {
             "loss": float(loss.detach().cpu()),
             "signal_level": float(tau.mean().detach().cpu()),
@@ -384,22 +465,43 @@ class WorldModelTrainer:
         tokens, dim = latents.shape[1], latents.shape[2]
         return latents.view(batch, steps, tokens, dim)
 
-    def _next_batch(self, data_iter):
+    def _next_batch(self) -> WorldModelBatch:
         if self.config.trainer.single_batch_overfit:
             if self._cached_overfit_batch is None:
-                batch, data_iter = self._fetch_batch(data_iter)
-                self._cached_overfit_batch = batch
-            return self._cached_overfit_batch, data_iter
-        return self._fetch_batch(data_iter)
+                self._cached_overfit_batch = self._fetch_batch()
+            return self._cached_overfit_batch
+        return self._fetch_batch()
 
-    def _fetch_batch(self, data_iter):
+    def _fetch_batch(self) -> WorldModelBatch:
+        if self._dataloader_iter is None:
+            self._dataloader_iter = self._create_data_iter()
         try:
-            batch = next(data_iter)
+            return next(self._dataloader_iter)
         except StopIteration:
-            self.logger.warning("Data iterator exhausted (StopIteration); reinitializing dataloader iterator.")
-            data_iter = iter(self.dataloader)
-            batch = next(data_iter)
-        return batch, data_iter
+            if self.is_main_process:
+                self.logger.warning("Data iterator exhausted (StopIteration); reinitializing dataloader iterator.")
+            self._dataloader_iter = self._create_data_iter()
+            return next(self._dataloader_iter)
+
+    def _create_data_iter(self):
+        sampler = getattr(self.dataloader, "sampler", None)
+        if sampler is not None and hasattr(sampler, "set_epoch"):
+            sampler.set_epoch(self._sampler_epoch)
+        self._sampler_epoch += 1
+        return iter(self.dataloader)
+
+    def _sync_metrics(self, metrics: Dict[str, float]) -> Dict[str, float]:
+        if not self.is_distributed or not metrics:
+            return metrics
+        keys = sorted(metrics.keys())
+        values = torch.tensor(
+            [float(metrics[key]) for key in keys],
+            device=self.device,
+            dtype=torch.float32,
+        )
+        dist.all_reduce(values, op=dist.ReduceOp.SUM)
+        values /= self.world_size
+        return {key: float(value) for key, value in zip(keys, values.tolist())}
 
     def _resolve_total_steps(self) -> int:
         configured = self.config.trainer.max_steps
@@ -416,6 +518,8 @@ class WorldModelTrainer:
         return total
 
     def _save_checkpoint(self, step: int) -> None:
+        if not self.is_main_process:
+            return
         output_dir = Path(self.config.logging.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         checkpoint_path = output_dir / f"world_model_step_{step:06d}.pt"
@@ -434,6 +538,9 @@ class WorldModelTrainer:
 
     def close(self) -> None:
         self.logger.close()
+        if self.is_distributed and dist.is_initialized():
+            dist.barrier()
+            dist.destroy_process_group()
 
     def _maybe_load_checkpoint(self) -> None:
         checkpoint_path = self.config.trainer.resume_checkpoint

@@ -5,6 +5,7 @@ import random
 
 import torch
 from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
 
 from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
 
@@ -214,11 +215,6 @@ class LeRobotSequenceCollator:
             use_independant_frame = random.random() < self.cfg.independant_frames_probability
             drop_actions = random.random() < self.cfg.drop_action_probability
 
-            if use_independant_frame:
-                frame_index = random.randrange(target_length)
-                static_frame = frames[frame_index].unsqueeze(0)
-                frames = static_frame.repeat(target_length, 1, 1, 1)
-
             if use_independant_frame or drop_actions:
                 actions.zero_()
 
@@ -386,10 +382,15 @@ def build_world_model_dataloader(
     dataset_cfg: DatasetConfig,
     dataloader_cfg: DataloaderConfig,
     device: Optional[torch.device] = None,
+    rank: Optional[int] = None,
+    world_size: Optional[int] = None,
+    seed: Optional[int] = None,
 ) -> DataLoader:
     device = device or torch.device("cpu")
     metadata = LeRobotDatasetMetadata(dataset_cfg.repo_id)
     delta_timestamps = _ensure_delta_timestamps(dataset_cfg, metadata)
+    sampler: Optional[DistributedSampler] = None
+    distributed = world_size is not None and world_size > 1
     if dataset_cfg.use_streaming:
         from lerobot.datasets.streaming_dataset import StreamingLeRobotDataset
 
@@ -410,12 +411,25 @@ def build_world_model_dataloader(
             video_backend=dataset_cfg.video_backend,
         )
         shuffle = dataloader_cfg.shuffle
+        if distributed:
+            sampler = DistributedSampler(
+                dataset,
+                num_replicas=world_size,
+                rank=rank or 0,
+                shuffle=shuffle,
+                drop_last=False,
+                seed=seed or 0,
+            )
+            shuffle = False
+    if dataset_cfg.use_streaming and distributed:
+        shuffle = False
 
     collate = LeRobotSequenceCollator(dataset_cfg, device=device)
     return DataLoader(
         dataset,
         batch_size=dataloader_cfg.batch_size,
-        shuffle=shuffle,
+        shuffle=shuffle if sampler is None else False,
+        sampler=sampler,
         num_workers=dataloader_cfg.num_workers,
         pin_memory=dataloader_cfg.pin_memory,
         collate_fn=collate,
