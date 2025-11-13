@@ -515,18 +515,81 @@ class WorldModelTrainer:
             return next(self._dataloader_iter)
 
     def _fetch_streaming_batch(self) -> WorldModelBatch:
-        batch: Optional[WorldModelBatch] = None
-        if self.rank == 0:
-            if self._dataloader_iter is None:
-                self._dataloader_iter = self._create_data_iter()
-            try:
-                batch = next(self._dataloader_iter)
-            except StopIteration:
-                if self.is_main_process:
-                    self.logger.warning("Data iterator exhausted (StopIteration); reinitializing dataloader iterator.")
-                self._dataloader_iter = self._create_data_iter()
-                batch = next(self._dataloader_iter)
-        return self._scatter_streaming_batch(batch)
+        required = self._local_micro_batch * self.world_size
+        while True:
+            batch: Optional[WorldModelBatch] = None
+            drop_batch = False
+            if self.rank == 0:
+                if self._dataloader_iter is None:
+                    self._dataloader_iter = self._create_data_iter()
+                try:
+                    batch = next(self._dataloader_iter)
+                except StopIteration:
+                    if self.is_main_process:
+                        self.logger.warning("Data iterator exhausted (StopIteration); reinitializing dataloader iterator.")
+                    self._dataloader_iter = self._create_data_iter()
+                    batch = next(self._dataloader_iter)
+                assert batch is not None
+                batch, dropped = self._prepare_streaming_batch(batch, required)
+                if dropped.shortfall > 0:
+                    drop_batch = True
+                    if self.is_main_process:
+                        self.logger.warning(
+                            "Streaming batch smaller than required micro-batch (%d < %d); dropping batch.",
+                            dropped.original_size,
+                            required,
+                        )
+                elif dropped.excess > 0 and self.is_main_process:
+                    self.logger.warning(
+                        "Streaming batch larger than required micro-batch (%d > %d); dropping %d surplus samples.",
+                        dropped.original_size,
+                        required,
+                        dropped.excess,
+                    )
+            drop_msg = [drop_batch]
+            dist.broadcast_object_list(drop_msg, src=0)
+            drop_batch = bool(drop_msg[0])
+            if drop_batch:
+                continue
+            return self._scatter_streaming_batch(batch)
+
+    @dataclass
+    class _StreamingBatchAdjustment:
+        original_size: int
+        shortfall: int = 0
+        excess: int = 0
+
+    def _prepare_streaming_batch(
+        self,
+        batch: WorldModelBatch,
+        required: int,
+    ) -> Tuple[Optional[WorldModelBatch], "_StreamingBatchAdjustment"]:
+        current = batch.sequence_frames.shape[0]
+        if current < required:
+            return None, self._StreamingBatchAdjustment(
+                original_size=current,
+                shortfall=required - current,
+            )
+        if current == required:
+            return batch, self._StreamingBatchAdjustment(original_size=current)
+
+        trim_slice = slice(0, required)
+
+        def _maybe_slice(tensor: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
+            if tensor is None:
+                return None
+            return tensor[trim_slice].contiguous()
+
+        trimmed_batch = WorldModelBatch(
+            sequence_frames=batch.sequence_frames[trim_slice].contiguous(),
+            sequence_actions=_maybe_slice(batch.sequence_actions),
+            independant_frames_mask=_maybe_slice(batch.independant_frames_mask),
+            actions_mask=_maybe_slice(batch.actions_mask),
+        )
+        return trimmed_batch, self._StreamingBatchAdjustment(
+            original_size=current,
+            excess=current - required,
+        )
 
     def _scatter_streaming_batch(self, batch: Optional[WorldModelBatch]) -> WorldModelBatch:
         chunk_lists = None

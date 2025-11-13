@@ -4,7 +4,7 @@ logging:
   run_name: null
   log_interval: 1
   sample_interval: 100
-  checkpoint_interval: 1000
+  checkpoint_interval: 500
   output_dir: checkpoints
   tau_log_limit: 500
 
@@ -17,8 +17,8 @@ trainer:
   resume_checkpoint: null
   single_batch_overfit: false
   lr_decay: false
-  lr_warmup_steps: 25
-  lr_warmup_lr: 1.0e-5
+  lr_warmup_steps: 50
+  lr_warmup_lr: 1.0e-6
   lr_final: 2.0e-5
   lr_final_step: 10000
   distributed:
@@ -77,10 +77,10 @@ ema:
 
 world_model: # ~400M parameters
   input_dim: 768
-  latent_dim: 1024 # From RAE paper this needs to be > input_dim
+  latent_dim: 1024 # From RAE paper this needs to be > input_dim (or use DH head)
   action_dim: 8 # 7 for delta joint positions + 1 for gripper
   num_registers: 4
-  depth: 24 # 24
+  depth: 24
   num_heads: 16
   mlp_multiplier: 4.0
   temporal_attention_interval: 4
