@@ -3,19 +3,24 @@ logging:
   entity: null
   run_name: null
   log_interval: 1
-  sample_interval: 25
+  sample_interval: 100
   checkpoint_interval: 1000
   output_dir: checkpoints
   tau_log_limit: 500
 
 trainer:
   max_steps: null
-  grad_accum_steps: 2 # Divide global batch size by (num gpus * grad_accum_steps) to get micro batch size
+  grad_accum_steps: 8
   precision: bf16
   seed: 3
   device: cuda
   resume_checkpoint: null
-  single_batch_overfit: true
+  single_batch_overfit: false
+  lr_decay: false
+  lr_warmup_steps: 25
+  lr_warmup_lr: 1.0e-5
+  lr_final: 2.0e-5
+  lr_final_step: 10000
   distributed:
     backend: nccl
     find_unused_parameters: false
@@ -23,13 +28,13 @@ trainer:
     timeout_minutes: 5.0
 
 dataloader:
-  batch_size: 16 # global batch size
+  batch_size: 256 # global batch size
   shuffle: true
   num_workers: 0 # need to check why but I get errors with num_workers > 0
   pin_memory: true
 
 optimizer:
-  lr: 2.0e-4
+  lr: 1.0e-4
   betas: [0.9, 0.95]
   weight_decay: 0.0
   eps: 1.0e-08
@@ -51,10 +56,11 @@ dataset:
     mean: [0,0,0,0,0,0,0,0]
     std: [0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.1]
   sequence_length_distribution: # Dreamerv4 doesn't specify the proportion but I'll guess 0.8 short batches at the begginning and towards the end go to full long batches probably. For now let's keep small batches, will implement the evolution of this distribution later.
-    5: 1.0
+    6: 0.8
+    12: 0.2
   frame_delta_seconds: 5.0 / 15.0
-  independant_frames_probability: 0.0 # from Dreamerv4
-  drop_action_probability: 0.0 # from Dreamerv4, this should be enough
+  independant_frames_probability: 0.3 # from Dreamerv4
+  drop_action_probability: 0.75 # from Dreamerv4
 
 diffusion:
   base_dimension: 4096 # from RAE paper, to determine noise schedule depending on effective latent dimension
@@ -74,11 +80,11 @@ world_model: # ~400M parameters
   latent_dim: 1024 # From RAE paper this needs to be > input_dim
   action_dim: 8 # 7 for delta joint positions + 1 for gripper
   num_registers: 4
-  depth: 2 # 24
+  depth: 24 # 24
   num_heads: 16
   mlp_multiplier: 4.0
   temporal_attention_interval: 4
-  temporal_context_length: 4
+  temporal_context_length: 9
   rope_base: 1000.0
   qk_norm_eps: 1.0e-06 # Put None for no QK norm, RAE doesn't use, Dreamerv4 does, but I think it is better to use for this kind of world model rollouts, safer.
 

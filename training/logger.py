@@ -225,7 +225,6 @@ class WorldModelLogger:
         independant_frames_mask: Optional[torch.Tensor] = None,
     ) -> None:
         if not self.is_main_process:
-            print("Is main process true, not logging")
             return
         if (
             self.sample_interval is None
@@ -234,7 +233,6 @@ class WorldModelLogger:
             or self.current_step % self.sample_interval != 0
             or self._sample_logged_this_step
         ):
-            print("Not logging sample this step")
             return
 
         batch_size = latents.shape[0]

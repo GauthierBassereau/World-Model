@@ -29,9 +29,6 @@ Note: most of this dataset have language instruction for each task -> I wonder h
 ---
 
 Todos:
-  - Add gripper values to actions, and use actions.cartesian instead of observations. Make a script to visualize the distribution of the actions deltas, if need normalization etc...
-  - Review evaluation code, for now has been vibe-coded by codex, add an eval pipeline to the trainer too
-  - Make something to visualize the attention masks
   - Add one of the non-robot dataset (HowTo100M would be great)
   - Add a DH head to backbone following RAE paper
   - Shortcut forcing

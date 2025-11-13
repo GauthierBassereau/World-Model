@@ -52,6 +52,11 @@ class TrainerLoopConfig:
     resume_checkpoint: Optional[str] = None
     single_batch_overfit: bool = False
     distributed: "DistributedConfig" = field(default_factory=lambda: DistributedConfig())
+    lr_decay: bool = False
+    lr_warmup_steps: int = 0
+    lr_warmup_lr: Optional[float] = None
+    lr_final: Optional[float] = None
+    lr_final_step: Optional[int] = None
 
 
 @dataclass
@@ -186,17 +191,26 @@ class WorldModelTrainer:
             sample_fps=sample_fps,
             is_main_process=self.is_main_process,
         )
-        
-        self.dataloader = build_world_model_dataloader(
-            dataset_cfg=config.dataset,
-            dataloader_cfg=config.dataloader,
-            grad_accum_steps=config.trainer.grad_accum_steps,
-            seed=seed,
-            rank=self.rank,
-            world_size=self.world_size,
-        )
+
+        if config.dataloader.batch_size % (config.trainer.grad_accum_steps * self.world_size) != 0:
+            raise ValueError("Global batch size must be divisible by world_size * grad_accum_steps.")
+        self._global_micro_batch = config.dataloader.batch_size // config.trainer.grad_accum_steps
+        self._local_micro_batch = self._global_micro_batch // self.world_size
+        self._stream_shared_loader = config.dataset.use_streaming and self.world_size > 1
+
+        if self._stream_shared_loader and self.rank != 0:
+            self.dataloader = None
+        else:
+            loader_rank = 0 if self._stream_shared_loader else self.rank
+            self.dataloader = build_world_model_dataloader(
+                dataset_cfg=config.dataset,
+                dataloader_cfg=config.dataloader,
+                grad_accum_steps=config.trainer.grad_accum_steps,
+                seed=seed,
+                rank=loader_rank,
+                world_size=self.world_size,
+            )
             
-        self._train_module: nn.Module
         self.optimizer = torch.optim.AdamW(
             self.model.parameters(),
             lr=config.optimizer.lr,
@@ -204,6 +218,42 @@ class WorldModelTrainer:
             weight_decay=config.optimizer.weight_decay,
             eps=config.optimizer.eps,
         )
+        self._base_lrs = [group["lr"] for group in self.optimizer.param_groups]
+        warmup_lr = self.config.trainer.lr_warmup_lr
+        self._warmup_start_lrs = [
+            min(warmup_lr, base_lr) if warmup_lr is not None else 0.0
+            for base_lr in self._base_lrs
+        ]
+        if warmup_lr is not None and warmup_lr < 0.0:
+            raise ValueError("trainer.lr_warmup_lr must be non-negative.")
+        final_lr = self.config.trainer.lr_final
+        final_step = self.config.trainer.lr_final_step
+        if (final_lr is None) != (final_step is None):
+            raise ValueError("trainer.lr_final and trainer.lr_final_step must be provided together.")
+        if final_lr is not None and final_lr < 0.0:
+            raise ValueError("trainer.lr_final must be non-negative.")
+        if final_step is not None and final_step <= self.config.trainer.lr_warmup_steps:
+            raise ValueError("trainer.lr_final_step must be greater than lr_warmup_steps.")
+        self._final_lrs = (
+            [final_lr for _ in self.optimizer.param_groups] if final_lr is not None else None
+        )
+        self._lr_final_step = final_step
+        self._lr_decay_steps = None
+        if (
+            final_lr is None
+            and self.config.trainer.lr_decay
+            and self.config.trainer.max_steps is not None
+        ):
+            self._lr_decay_steps = max(
+                1, self.config.trainer.max_steps - self.config.trainer.lr_warmup_steps
+            )
+        self._lr_schedule_enabled = (
+            self.config.trainer.lr_warmup_steps > 0
+            or self._lr_decay_steps is not None
+            or self._final_lrs is not None
+        )
+        
+        self._train_module: nn.Module
         if self.world_size > 1:
             self._train_module = DistributedDataParallel(
                 self.model,
@@ -278,6 +328,31 @@ class WorldModelTrainer:
                     source = source.to(ema_buffer.device)
                 ema_buffer.data.copy_(source)
 
+    def _apply_lr_schedule(self, step: int) -> None:
+        if not self._lr_schedule_enabled:
+            return
+        warmup_steps = self.config.trainer.lr_warmup_steps
+        current_step = max(step, 1)
+        max_steps = self.config.trainer.max_steps
+        for idx, group in enumerate(self.optimizer.param_groups):
+            base_lr = self._base_lrs[idx]
+            target_lr = base_lr
+            if warmup_steps > 0 and current_step <= warmup_steps:
+                start_lr = self._warmup_start_lrs[idx]
+                progress = current_step / warmup_steps
+                target_lr = start_lr + (base_lr - start_lr) * progress
+            elif self._final_lrs is not None and self._lr_final_step is not None:
+                duration = max(1, self._lr_final_step - warmup_steps)
+                warmup_offset = max(current_step - warmup_steps, 0)
+                progress = min(warmup_offset, duration) / duration
+                final_lr = self._final_lrs[idx]
+                target_lr = base_lr + (final_lr - base_lr) * progress
+            elif self._lr_decay_steps is not None and max_steps is not None:
+                effective_step = min(current_step, max_steps)
+                remaining = max(0, max_steps - effective_step)
+                target_lr = base_lr * (remaining / self._lr_decay_steps)
+            group["lr"] = target_lr
+
     def train(self) -> None:
         total_steps = self._resolve_total_steps()
         if self.global_step >= total_steps:
@@ -298,6 +373,9 @@ class WorldModelTrainer:
         self._dataloader_iter = None
 
         for step in range(self.global_step + 1, total_steps + 1):
+            self._apply_lr_schedule(step)
+            if self.device.type == "cuda" and step == 1:
+                torch.cuda.reset_peak_memory_stats(self.device)
             self.logger.start_step(step)
             self._train_module.train()
             self.optimizer.zero_grad(set_to_none=True) # set_to_none for potential memory savings hehe
@@ -324,11 +402,16 @@ class WorldModelTrainer:
                 self.optimizer.step()
 
             self._update_ema()
+            if self.device.type == "cuda" and step == 1:
+                peak_mem_gb = torch.cuda.max_memory_allocated(self.device) / (1024**3)
+                print(f"[GPU {self.device.index}] step {step} peak memory: {peak_mem_gb:.2f} GB", flush=True)
 
             self.global_step = step
             mean_metrics = {
                 key: value / self.config.trainer.grad_accum_steps for key, value in accum_metrics.items()
             }
+            lr_value = float(self.optimizer.param_groups[0]["lr"])
+            mean_metrics["learning_rate"] = lr_value
             if grad_metrics:
                 mean_metrics.update(grad_metrics)
             mean_metrics = self._sync_metrics(mean_metrics)
@@ -413,11 +496,12 @@ class WorldModelTrainer:
         return latents.view(batch, steps, tokens, dim)
 
     def _next_batch(self) -> WorldModelBatch:
+        fetch = self._fetch_streaming_batch if self._stream_shared_loader else self._fetch_batch
         if self.config.trainer.single_batch_overfit:
             if self._cached_overfit_batch is None:
-                self._cached_overfit_batch = self._fetch_batch()
+                self._cached_overfit_batch = fetch()
             return self._cached_overfit_batch
-        return self._fetch_batch()
+        return fetch()
 
     def _fetch_batch(self) -> WorldModelBatch:
         if self._dataloader_iter is None:
@@ -429,6 +513,77 @@ class WorldModelTrainer:
                 self.logger.warning("Data iterator exhausted (StopIteration); reinitializing dataloader iterator.")
             self._dataloader_iter = self._create_data_iter()
             return next(self._dataloader_iter)
+
+    def _fetch_streaming_batch(self) -> WorldModelBatch:
+        batch: Optional[WorldModelBatch] = None
+        if self.rank == 0:
+            if self._dataloader_iter is None:
+                self._dataloader_iter = self._create_data_iter()
+            try:
+                batch = next(self._dataloader_iter)
+            except StopIteration:
+                if self.is_main_process:
+                    self.logger.warning("Data iterator exhausted (StopIteration); reinitializing dataloader iterator.")
+                self._dataloader_iter = self._create_data_iter()
+                batch = next(self._dataloader_iter)
+        return self._scatter_streaming_batch(batch)
+
+    def _scatter_streaming_batch(self, batch: Optional[WorldModelBatch]) -> WorldModelBatch:
+        chunk_lists = None
+        metadata = None
+        if self.rank == 0:
+            if batch is None:
+                raise RuntimeError("Streaming batch is None on rank 0.")
+            chunk_lists = {
+                "sequence_frames": self._split_chunks_to_device(batch.sequence_frames),
+                "sequence_actions": self._split_chunks_to_device(batch.sequence_actions),
+                "independant_frames_mask": self._split_chunks_to_device(batch.independant_frames_mask),
+                "actions_mask": self._split_chunks_to_device(batch.actions_mask),
+            }
+            metadata = {key: (chunks[0].shape, chunks[0].dtype) for key, chunks in chunk_lists.items()}
+        metadata_list = [metadata]
+        dist.broadcast_object_list(metadata_list, src=0)
+        metadata = metadata_list[0]
+
+        sequence_frames = self._scatter_tensor(
+            None if chunk_lists is None else chunk_lists["sequence_frames"],
+            metadata["sequence_frames"],
+        )
+        sequence_actions = self._scatter_tensor(
+            None if chunk_lists is None else chunk_lists["sequence_actions"],
+            metadata["sequence_actions"],
+        )
+        independant_frames_mask = self._scatter_tensor(
+            None if chunk_lists is None else chunk_lists["independant_frames_mask"],
+            metadata["independant_frames_mask"],
+        )
+        actions_mask = self._scatter_tensor(
+            None if chunk_lists is None else chunk_lists["actions_mask"],
+            metadata["actions_mask"],
+        )
+
+        return WorldModelBatch(
+            sequence_frames=sequence_frames,
+            sequence_actions=sequence_actions,
+            independant_frames_mask=independant_frames_mask,
+            actions_mask=actions_mask,
+        )
+
+    def _scatter_tensor(
+        self,
+        scatter_list: Optional[Tuple[torch.Tensor, ...]],
+        spec: Tuple[torch.Size, torch.dtype],
+    ) -> torch.Tensor:
+        shape, dtype = spec
+        tensor = torch.empty(shape, dtype=dtype, device=self.device)
+        dist.scatter(tensor, list(scatter_list) if scatter_list is not None else None, src=0)
+        return tensor
+
+    def _split_chunks_to_device(self, tensor: torch.Tensor) -> Tuple[torch.Tensor, ...]:
+        return tuple(
+            chunk.to(self.device, non_blocking=True)
+            for chunk in tensor.split(self._local_micro_batch, dim=0)
+        )
 
     def _create_data_iter(self):
         sampler = getattr(self.dataloader, "sampler", None)

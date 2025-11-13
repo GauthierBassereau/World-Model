@@ -21,7 +21,7 @@ sbatch \
   --job-name="$name" \
   --output="logs/%x.out" \
   --partition=gpu \
-  --gres=gpu:tesla:1 \
+  --gres=gpu:a100-40g:1 \
   --nodes=1 --ntasks-per-node=1 \
   --cpus-per-task=8 \
   --mem=48G --time=00:30:00 \

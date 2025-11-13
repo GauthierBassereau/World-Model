@@ -23,10 +23,10 @@ sbatch \
   --job-name="${name}-${NUM_GPUS}g" \
   --output="logs/%x.out" \
   --partition=gpu \
-  --gres="gpu:tesla:${NUM_GPUS}" \
+  --gres="gpu:h200-141g:${NUM_GPUS}" \
   --nodes=1 --ntasks-per-node="${NUM_GPUS}" \
-  --cpus-per-task=8 \
-  --mem=64G --time=00:15:00 \
+  --cpus-per-task=10 \
+  --mem=128G --time=08:00:00 \
   --export=ALL \
   --wrap "bash -lc '
     set -euo pipefail

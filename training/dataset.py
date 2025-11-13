@@ -390,12 +390,22 @@ def build_world_model_dataloader(
     device = device or torch.device("cpu")
     metadata = LeRobotDatasetMetadata(dataset_cfg.repo_id)
     delta_timestamps = _ensure_delta_timestamps(dataset_cfg, metadata)
-    
+
+    effective_world_size = world_size or 1
+    rank_value = rank or 0
+    distributed = effective_world_size > 1
+
+    if dataloader_cfg.batch_size % grad_accum_steps != 0:
+        raise ValueError("Global batch size must be divisible by grad_accum_steps.")
+    global_micro_batch = dataloader_cfg.batch_size // grad_accum_steps
+    if distributed and global_micro_batch % effective_world_size != 0:
+        raise ValueError("Global micro-batch size must be divisible by world_size.")
+    micro_batch_size = (
+        global_micro_batch // effective_world_size if distributed else global_micro_batch
+    )
+    dataloader_batch_size = global_micro_batch if dataset_cfg.use_streaming else micro_batch_size
+
     sampler: Optional[DistributedSampler] = None
-    distributed = world_size is not None and world_size > 1
-    if dataloader_cfg.batch_size % (world_size * grad_accum_steps) != 0:
-            raise ValueError("Global batch size must be divisible by world_size * grad_accum_steps.")
-    micro_batch_size = dataloader_cfg.batch_size // (world_size * grad_accum_steps)
 
     if dataset_cfg.use_streaming:
         from lerobot.datasets.streaming_dataset import StreamingLeRobotDataset
@@ -409,7 +419,7 @@ def build_world_model_dataloader(
         )
         shuffle = False
 
-        print(f"Using streaming dataset, rank: {rank or 0} and seed: {seed or 0}")
+        print(f"Using streaming dataset, rank: {rank_value} and seed: {seed or 0}")
     else:
         dataset = LeRobotDataset(
             dataset_cfg.repo_id,
@@ -434,12 +444,11 @@ def build_world_model_dataloader(
 
     dataloader = DataLoader(
         dataset,
-        batch_size=micro_batch_size,
+        batch_size=dataloader_batch_size,
         shuffle=shuffle if sampler is None else False,
         sampler=sampler,
         num_workers=dataloader_cfg.num_workers,
         pin_memory=dataloader_cfg.pin_memory,
         collate_fn=collate,
     )
-    print("DataLoader built on rank:", rank or 0)
     return dataloader
