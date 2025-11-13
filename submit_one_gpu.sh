@@ -24,7 +24,7 @@ sbatch \
   --gres=gpu:tesla:1 \
   --nodes=1 --ntasks-per-node=1 \
   --cpus-per-task=8 \
-  --mem=48G --time=00:15:00 \
+  --mem=48G --time=00:30:00 \
   --export=ALL \
   --wrap "bash -lc '
     set -euo pipefail

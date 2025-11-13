@@ -12,7 +12,7 @@ class DiffusionConfig:
     effective_latent_dimension: int = 196_608 # 768*16*16
     noise_mean: float = 0.0
     noise_std: float = 1.0
-    signal_weighting: str = "dimension"  # {"dimension", "linear", "none"}
+    noise_sampling: str = "dimension"  # {"dimension", "linear", "uniform"}
     linear_weight_slope: float = 0.9
     linear_weight_intercept: float = 0.1
 
@@ -22,11 +22,9 @@ class DiffusionConfig:
         std_tensor = torch.as_tensor(self.noise_std, dtype=torch.float32)
         if torch.any(std_tensor <= 0):
             raise ValueError("diffusion.noise_std must be strictly positive.")
-        mode = self.signal_weighting.lower()
-        if mode not in {"dimension", "linear", "none"}:
-            raise ValueError(
-                "diffusion.signal_weighting must be one of {'dimension', 'linear', 'none'}."
-            )
+        mode = self.noise_sampling.lower()
+        if mode not in {"dimension", "linear", "uniform"}:
+            raise ValueError("diffusion.noise_sampling must be one of {'dimension', 'linear', 'uniform'}.")
         if mode == "linear":
             intercept = float(self.linear_weight_intercept)
             slope = float(self.linear_weight_slope)
@@ -34,48 +32,63 @@ class DiffusionConfig:
                 raise ValueError("Linear weighting intercept must be non-negative.")
             if intercept + slope < 0.0:
                 raise ValueError("Linear weighting must remain non-negative over [0, 1].")
+            if intercept == 0.0 and slope == 0.0:
+                raise ValueError("At least one of linear_weight_intercept or linear_weight_slope must be non-zero.")
 
 
-class DimensionShiftedUniformScheduler:
-    """
-    Uniform signal sampler with optional importance weights matching the DiT-RAE schedule.
-
-    The scheduler draws baseline values from U(0, 1), keeps them in that range, and returns
-    per-sample weights so downstream losses can be reweighted without resampling.
-    """
+class NoiseScheduler:
     def __init__(self, config: DiffusionConfig) -> None:
         self.config = config
         self.alpha = math.sqrt(float(config.effective_latent_dimension) / float(self.config.base_dimension))
-        self._weighting_mode = config.signal_weighting.lower()
+        self._mode = config.noise_sampling.lower()
         self._linear_slope = float(config.linear_weight_slope)
         self._linear_intercept = float(config.linear_weight_intercept)
 
-    def sample(self, latents: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def sample(self, latents: torch.Tensor) -> torch.Tensor:
         batch, steps, tokens, dim = latents.shape
         device = latents.device
         dtype = latents.dtype
 
         base = torch.rand((batch, steps), dtype=torch.float32, device=device)
+        tau = self._sample_from_mode(base)
+        return tau.to(device=device, dtype=dtype)
 
-        weights = self._compute_weights(base)
-        weights = weights.to(device=device, dtype=dtype)
-        return base.to(device=device, dtype=dtype), weights
-
-    def _compute_weights(self, base: torch.Tensor) -> torch.Tensor:
-        mode = self._weighting_mode
-        if mode == "none":
-            return torch.ones_like(base)
+    def _sample_from_mode(self, base: torch.Tensor) -> torch.Tensor:
+        mode = self._mode
+        if mode == "uniform":
+            return base
         if mode == "linear":
-            weights = self._linear_intercept + self._linear_slope * base
-            return torch.clamp(weights, min=0.0)
+            return self._sample_linear(base)
         if mode == "dimension":
-            if math.isclose(self.alpha, 1.0):
-                return torch.ones_like(base)
-            denom = self.alpha - (self.alpha - 1.0) * base
-            denom = torch.clamp(denom, min=1e-8)
-            weights = self.alpha / (denom * denom)
-            return weights
-        raise RuntimeError(f"Unsupported weighting mode: {mode}")
+            return self._sample_dimension(base)
+        raise RuntimeError(f"Unsupported noise sampling mode: {mode}")
+
+    def _sample_linear(self, base: torch.Tensor) -> torch.Tensor:
+        slope = torch.as_tensor(self._linear_slope, dtype=base.dtype, device=base.device)
+        intercept = torch.as_tensor(self._linear_intercept, dtype=base.dtype, device=base.device)
+        norm = intercept + 0.5 * slope
+        if norm.item() <= 0.0:
+            raise ValueError("Linear noise sampling requires intercept + 0.5 * slope > 0.")
+
+        abs_slope = torch.abs(slope)
+        zero = torch.zeros((), dtype=base.dtype, device=base.device)
+        if torch.isclose(abs_slope, zero, atol=1e-8).item():
+            return base
+
+        rhs = base * norm
+        disc = torch.clamp_min(4.0 * intercept * intercept + 8.0 * slope * rhs, 0.0)
+        sqrt_disc = torch.sqrt(disc)
+        denom = torch.where(abs_slope > 1e-8, 2.0 * slope, torch.full_like(slope, 1e-8))
+        samples = (-2.0 * intercept + sqrt_disc) / denom
+        return samples.clamp(0.0, 1.0)
+
+    def _sample_dimension(self, base: torch.Tensor) -> torch.Tensor:
+        if math.isclose(self.alpha, 1.0):
+            return base
+        alpha = torch.as_tensor(self.alpha, dtype=base.dtype, device=base.device)
+        denom = 1.0 + (alpha - 1.0) * base
+        denom = torch.clamp_min(denom, 1e-8)
+        return (alpha * base) / denom
 
 
 def sample_base_noise(latents: torch.Tensor, config: DiffusionConfig) -> torch.Tensor:

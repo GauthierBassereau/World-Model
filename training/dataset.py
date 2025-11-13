@@ -381,6 +381,7 @@ class LeRobotSequenceCollator:
 def build_world_model_dataloader(
     dataset_cfg: DatasetConfig,
     dataloader_cfg: DataloaderConfig,
+    grad_accum_steps: int = 1,
     device: Optional[torch.device] = None,
     rank: Optional[int] = None,
     world_size: Optional[int] = None,
@@ -389,19 +390,26 @@ def build_world_model_dataloader(
     device = device or torch.device("cpu")
     metadata = LeRobotDatasetMetadata(dataset_cfg.repo_id)
     delta_timestamps = _ensure_delta_timestamps(dataset_cfg, metadata)
+    
     sampler: Optional[DistributedSampler] = None
     distributed = world_size is not None and world_size > 1
+    if dataloader_cfg.batch_size % (world_size * grad_accum_steps) != 0:
+            raise ValueError("Global batch size must be divisible by world_size * grad_accum_steps.")
+    micro_batch_size = dataloader_cfg.batch_size // (world_size * grad_accum_steps)
+
     if dataset_cfg.use_streaming:
         from lerobot.datasets.streaming_dataset import StreamingLeRobotDataset
 
         dataset = StreamingLeRobotDataset(
             dataset_cfg.repo_id,
-            episodes=None,
             delta_timestamps=delta_timestamps,
             shuffle=dataloader_cfg.shuffle,
+            seed=seed or 0,
             tolerance_s=0.01,
         )
         shuffle = False
+
+        print(f"Using streaming dataset, rank: {rank or 0} and seed: {seed or 0}")
     else:
         dataset = LeRobotDataset(
             dataset_cfg.repo_id,
@@ -421,16 +429,17 @@ def build_world_model_dataloader(
                 seed=seed or 0,
             )
             shuffle = False
-    if dataset_cfg.use_streaming and distributed:
-        shuffle = False
 
     collate = LeRobotSequenceCollator(dataset_cfg, device=device)
-    return DataLoader(
+
+    dataloader = DataLoader(
         dataset,
-        batch_size=dataloader_cfg.batch_size,
+        batch_size=micro_batch_size,
         shuffle=shuffle if sampler is None else False,
         sampler=sampler,
         num_workers=dataloader_cfg.num_workers,
         pin_memory=dataloader_cfg.pin_memory,
         collate_fn=collate,
     )
+    print("DataLoader built on rank:", rank or 0)
+    return dataloader

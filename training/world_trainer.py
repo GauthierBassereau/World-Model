@@ -1,19 +1,19 @@
 import copy
 import os
+
+import yaml
 import random
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass, field, is_dataclass
 from functools import partial
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
-from datetime import timedelta
+from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
-import yaml
 
 from rae_dino.rae import RAE
 from training.dataset import (
@@ -24,13 +24,14 @@ from training.dataset import (
 )
 from world_model.flow_matching import (
     DiffusionConfig,
-    DimensionShiftedUniformScheduler,
+    NoiseScheduler,
     EulerSolverConfig,
     sample_base_noise,
 )
 from world_model.backbone import WorldModelConfig
 
 from training.logger import WorldModelLogger
+os.environ.setdefault("TORCH_DISTRIBUTED_DEBUG", "DETAIL")
 
 @dataclass
 class OptimizerConfig:
@@ -55,7 +56,6 @@ class TrainerLoopConfig:
 
 @dataclass
 class DistributedConfig:
-    enabled: bool = False
     backend: str = "nccl"
     find_unused_parameters: bool = False
     broadcast_buffers: bool = True
@@ -136,31 +136,11 @@ class WorldModelTrainer:
     def __init__(
         self,
         config: WorldModelTrainingConfig,
-        model: nn.Module,
-        autoencoder: Optional[RAE] = None,
+        model: nn.Module
     ) -> None:
         self.config = config
-        self.model = model
-        self.autoencoder = autoencoder or self._build_autoencoder(config.vision)
-        self.is_distributed = False
-        self.rank = 0
-        self.world_size = 1
-        self.local_rank = 0
-
-        if self.config.trainer.distributed.enabled:
-            self._init_distributed()
-
-        self.device = self._resolve_device()
-        self.is_main_process = not self.is_distributed or self.rank == 0
-
-        self.model.to(self.device)
-        self.autoencoder.to(self.device)
-        self.autoencoder.eval()
-        for param in self.autoencoder.parameters():
-            param.requires_grad_(False)
-
         self.flow_cfg = config.diffusion
-        self.scheduler = DimensionShiftedUniformScheduler(self.flow_cfg)
+        self.scheduler = NoiseScheduler(self.flow_cfg)
         self.ema_cfg = config.ema
         self.ema_model: Optional[nn.Module] = None
         self._ema_param_pairs: List[Tuple[torch.nn.Parameter, torch.nn.Parameter]] = []
@@ -170,32 +150,52 @@ class WorldModelTrainer:
         self._sampler_epoch = 0
         self._dataloader_iter = None
 
-        self._seed_everything(config.trainer.seed + self.rank)
+        # Managing devices and distributed setup
+        dist.init_process_group(self.config.trainer.distributed.backend)
+        self.world_size = dist.get_world_size()
+        self.rank = dist.get_rank()
+        self.device_idx = self.rank % torch.cuda.device_count()
+        torch.cuda.set_device(self.device_idx)
+        self.device = torch.device("cuda", self.device_idx)
+        self.is_main_process = self.rank == 0
+
+        self.model = model
+        self.model.to(self.device).train()
+        self.autoencoder = RAE() # For now hardcoded RAE, but later could be any AE        
+        self.autoencoder.to(self.device).eval()
+        for param in self.autoencoder.parameters():
+            param.requires_grad_(False)
+
+        seed = config.trainer.seed*self.world_size + self.rank
+        random.seed(seed)
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
 
         euler_cfg = EulerSolverConfig(
             step_size=EulerSolverConfig().step_size,
             min_signal=0.0,
             max_signal=1.0,
         )
-        frame_delta = self.config.dataset.frame_delta_seconds
-        sample_fps = 1.0 / frame_delta if frame_delta > 0 else None
+
+        sample_fps = 1.0 / self.config.dataset.frame_delta_seconds
         self.logger = WorldModelLogger(
             config.logging,
-            diffusion_cfg=self.flow_cfg,
             euler_cfg=euler_cfg,
             decode_fn=self.autoencoder.decode,
             sample_fps=sample_fps,
             is_main_process=self.is_main_process,
         )
-
+        
         self.dataloader = build_world_model_dataloader(
             dataset_cfg=config.dataset,
             dataloader_cfg=config.dataloader,
-            device=self.device,
-            rank=self.rank if self.is_distributed else None,
-            world_size=self.world_size if self.is_distributed else None,
-            seed=config.trainer.seed + self.rank,
+            grad_accum_steps=config.trainer.grad_accum_steps,
+            seed=seed,
+            rank=self.rank,
+            world_size=self.world_size,
         )
+            
         self._train_module: nn.Module
         self.optimizer = torch.optim.AdamW(
             self.model.parameters(),
@@ -204,18 +204,16 @@ class WorldModelTrainer:
             weight_decay=config.optimizer.weight_decay,
             eps=config.optimizer.eps,
         )
-        if self.is_distributed:
-            if self.device.type != "cuda":
-                raise RuntimeError("Distributed training currently expects CUDA devices.")
+        if self.world_size > 1:
             self._train_module = DistributedDataParallel(
                 self.model,
-                device_ids=[self.device.index],
-                output_device=self.device.index,
-                broadcast_buffers=self.config.trainer.distributed.broadcast_buffers,
-                find_unused_parameters=self.config.trainer.distributed.find_unused_parameters,
+                device_ids=[self.device_idx],
+                gradient_as_bucket_view=False,
             )
+            print(f"[rank {self.rank}] model wrapped in DDP.", flush=True)
         else:
             self._train_module = self.model
+
         autocast_enabled = config.trainer.precision in {"bf16", "fp16"} and self.device.type == "cuda"
         autocast_dtype = torch.bfloat16 if config.trainer.precision == "bf16" else torch.float16
         if autocast_enabled:
@@ -244,52 +242,6 @@ class WorldModelTrainer:
         if self.config.trainer.single_batch_overfit:
             self.logger.info("Single-batch overfit enabled; reusing the first batch for all updates.")
 
-        self.logger.log_dataloader(self.dataloader)
-
-    def _build_autoencoder(self) -> RAE:
-        return RAE()
-
-    def _init_distributed(self) -> None:
-        if not dist.is_available():
-            raise RuntimeError("torch.distributed is required for distributed training.")
-        if dist.is_initialized():
-            self.is_distributed = True
-            self.rank = dist.get_rank()
-            self.world_size = dist.get_world_size()
-            self.local_rank = int(os.environ.get("LOCAL_RANK", self.rank))
-            return
-        local_rank = int(os.environ.get("LOCAL_RANK", "0"))
-        if not torch.cuda.is_available():
-            raise RuntimeError("Distributed training requires CUDA availability.")
-        torch.cuda.set_device(local_rank)
-        backend = self.config.trainer.distributed.backend
-        timeout = timedelta(minutes=self.config.trainer.distributed.timeout_minutes)
-        dist.init_process_group(
-            backend=backend,
-            init_method="env://",
-            timeout=timeout,
-        )
-        self.is_distributed = True
-        self.rank = dist.get_rank()
-        self.world_size = dist.get_world_size()
-        self.local_rank = local_rank
-
-    def _resolve_device(self) -> torch.device:
-        if self.is_distributed:
-            return torch.device("cuda", self.local_rank)
-        if self.config.trainer.device:
-            return torch.device(self.config.trainer.device)
-        if torch.cuda.is_available():
-            return torch.device("cuda")
-        if torch.backends.mps.is_available():
-            return torch.device("mps")
-        return torch.device("cpu")
-
-    def _seed_everything(self, seed: int) -> None:
-        random.seed(seed)
-        torch.manual_seed(seed)
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(seed)
 
     def _init_ema_model(self) -> None:
         ema_device = torch.device(self.ema_cfg.device) if self.ema_cfg.device else self.device
@@ -411,11 +363,11 @@ class WorldModelTrainer:
 
         latents = self._encode_frames(frames)
 
-        tau, tau_weights = self.scheduler.sample(latents) # High signal level -> tau around 1
+        tau = self.scheduler.sample(latents) # High signal level -> tau around 1
         base_noise = sample_base_noise(latents, self.flow_cfg)
         tau_factor = tau.unsqueeze(-1).unsqueeze(-1)
         noisy_latents = (1.0 - tau_factor) * base_noise + tau_factor * latents
-        self.logger.log_distr_noise(tau, weights=tau_weights)
+        self.logger.log_distr_noise(tau)
 
         with self._autocast_scope():
             outputs = self._train_module(
@@ -426,12 +378,7 @@ class WorldModelTrainer:
                 actions_mask=actions_mask,
             )
             pred_clean_latents = outputs.get("pred_clean_latents")
-            if pred_clean_latents.dtype != latents.dtype:
-                latents = latents.to(pred_clean_latents.dtype)
-                tau_weights = tau_weights.to(pred_clean_latents.dtype)
-            mse = F.mse_loss(pred_clean_latents, latents, reduction="none")
-            mse = mse.mean(dim=(-1, -2))
-            loss = (mse * tau_weights.to(mse.dtype)).mean()
+            loss = F.mse_loss(pred_clean_latents, latents)
             scaled_loss = loss / self.config.trainer.grad_accum_steps
 
         if self.use_scaler:
@@ -490,8 +437,9 @@ class WorldModelTrainer:
         self._sampler_epoch += 1
         return iter(self.dataloader)
 
+
     def _sync_metrics(self, metrics: Dict[str, float]) -> Dict[str, float]:
-        if not self.is_distributed or not metrics:
+        if self.world_size == 1 or not metrics:
             return metrics
         keys = sorted(metrics.keys())
         values = torch.tensor(
@@ -538,7 +486,7 @@ class WorldModelTrainer:
 
     def close(self) -> None:
         self.logger.close()
-        if self.is_distributed and dist.is_initialized():
+        if self.world_size > 1 and dist.is_initialized():
             dist.barrier()
             dist.destroy_process_group()
 
@@ -556,13 +504,3 @@ class WorldModelTrainer:
             self._ema_checkpoint_state = ckpt["ema_model"]
         elif self.ema_cfg.enabled:
             self._ema_checkpoint_state = None
-
-
-def train_from_config(
-    config_path: Union[str, Path],
-    model: nn.Module,
-    autoencoder: Optional[RAE] = None,
-) -> None:
-    config = load_training_config(config_path)
-    trainer = WorldModelTrainer(config, model, autoencoder)
-    trainer.train()

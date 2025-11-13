@@ -16,7 +16,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.optim import Optimizer
 
-from world_model.flow_matching import DiffusionConfig, EulerSolver, EulerSolverConfig
+from world_model.flow_matching import EulerSolver, EulerSolverConfig
 
 if TYPE_CHECKING:
     from training.world_trainer import LoggingConfig
@@ -41,7 +41,6 @@ class WorldModelLogger:
     def __init__(
         self,
         logging_cfg: "LoggingConfig",
-        diffusion_cfg: DiffusionConfig,
         euler_cfg: EulerSolverConfig,
         decode_fn: Callable[[torch.Tensor], torch.Tensor],
         sample_fps: Optional[float] = None,
@@ -112,26 +111,6 @@ class WorldModelLogger:
         self.current_micro_step = micro_step
 
     # ------------------------------------------------------------------ logging hooks
-    def log_dataloader(self, dataloader: DataLoader) -> None:
-        if not self.is_main_process:
-            return
-        try:
-            steps = len(dataloader)
-        except TypeError:
-            steps = None
-
-        if steps is None:
-            self.info("Dataloader length unavailable (object does not implement __len__).")
-        else:
-            self.info("Dataloader contains %d steps.", steps)
-
-        if self.wandb_run is not None:
-            self.wandb_run.log(
-                {"debug/dataloader_length": steps if steps is not None else "unknown"},
-                step=0,
-                commit=False,
-            )
-
     def log_training_metrics(self, metrics: Dict[str, float]) -> None:
         if not self.is_main_process:
             return
@@ -246,6 +225,7 @@ class WorldModelLogger:
         independant_frames_mask: Optional[torch.Tensor] = None,
     ) -> None:
         if not self.is_main_process:
+            print("Is main process true, not logging")
             return
         if (
             self.sample_interval is None
@@ -254,12 +234,7 @@ class WorldModelLogger:
             or self.current_step % self.sample_interval != 0
             or self._sample_logged_this_step
         ):
-            return
-
-        if self._decode_latents is None:
-            return
-
-        if latents.ndim != 4 or noisy_latents.ndim != 4:
+            print("Not logging sample this step")
             return
 
         batch_size = latents.shape[0]

@@ -26,7 +26,7 @@ sbatch \
   --gres="gpu:tesla:${NUM_GPUS}" \
   --nodes=1 --ntasks-per-node="${NUM_GPUS}" \
   --cpus-per-task=8 \
-  --mem=48G --time=00:15:00 \
+  --mem=64G --time=00:15:00 \
   --export=ALL \
   --wrap "bash -lc '
     set -euo pipefail
@@ -41,5 +41,5 @@ sbatch \
     wm
 
     cd \"$REPO\"
-    torchrun --nproc_per_node=${NUM_GPUS} -m \"$mod\"$args
+    torchrun --standalone --nnodes=1 --nproc_per_node=${NUM_GPUS} -m \"$mod\"$args
   '"
