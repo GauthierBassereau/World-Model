@@ -26,7 +26,7 @@ sbatch \
   --gres="gpu:h200-141g:${NUM_GPUS}" \
   --nodes=1 --ntasks-per-node="${NUM_GPUS}" \
   --cpus-per-task=10 \
-  --mem=128G --time=08:00:00 \
+  --mem=128G --time=10:00:00 \
   --export=ALL \
   --wrap "bash -lc '
     set -euo pipefail

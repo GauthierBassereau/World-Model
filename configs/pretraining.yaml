@@ -28,7 +28,7 @@ trainer:
     timeout_minutes: 5.0
 
 dataloader:
-  batch_size: 256 # global batch size
+  batch_size: 272 # global batch size
   shuffle: true
   num_workers: 0 # need to check why but I get errors with num_workers > 0
   pin_memory: true
@@ -41,8 +41,8 @@ optimizer:
   grad_clip_norm: 1.0
 
 dataset:
-  repo_id: lerobot/droid_1.0.1
-  use_streaming: true
+  repo_id: aractingi/droid_1.0.1
+  use_streaming: false
   video_backend: null # torchcodec by default
   cameras:
     - observation.images.exterior_1_left

@@ -378,7 +378,7 @@ class WorldModelTrainer:
                 torch.cuda.reset_peak_memory_stats(self.device)
             self.logger.start_step(step)
             self._train_module.train()
-            self.optimizer.zero_grad(set_to_none=True) # set_to_none for potential memory savings hehe
+            self.optimizer.zero_grad()
             accum_metrics: Dict[str, float] = {}
 
             for accum_idx in range(self.config.trainer.grad_accum_steps):

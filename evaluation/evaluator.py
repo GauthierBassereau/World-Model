@@ -78,7 +78,6 @@ class WorldModelEvaluator:
 
     @staticmethod
     def _build_autoencoder(cfg: WorldModelTrainingConfig) -> RAE:
-        vision = cfg.vision
         autoencoder = RAE()
         autoencoder.eval()
         return autoencoder
