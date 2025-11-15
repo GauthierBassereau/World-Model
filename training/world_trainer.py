@@ -194,22 +194,14 @@ class WorldModelTrainer:
 
         if config.dataloader.batch_size % (config.trainer.grad_accum_steps * self.world_size) != 0:
             raise ValueError("Global batch size must be divisible by world_size * grad_accum_steps.")
-        self._global_micro_batch = config.dataloader.batch_size // config.trainer.grad_accum_steps
-        self._local_micro_batch = self._global_micro_batch // self.world_size
-        self._stream_shared_loader = config.dataset.use_streaming and self.world_size > 1
-
-        if self._stream_shared_loader and self.rank != 0:
-            self.dataloader = None
-        else:
-            loader_rank = 0 if self._stream_shared_loader else self.rank
-            self.dataloader = build_world_model_dataloader(
-                dataset_cfg=config.dataset,
-                dataloader_cfg=config.dataloader,
-                grad_accum_steps=config.trainer.grad_accum_steps,
-                seed=seed,
-                rank=loader_rank,
-                world_size=self.world_size,
-            )
+        self.dataloader = build_world_model_dataloader(
+            dataset_cfg=config.dataset,
+            dataloader_cfg=config.dataloader,
+            grad_accum_steps=config.trainer.grad_accum_steps,
+            seed=seed,
+            rank=self.rank,
+            world_size=self.world_size,
+        )
             
         self.optimizer = torch.optim.AdamW(
             self.model.parameters(),
@@ -496,12 +488,11 @@ class WorldModelTrainer:
         return latents.view(batch, steps, tokens, dim)
 
     def _next_batch(self) -> WorldModelBatch:
-        fetch = self._fetch_streaming_batch if self._stream_shared_loader else self._fetch_batch
         if self.config.trainer.single_batch_overfit:
             if self._cached_overfit_batch is None:
-                self._cached_overfit_batch = fetch()
+                self._cached_overfit_batch = self._fetch_batch()
             return self._cached_overfit_batch
-        return fetch()
+        return self._fetch_batch()
 
     def _fetch_batch(self) -> WorldModelBatch:
         if self._dataloader_iter is None:
@@ -513,140 +504,6 @@ class WorldModelTrainer:
                 self.logger.warning("Data iterator exhausted (StopIteration); reinitializing dataloader iterator.")
             self._dataloader_iter = self._create_data_iter()
             return next(self._dataloader_iter)
-
-    def _fetch_streaming_batch(self) -> WorldModelBatch:
-        required = self._local_micro_batch * self.world_size
-        while True:
-            batch: Optional[WorldModelBatch] = None
-            drop_batch = False
-            if self.rank == 0:
-                if self._dataloader_iter is None:
-                    self._dataloader_iter = self._create_data_iter()
-                try:
-                    batch = next(self._dataloader_iter)
-                except StopIteration:
-                    if self.is_main_process:
-                        self.logger.warning("Data iterator exhausted (StopIteration); reinitializing dataloader iterator.")
-                    self._dataloader_iter = self._create_data_iter()
-                    batch = next(self._dataloader_iter)
-                assert batch is not None
-                batch, dropped = self._prepare_streaming_batch(batch, required)
-                if dropped.shortfall > 0:
-                    drop_batch = True
-                    if self.is_main_process:
-                        self.logger.warning(
-                            "Streaming batch smaller than required micro-batch (%d < %d); dropping batch.",
-                            dropped.original_size,
-                            required,
-                        )
-                elif dropped.excess > 0 and self.is_main_process:
-                    self.logger.warning(
-                        "Streaming batch larger than required micro-batch (%d > %d); dropping %d surplus samples.",
-                        dropped.original_size,
-                        required,
-                        dropped.excess,
-                    )
-            drop_msg = [drop_batch]
-            dist.broadcast_object_list(drop_msg, src=0)
-            drop_batch = bool(drop_msg[0])
-            if drop_batch:
-                continue
-            return self._scatter_streaming_batch(batch)
-
-    @dataclass
-    class _StreamingBatchAdjustment:
-        original_size: int
-        shortfall: int = 0
-        excess: int = 0
-
-    def _prepare_streaming_batch(
-        self,
-        batch: WorldModelBatch,
-        required: int,
-    ) -> Tuple[Optional[WorldModelBatch], "_StreamingBatchAdjustment"]:
-        current = batch.sequence_frames.shape[0]
-        if current < required:
-            return None, self._StreamingBatchAdjustment(
-                original_size=current,
-                shortfall=required - current,
-            )
-        if current == required:
-            return batch, self._StreamingBatchAdjustment(original_size=current)
-
-        trim_slice = slice(0, required)
-
-        def _maybe_slice(tensor: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
-            if tensor is None:
-                return None
-            return tensor[trim_slice].contiguous()
-
-        trimmed_batch = WorldModelBatch(
-            sequence_frames=batch.sequence_frames[trim_slice].contiguous(),
-            sequence_actions=_maybe_slice(batch.sequence_actions),
-            independant_frames_mask=_maybe_slice(batch.independant_frames_mask),
-            actions_mask=_maybe_slice(batch.actions_mask),
-        )
-        return trimmed_batch, self._StreamingBatchAdjustment(
-            original_size=current,
-            excess=current - required,
-        )
-
-    def _scatter_streaming_batch(self, batch: Optional[WorldModelBatch]) -> WorldModelBatch:
-        chunk_lists = None
-        metadata = None
-        if self.rank == 0:
-            if batch is None:
-                raise RuntimeError("Streaming batch is None on rank 0.")
-            chunk_lists = {
-                "sequence_frames": self._split_chunks_to_device(batch.sequence_frames),
-                "sequence_actions": self._split_chunks_to_device(batch.sequence_actions),
-                "independant_frames_mask": self._split_chunks_to_device(batch.independant_frames_mask),
-                "actions_mask": self._split_chunks_to_device(batch.actions_mask),
-            }
-            metadata = {key: (chunks[0].shape, chunks[0].dtype) for key, chunks in chunk_lists.items()}
-        metadata_list = [metadata]
-        dist.broadcast_object_list(metadata_list, src=0)
-        metadata = metadata_list[0]
-
-        sequence_frames = self._scatter_tensor(
-            None if chunk_lists is None else chunk_lists["sequence_frames"],
-            metadata["sequence_frames"],
-        )
-        sequence_actions = self._scatter_tensor(
-            None if chunk_lists is None else chunk_lists["sequence_actions"],
-            metadata["sequence_actions"],
-        )
-        independant_frames_mask = self._scatter_tensor(
-            None if chunk_lists is None else chunk_lists["independant_frames_mask"],
-            metadata["independant_frames_mask"],
-        )
-        actions_mask = self._scatter_tensor(
-            None if chunk_lists is None else chunk_lists["actions_mask"],
-            metadata["actions_mask"],
-        )
-
-        return WorldModelBatch(
-            sequence_frames=sequence_frames,
-            sequence_actions=sequence_actions,
-            independant_frames_mask=independant_frames_mask,
-            actions_mask=actions_mask,
-        )
-
-    def _scatter_tensor(
-        self,
-        scatter_list: Optional[Tuple[torch.Tensor, ...]],
-        spec: Tuple[torch.Size, torch.dtype],
-    ) -> torch.Tensor:
-        shape, dtype = spec
-        tensor = torch.empty(shape, dtype=dtype, device=self.device)
-        dist.scatter(tensor, list(scatter_list) if scatter_list is not None else None, src=0)
-        return tensor
-
-    def _split_chunks_to_device(self, tensor: torch.Tensor) -> Tuple[torch.Tensor, ...]:
-        return tuple(
-            chunk.to(self.device, non_blocking=True)
-            for chunk in tensor.split(self._local_micro_batch, dim=0)
-        )
 
     def _create_data_iter(self):
         sampler = getattr(self.dataloader, "sampler", None)
@@ -673,10 +530,7 @@ class WorldModelTrainer:
         configured = self.config.trainer.max_steps
         if configured is not None:
             return configured
-        try:
-            total = len(self.dataloader)
-        except Exception: # for iter dataset (i.e. LeRobotStreaming), there is no length...
-            total = 99999999999 # FIX ME
+        total = len(self.dataloader)
         if total <= 0:
             raise ValueError(
                 "TrainerLoopConfig.max_steps resolved to zero steps; check dataset configuration."

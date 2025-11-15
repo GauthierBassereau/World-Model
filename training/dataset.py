@@ -24,7 +24,6 @@ class DataloaderConfig:
 @dataclass
 class DatasetConfig:
     repo_id: str = "lerobot/droid_1.0.1"
-    use_streaming: bool = False
     video_backend: str = None
     cameras: Sequence[str] = (
         "observation.images.exterior_1_left",
@@ -392,7 +391,6 @@ def build_world_model_dataloader(
     delta_timestamps = _ensure_delta_timestamps(dataset_cfg, metadata)
 
     effective_world_size = world_size or 1
-    rank_value = rank or 0
     distributed = effective_world_size > 1
 
     if dataloader_cfg.batch_size % grad_accum_steps != 0:
@@ -403,42 +401,28 @@ def build_world_model_dataloader(
     micro_batch_size = (
         global_micro_batch // effective_world_size if distributed else global_micro_batch
     )
-    dataloader_batch_size = global_micro_batch if dataset_cfg.use_streaming else micro_batch_size
+    dataloader_batch_size = micro_batch_size
 
     sampler: Optional[DistributedSampler] = None
 
-    if dataset_cfg.use_streaming:
-        from lerobot.datasets.streaming_dataset import StreamingLeRobotDataset
-
-        dataset = StreamingLeRobotDataset(
-            dataset_cfg.repo_id,
-            delta_timestamps=delta_timestamps,
-            shuffle=dataloader_cfg.shuffle,
+    dataset = LeRobotDataset(
+        dataset_cfg.repo_id,
+        episodes=list(dataset_cfg.episodes) if dataset_cfg.episodes else None,
+        delta_timestamps=delta_timestamps,
+        tolerance_s=0.01,
+        video_backend=dataset_cfg.video_backend,
+    )
+    shuffle = dataloader_cfg.shuffle
+    if distributed:
+        sampler = DistributedSampler(
+            dataset,
+            num_replicas=world_size,
+            rank=rank or 0,
+            shuffle=shuffle,
+            drop_last=False,
             seed=seed or 0,
-            tolerance_s=0.01,
         )
         shuffle = False
-
-        print(f"Using streaming dataset, rank: {rank_value} and seed: {seed or 0}")
-    else:
-        dataset = LeRobotDataset(
-            dataset_cfg.repo_id,
-            episodes=list(dataset_cfg.episodes) if dataset_cfg.episodes else None,
-            delta_timestamps=delta_timestamps,
-            tolerance_s=0.01,
-            video_backend=dataset_cfg.video_backend,
-        )
-        shuffle = dataloader_cfg.shuffle
-        if distributed:
-            sampler = DistributedSampler(
-                dataset,
-                num_replicas=world_size,
-                rank=rank or 0,
-                shuffle=shuffle,
-                drop_last=False,
-                seed=seed or 0,
-            )
-            shuffle = False
 
     collate = LeRobotSequenceCollator(dataset_cfg, device=device)
 

@@ -42,7 +42,6 @@ optimizer:
 
 dataset:
   repo_id: aractingi/droid_1.0.1
-  use_streaming: false
   video_backend: null # torchcodec by default
   cameras:
     - observation.images.exterior_1_left
