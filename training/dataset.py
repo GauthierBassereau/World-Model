@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Literal
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Literal, Set
 
+import logging
 import random
 
 import torch
@@ -24,7 +25,7 @@ class DataloaderConfig:
 @dataclass
 class DatasetConfig:
     repo_id: str = "lerobot/droid_1.0.1"
-    video_backend: str = None
+    decoder_retry_attempts: int = 5
     cameras: Sequence[str] = (
         "observation.images.exterior_1_left",
         "observation.images.exterior_2_left",
@@ -43,6 +44,8 @@ class DatasetConfig:
     drop_action_probability: float = 0.0
 
     def __post_init__(self) -> None:
+        if self.decoder_retry_attempts < 1:
+            raise ValueError("decoder_retry_attempts must be >= 1.")
         self.frame_delta_seconds = _coerce_frame_delta(self.frame_delta_seconds)
         if not self.sequence_length_distribution:
             raise ValueError(
@@ -116,6 +119,57 @@ class WorldModelBatch:
     sequence_actions: torch.Tensor
     independant_frames_mask: torch.Tensor
     actions_mask: torch.Tensor
+
+
+logger = logging.getLogger(__name__)
+
+
+class ResilientLeRobotDataset(LeRobotDataset):
+    """Dataset wrapper that skips samples whose decoding fails."""
+
+    def __init__(
+        self,
+        *args,
+        max_decode_failures: int = 5,
+        **kwargs,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        if max_decode_failures < 1:
+            raise ValueError("max_decode_failures must be >= 1.")
+        self.max_decode_failures = max_decode_failures
+        self._bad_indices: Set[int] = set()
+
+    def __getitem__(self, index: int) -> Dict[str, torch.Tensor]:
+        total = len(self)
+        attempts = 0
+        candidate = index % total
+        last_error: Optional[RuntimeError] = None
+
+        while attempts < min(self.max_decode_failures, total):
+            if candidate in self._bad_indices:
+                attempts += 1
+                candidate = (candidate + 1) % total
+                continue
+            try:
+                return super().__getitem__(candidate)
+            except RuntimeError as exc:
+                last_error = exc
+                self._bad_indices.add(candidate)
+                attempts += 1
+                logger.warning(
+                    "Decoder failure for dataset index %d (attempt %d/%d): %s. Skipping sample.",
+                    candidate,
+                    attempts,
+                    self.max_decode_failures,
+                    exc,
+                )
+                candidate = (candidate + 1) % total
+
+        if last_error is not None:
+            raise RuntimeError(
+                f"Failed to fetch dataset sample after {attempts} decode retries."
+            ) from last_error
+        raise RuntimeError("Unable to fetch dataset sample due to repeated decoder errors.")
 
 
 def _coerce_frame_delta(value: float | str) -> float:
@@ -405,12 +459,12 @@ def build_world_model_dataloader(
 
     sampler: Optional[DistributedSampler] = None
 
-    dataset = LeRobotDataset(
+    dataset = ResilientLeRobotDataset(
         dataset_cfg.repo_id,
         episodes=list(dataset_cfg.episodes) if dataset_cfg.episodes else None,
         delta_timestamps=delta_timestamps,
         tolerance_s=0.01,
-        video_backend=dataset_cfg.video_backend,
+        max_decode_failures=dataset_cfg.decoder_retry_attempts,
     )
     shuffle = dataloader_cfg.shuffle
     if distributed:
@@ -419,7 +473,7 @@ def build_world_model_dataloader(
             num_replicas=world_size,
             rank=rank or 0,
             shuffle=shuffle,
-            drop_last=False,
+            drop_last=True,
             seed=seed or 0,
         )
         shuffle = False

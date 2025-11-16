@@ -16,16 +16,10 @@ trainer:
   device: cuda
   resume_checkpoint: null
   single_batch_overfit: false
-  lr_decay: false
   lr_warmup_steps: 50
   lr_warmup_lr: 1.0e-6
   lr_final: 2.0e-5
   lr_final_step: 10000
-  distributed:
-    backend: nccl
-    find_unused_parameters: false
-    broadcast_buffers: true
-    timeout_minutes: 5.0
 
 dataloader:
   batch_size: 272 # global batch size
@@ -42,7 +36,7 @@ optimizer:
 
 dataset:
   repo_id: aractingi/droid_1.0.1
-  video_backend: null # torchcodec by default
+  decoder_retry_attempts: 5
   cameras:
     - observation.images.exterior_1_left
     - observation.images.exterior_2_left

@@ -1,5 +1,7 @@
 import copy
 import os
+from readline import backend
+from turtle import back
 
 import yaml
 import random
@@ -31,7 +33,6 @@ from world_model.flow_matching import (
 from world_model.backbone import WorldModelConfig
 
 from training.logger import WorldModelLogger
-os.environ.setdefault("TORCH_DISTRIBUTED_DEBUG", "DETAIL")
 
 @dataclass
 class OptimizerConfig:
@@ -51,20 +52,10 @@ class TrainerLoopConfig:
     device: Optional[str] = None
     resume_checkpoint: Optional[str] = None
     single_batch_overfit: bool = False
-    distributed: "DistributedConfig" = field(default_factory=lambda: DistributedConfig())
-    lr_decay: bool = False
     lr_warmup_steps: int = 0
     lr_warmup_lr: Optional[float] = None
     lr_final: Optional[float] = None
     lr_final_step: Optional[int] = None
-
-
-@dataclass
-class DistributedConfig:
-    backend: str = "nccl"
-    find_unused_parameters: bool = False
-    broadcast_buffers: bool = True
-    timeout_minutes: float = 30.0
 
 
 @dataclass
@@ -109,10 +100,7 @@ def load_training_config(path: str | Path) -> WorldModelTrainingConfig:
     diffusion_kwargs = dict(raw.get("diffusion", {}))
     world_model_kwargs = dict(raw.get("world_model", {}))
     trainer_kwargs = dict(raw.get("trainer", {}))
-    distributed_kwargs = trainer_kwargs.pop("distributed", {})
     trainer_cfg = TrainerLoopConfig(**trainer_kwargs)
-    if distributed_kwargs:
-        trainer_cfg.distributed = DistributedConfig(**distributed_kwargs)
 
     cfg = WorldModelTrainingConfig(
         dataset=DatasetConfig(**raw.get("dataset", {})),
@@ -156,7 +144,7 @@ class WorldModelTrainer:
         self._dataloader_iter = None
 
         # Managing devices and distributed setup
-        dist.init_process_group(self.config.trainer.distributed.backend)
+        dist.init_process_group(backend="nccl")
         self.world_size = dist.get_world_size()
         self.rank = dist.get_rank()
         self.device_idx = self.rank % torch.cuda.device_count()
@@ -210,40 +198,7 @@ class WorldModelTrainer:
             weight_decay=config.optimizer.weight_decay,
             eps=config.optimizer.eps,
         )
-        self._base_lrs = [group["lr"] for group in self.optimizer.param_groups]
-        warmup_lr = self.config.trainer.lr_warmup_lr
-        self._warmup_start_lrs = [
-            min(warmup_lr, base_lr) if warmup_lr is not None else 0.0
-            for base_lr in self._base_lrs
-        ]
-        if warmup_lr is not None and warmup_lr < 0.0:
-            raise ValueError("trainer.lr_warmup_lr must be non-negative.")
-        final_lr = self.config.trainer.lr_final
-        final_step = self.config.trainer.lr_final_step
-        if (final_lr is None) != (final_step is None):
-            raise ValueError("trainer.lr_final and trainer.lr_final_step must be provided together.")
-        if final_lr is not None and final_lr < 0.0:
-            raise ValueError("trainer.lr_final must be non-negative.")
-        if final_step is not None and final_step <= self.config.trainer.lr_warmup_steps:
-            raise ValueError("trainer.lr_final_step must be greater than lr_warmup_steps.")
-        self._final_lrs = (
-            [final_lr for _ in self.optimizer.param_groups] if final_lr is not None else None
-        )
-        self._lr_final_step = final_step
-        self._lr_decay_steps = None
-        if (
-            final_lr is None
-            and self.config.trainer.lr_decay
-            and self.config.trainer.max_steps is not None
-        ):
-            self._lr_decay_steps = max(
-                1, self.config.trainer.max_steps - self.config.trainer.lr_warmup_steps
-            )
-        self._lr_schedule_enabled = (
-            self.config.trainer.lr_warmup_steps > 0
-            or self._lr_decay_steps is not None
-            or self._final_lrs is not None
-        )
+        self._init_lr_schedule()
         
         self._train_module: nn.Module
         if self.world_size > 1:
@@ -285,6 +240,31 @@ class WorldModelTrainer:
             self.logger.info("Single-batch overfit enabled; reusing the first batch for all updates.")
 
 
+    def _init_lr_schedule(self) -> None:
+        trainer_cfg = self.config.trainer
+        self._base_lrs = [group["lr"] for group in self.optimizer.param_groups]
+        warmup_lr = trainer_cfg.lr_warmup_lr
+        self._warmup_start_lrs = [
+            min(warmup_lr, base_lr) if warmup_lr is not None else 0.0
+            for base_lr in self._base_lrs
+        ]
+        self._warmup_steps = max(0, trainer_cfg.lr_warmup_steps)
+        self._warmup_enabled = self._warmup_steps > 0
+
+        final_lr = trainer_cfg.lr_final
+        if final_lr is not None:
+            self._final_lrs = [final_lr for _ in self.optimizer.param_groups]
+            final_step = trainer_cfg.lr_final_step or trainer_cfg.max_steps
+            self._lr_final_step = final_step
+        else:
+            self._final_lrs = None
+            self._lr_final_step = None
+
+        self._lr_schedule_enabled = self._warmup_enabled or (
+            self._final_lrs is not None and self._lr_final_step is not None
+        )
+
+
     def _init_ema_model(self) -> None:
         ema_device = torch.device(self.ema_cfg.device) if self.ema_cfg.device else self.device
         self.ema_model = copy.deepcopy(self.model).to(ema_device)
@@ -323,26 +303,20 @@ class WorldModelTrainer:
     def _apply_lr_schedule(self, step: int) -> None:
         if not self._lr_schedule_enabled:
             return
-        warmup_steps = self.config.trainer.lr_warmup_steps
         current_step = max(step, 1)
-        max_steps = self.config.trainer.max_steps
         for idx, group in enumerate(self.optimizer.param_groups):
             base_lr = self._base_lrs[idx]
             target_lr = base_lr
-            if warmup_steps > 0 and current_step <= warmup_steps:
+            if self._warmup_enabled and current_step <= self._warmup_steps:
                 start_lr = self._warmup_start_lrs[idx]
-                progress = current_step / warmup_steps
+                progress = current_step / max(1, self._warmup_steps)
                 target_lr = start_lr + (base_lr - start_lr) * progress
             elif self._final_lrs is not None and self._lr_final_step is not None:
-                duration = max(1, self._lr_final_step - warmup_steps)
-                warmup_offset = max(current_step - warmup_steps, 0)
+                duration = max(1, self._lr_final_step - self._warmup_steps)
+                warmup_offset = max(current_step - self._warmup_steps, 0)
                 progress = min(warmup_offset, duration) / duration
                 final_lr = self._final_lrs[idx]
                 target_lr = base_lr + (final_lr - base_lr) * progress
-            elif self._lr_decay_steps is not None and max_steps is not None:
-                effective_step = min(current_step, max_steps)
-                remaining = max(0, max_steps - effective_step)
-                target_lr = base_lr * (remaining / self._lr_decay_steps)
             group["lr"] = target_lr
 
     def train(self) -> None:
