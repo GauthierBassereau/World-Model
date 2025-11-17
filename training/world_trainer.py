@@ -1,12 +1,8 @@
 import copy
-import os
-from readline import backend
-from turtle import back
-
 import yaml
 import random
 from contextlib import nullcontext
-from dataclasses import asdict, dataclass, field, is_dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 from functools import partial
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -23,6 +19,11 @@ from training.dataset import (
     DatasetConfig,
     WorldModelBatch,
     build_world_model_dataloader,
+)
+from evaluation.world_model_evaluator import (
+    EvaluationConfig,
+    EvaluationSummary,
+    WorldModelEvaluator,
 )
 from world_model.flow_matching import (
     DiffusionConfig,
@@ -91,6 +92,7 @@ class WorldModelTrainingConfig:
     diffusion: DiffusionConfig = DiffusionConfig()
     world_model: WorldModelConfig = WorldModelConfig()
     ema: EMAConfig = EMAConfig()
+    evaluation: EvaluationConfig = EvaluationConfig()
     
     
 def load_training_config(path: str | Path) -> WorldModelTrainingConfig:
@@ -101,6 +103,7 @@ def load_training_config(path: str | Path) -> WorldModelTrainingConfig:
     world_model_kwargs = dict(raw.get("world_model", {}))
     trainer_kwargs = dict(raw.get("trainer", {}))
     trainer_cfg = TrainerLoopConfig(**trainer_kwargs)
+    evaluation_cfg = EvaluationConfig(**raw.get("evaluation", {}))
 
     cfg = WorldModelTrainingConfig(
         dataset=DatasetConfig(**raw.get("dataset", {})),
@@ -111,6 +114,7 @@ def load_training_config(path: str | Path) -> WorldModelTrainingConfig:
         diffusion=DiffusionConfig(**diffusion_kwargs),
         world_model=WorldModelConfig(**world_model_kwargs),
         ema=EMAConfig(**raw.get("ema", {})),
+        evaluation=evaluation_cfg,
     )
     cfg.diffusion.validate()
     cfg.ema.validate()
@@ -175,7 +179,6 @@ class WorldModelTrainer:
         self.logger = WorldModelLogger(
             config.logging,
             euler_cfg=euler_cfg,
-            decode_fn=self.autoencoder.decode,
             sample_fps=sample_fps,
             is_main_process=self.is_main_process,
         )
@@ -190,6 +193,36 @@ class WorldModelTrainer:
             rank=self.rank,
             world_size=self.world_size,
         )
+
+        self.evaluator: Optional[WorldModelEvaluator] = None
+        if self.is_main_process:
+            try:
+                evaluator = WorldModelEvaluator(
+                    config=config.evaluation,
+                    dataset_cfg=config.dataset,
+                    dataloader_cfg=config.dataloader,
+                    diffusion_cfg=self.flow_cfg,
+                    autoencoder=self.autoencoder,
+                    device=self.device,
+                    seed=seed,
+                    solver_cfg=euler_cfg,
+                )
+                if evaluator.dataloader is None:
+                    self.logger.warning(
+                        "Evaluation dataset split unavailable; metrics will be skipped."
+                    )
+                else:
+                    self.evaluator = evaluator
+            except ValueError as exc:
+                self.logger.warning(
+                    "Evaluation disabled due to configuration issue: %s",
+                    exc,
+                )
+        else:
+            self.logger.info(
+                "Evaluation only runs on rank 0; skipping on rank %d.",
+                self.rank,
+            )
             
         self.optimizer = torch.optim.AdamW(
             self.model.parameters(),
@@ -382,6 +415,8 @@ class WorldModelTrainer:
                 mean_metrics.update(grad_metrics)
             mean_metrics = self._sync_metrics(mean_metrics)
             self.logger.log_training_metrics(mean_metrics)
+            if self.is_main_process:
+                self._maybe_run_evaluation(step)
 
             if (
                 self.config.logging.checkpoint_interval
@@ -435,19 +470,6 @@ class WorldModelTrainer:
         else:
             scaled_loss.backward()
 
-        if self.is_main_process:
-            self.logger.maybe_log_micro_step_video(
-                self.model,
-                latents=latents.detach(),
-                noisy_latents=noisy_latents.detach(),
-                noise_levels=tau.detach(),
-                actions=actions.detach() if actions is not None else None,
-                actions_mask=actions_mask.detach() if actions_mask is not None else None,
-                independant_frames_mask=independant_frames_mask.detach()
-                if independant_frames_mask is not None
-                else None,
-            )
-
         return {
             "loss": float(loss.detach().cpu()),
             "signal_level": float(tau.mean().detach().cpu()),
@@ -499,6 +521,25 @@ class WorldModelTrainer:
         dist.all_reduce(values, op=dist.ReduceOp.SUM)
         values /= self.world_size
         return {key: float(value) for key, value in zip(keys, values.tolist())}
+
+    def _maybe_run_evaluation(self, step: int) -> None:
+        if self.evaluator is None:
+            return
+        interval = self.logger.sample_interval
+        if interval is None or interval <= 0 or step % interval != 0:
+            return
+        eval_model = self.ema_model if self.ema_model is not None else self.model
+        model_device = next(eval_model.parameters()).device
+        if model_device != self.device:
+            self.logger.warning(
+                "Evaluation model device %s does not match trainer device %s; skipping evaluation.",
+                model_device,
+                self.device,
+            )
+            return
+        result = self.evaluator.evaluate(eval_model)
+        if result is not None:
+            self.logger.log_evaluation(result)
 
     def _resolve_total_steps(self) -> int:
         configured = self.config.trainer.max_steps

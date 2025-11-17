@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Literal, Set
 
+import copy
 import logging
 import random
 
@@ -37,7 +38,9 @@ class DatasetConfig:
     action_representation: ActionRepresentation = "delta"
     action_normalization: Optional[ActionNormalizationType] = None
     action_normalization_params: Optional[Dict[str, Sequence[float]]] = None
-    episodes: Optional[Sequence[int]] = None # None -> all
+    train_episodes: Optional[Sequence[int]] = None  # None -> auto
+    evaluation_episodes: Optional[Sequence[int]] = None
+    sequence_length_eval: Optional[int] = None
     sequence_length_distribution: Dict[int, float] = field(default_factory=lambda: {4: 1.0})
     frame_delta_seconds: float | str = 5.0 / 15.0
     independant_frames_probability: float = 0.0
@@ -111,6 +114,27 @@ class DatasetConfig:
                     raise ValueError(
                         "All action_normalization_params sequences must have the same length."
                     )
+        self.train_episodes = self._normalize_episode_indices(self.train_episodes)
+        self.evaluation_episodes = self._normalize_episode_indices(self.evaluation_episodes)
+        if self.train_episodes and self.evaluation_episodes:
+            overlap = set(self.train_episodes) & set(self.evaluation_episodes)
+            if overlap:
+                raise ValueError(
+                    "train_episodes and evaluation_episodes must be disjoint; overlapping indices: "
+                    + ", ".join(str(idx) for idx in sorted(overlap))
+                )
+        if self.sequence_length_eval is not None:
+            value = int(self.sequence_length_eval)
+            if value < 2:
+                raise ValueError("DatasetConfig.sequence_length_eval must be >= 2.")
+            self.sequence_length_eval = value
+
+    @staticmethod
+    def _normalize_episode_indices(indices: Optional[Sequence[int]]) -> Optional[List[int]]:
+        if indices is None:
+            return None
+        normalized = [int(idx) for idx in indices]
+        return normalized or None
 
 
 @dataclass
@@ -426,9 +450,50 @@ class LeRobotSequenceCollator:
         return choices, normalized
 
     def _sample_sequence_length(self) -> int:
-        return random.choices(
-            self.sequence_length_choices, weights=self.sequence_length_probs, k=1
-        )[0]
+            return random.choices(
+                self.sequence_length_choices, weights=self.sequence_length_probs, k=1
+            )[0]
+
+
+def _list_all_episode_indices(metadata: LeRobotDatasetMetadata) -> List[int]:
+    episodes = getattr(metadata, "episodes", None)
+    if isinstance(episodes, dict):
+        for key in ("dataset_from_index", "episode_from_index", "from_index"):
+            if key in episodes:
+                total = len(episodes[key])
+                return list(range(total))
+        count = episodes.get("count") if hasattr(episodes, "get") else None
+        if isinstance(count, int) and count > 0:
+            return list(range(count))
+    raise ValueError(
+        "Unable to infer available episodes from metadata. "
+        "Set dataset.train_episodes explicitly to avoid automatic splitting."
+    )
+
+
+def _resolve_episode_split(
+    dataset_cfg: DatasetConfig,
+    metadata: LeRobotDatasetMetadata,
+    split: Literal["train", "eval"],
+) -> Optional[List[int]]:
+    if split not in {"train", "eval"}:
+        raise ValueError(f"Unknown dataset split '{split}'.")
+    if split == "eval":
+        if not dataset_cfg.evaluation_episodes:
+            raise ValueError(
+                "dataset.evaluation_episodes must be provided to build the evaluation split."
+            )
+        return dataset_cfg.evaluation_episodes
+
+    if dataset_cfg.train_episodes:
+        return dataset_cfg.train_episodes
+
+    if dataset_cfg.evaluation_episodes: # auto train = all except eval
+        available = _list_all_episode_indices(metadata)
+        exclude = set(dataset_cfg.evaluation_episodes)
+        return [idx for idx in available if idx not in exclude]
+
+    return None
 
 
 def build_world_model_dataloader(
@@ -439,10 +504,21 @@ def build_world_model_dataloader(
     rank: Optional[int] = None,
     world_size: Optional[int] = None,
     seed: Optional[int] = None,
+    split: Literal["train", "eval"] = "train",
 ) -> DataLoader:
     device = device or torch.device("cpu")
-    metadata = LeRobotDatasetMetadata(dataset_cfg.repo_id)
-    delta_timestamps = _ensure_delta_timestamps(dataset_cfg, metadata)
+    dataset_cfg_local = copy.deepcopy(dataset_cfg) if split == "eval" else dataset_cfg
+    if split == "eval":
+        if dataset_cfg.sequence_length_eval is not None:
+            dataset_cfg_local.sequence_length_distribution = {
+                int(dataset_cfg.sequence_length_eval): 1.0
+            }
+        dataset_cfg_local.independant_frames_probability = 0.0
+        dataset_cfg_local.drop_action_probability = 0.0
+        grad_accum_steps = 1
+
+    metadata = LeRobotDatasetMetadata(dataset_cfg_local.repo_id)
+    delta_timestamps = _ensure_delta_timestamps(dataset_cfg_local, metadata)
 
     effective_world_size = world_size or 1
     distributed = effective_world_size > 1
@@ -458,15 +534,21 @@ def build_world_model_dataloader(
     dataloader_batch_size = micro_batch_size
 
     sampler: Optional[DistributedSampler] = None
+    eval_split = split == "eval"
+
+    episodes = _resolve_episode_split(dataset_cfg_local, metadata, split)
 
     dataset = ResilientLeRobotDataset(
-        dataset_cfg.repo_id,
-        episodes=list(dataset_cfg.episodes) if dataset_cfg.episodes else None,
+        dataset_cfg_local.repo_id,
+        episodes=episodes,
         delta_timestamps=delta_timestamps,
         tolerance_s=0.01,
-        max_decode_failures=dataset_cfg.decoder_retry_attempts,
+        max_decode_failures=dataset_cfg_local.decoder_retry_attempts,
     )
-    shuffle = dataloader_cfg.shuffle
+    # TODO change this back, it was because episodes had issues NEED TO CHANGE
+    # shuffle = dataloader_cfg.shuffle and not eval_split # False during eval and configured shuffle for train
+    shuffle = True
+
     if distributed:
         sampler = DistributedSampler(
             dataset,
@@ -478,7 +560,7 @@ def build_world_model_dataloader(
         )
         shuffle = False
 
-    collate = LeRobotSequenceCollator(dataset_cfg, device=device)
+    collate = LeRobotSequenceCollator(dataset_cfg_local, device=device)
 
     dataloader = DataLoader(
         dataset,

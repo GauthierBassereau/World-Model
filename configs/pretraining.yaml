@@ -21,10 +21,18 @@ trainer:
   lr_final: 2.0e-5
   lr_final_step: 10000
 
+evaluation:
+  max_batches: 1
+  num_video_samples: 2
+  batch_size: 2
+  rollout_start_frame: 6
+  rollout_signal_level: 0.9
+  clean_signal_level: 0.99
+
 dataloader:
   batch_size: 272 # global batch size
   shuffle: true
-  num_workers: 0 # need to check why but I get errors with num_workers > 0
+  num_workers: 0
   pin_memory: true
 
 optimizer:
@@ -36,7 +44,9 @@ optimizer:
 
 dataset:
   repo_id: aractingi/droid_1.0.1
-  decoder_retry_attempts: 5
+  train_episodes: null # null means all episodes except evaluation_episodes
+  evaluation_episodes: [50000]
+  sequence_length_eval: 20
   cameras:
     - observation.images.exterior_1_left
     - observation.images.exterior_2_left
@@ -54,6 +64,7 @@ dataset:
   frame_delta_seconds: 5.0 / 15.0
   independant_frames_probability: 0.3 # from Dreamerv4
   drop_action_probability: 0.75 # from Dreamerv4
+  decoder_retry_attempts: 5
 
 diffusion:
   base_dimension: 4096 # from RAE paper, to determine noise schedule depending on effective latent dimension
@@ -81,7 +92,7 @@ world_model: # ~400M parameters
   rope_base: 1000.0
   qk_norm_eps: 1.0e-06 # Put None for no QK norm, RAE doesn't use, Dreamerv4 does, but I think it is better to use for this kind of world model rollouts, safer.
 
-ode_solver: # this is for logging and evaluation
-  step_size: float = 0.02 # 50 steps generation
+ode_solver: # this is for evaluation
+  step_size: float = 0.01
   min_signal: float = 0.0
   max_signal: float = 1.0
