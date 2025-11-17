@@ -456,19 +456,10 @@ class LeRobotSequenceCollator:
 
 
 def _list_all_episode_indices(metadata: LeRobotDatasetMetadata) -> List[int]:
-    episodes = getattr(metadata, "episodes", None)
-    if isinstance(episodes, dict):
-        for key in ("dataset_from_index", "episode_from_index", "from_index"):
-            if key in episodes:
-                total = len(episodes[key])
-                return list(range(total))
-        count = episodes.get("count") if hasattr(episodes, "get") else None
-        if isinstance(count, int) and count > 0:
-            return list(range(count))
-    raise ValueError(
-        "Unable to infer available episodes from metadata. "
-        "Set dataset.train_episodes explicitly to avoid automatic splitting."
-    )
+    episodes = getattr(metadata, "total_episodes", None)
+    if episodes is None:
+        raise ValueError("Unable to determine total number of episodes in the dataset.")
+    return list(range(episodes))
 
 
 def _resolve_episode_split(
@@ -534,7 +525,6 @@ def build_world_model_dataloader(
     dataloader_batch_size = micro_batch_size
 
     sampler: Optional[DistributedSampler] = None
-    eval_split = split == "eval"
 
     episodes = _resolve_episode_split(dataset_cfg_local, metadata, split)
 
@@ -545,9 +535,9 @@ def build_world_model_dataloader(
         tolerance_s=0.01,
         max_decode_failures=dataset_cfg_local.decoder_retry_attempts,
     )
-    # TODO change this back, it was because episodes had issues NEED TO CHANGE
-    # shuffle = dataloader_cfg.shuffle and not eval_split # False during eval and configured shuffle for train
-    shuffle = True
+
+    eval_split = split == "eval"
+    shuffle = dataloader_cfg.shuffle # and not eval_split # False during eval and configured shuffle for train # For now keep shuffle during eval to get varied samples because we won't run eval on full eval dataset too long at least not during training
 
     if distributed:
         sampler = DistributedSampler(

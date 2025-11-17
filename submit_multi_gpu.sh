@@ -1,9 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-NUM_GPUS="${1:?Usage: ./submit_multi_gpu.sh NUM_GPUS path/to/script.py [args...]}"
-shift
-PYFILE="${1:?Usage: ./submit_multi_gpu.sh NUM_GPUS path/to/script.py [args...]}"
+# Arguments:
+#   1: NUM_GPUS
+#   2: GPU_TYPE (e.g. a100-40g, a100-80g, h200-141g, ...)
+#   3: path/to/script.py
+#   4+: [optional args to script]
+
+NUM_GPUS="${1:?Usage: ./submit_multi_gpu.sh NUM_GPUS GPU_TYPE path/to/script.py [args...]}"
+GPU_TYPE="${2:?Usage: ./submit_multi_gpu.sh NUM_GPUS GPU_TYPE path/to/script.py [args...]}"
+shift 2
+PYFILE="${1:?Usage: ./submit_multi_gpu.sh NUM_GPUS GPU_TYPE path/to/script.py [args...]}"
 shift || true
 
 REPO="$HOME/git/World-Model"
@@ -23,10 +30,10 @@ sbatch \
   --job-name="${name}-${NUM_GPUS}g" \
   --output="logs/%x.out" \
   --partition=gpu \
-  --gres="gpu:h200-141g:${NUM_GPUS}" \
+  --gres="gpu:${GPU_TYPE}:${NUM_GPUS}" \
   --nodes=1 --ntasks-per-node="${NUM_GPUS}" \
-  --cpus-per-task=10 \
-  --mem=128G --time=10:00:00 \
+  --cpus-per-task=6 \
+  --mem=128G --time=3-00:00:00 \
   --export=ALL \
   --wrap "bash -lc '
     set -euo pipefail
@@ -35,9 +42,10 @@ sbatch \
 
     echo
     echo \"=============================\"
-    echo \"🚀 New multi-GPU run: $name x${NUM_GPUS} (\$(date))\"
+    echo \"🚀 New multi-GPU run: $name x${NUM_GPUS} (${GPU_TYPE}) (\$(date))\"
     echo \"=============================\"
     echo
+    
     wm
 
     cd \"$REPO\"

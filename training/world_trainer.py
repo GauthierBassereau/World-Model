@@ -22,7 +22,6 @@ from training.dataset import (
 )
 from evaluation.world_model_evaluator import (
     EvaluationConfig,
-    EvaluationSummary,
     WorldModelEvaluator,
 )
 from world_model.flow_matching import (
@@ -472,7 +471,6 @@ class WorldModelTrainer:
 
         return {
             "loss": float(loss.detach().cpu()),
-            "signal_level": float(tau.mean().detach().cpu()),
         }
 
     @torch.no_grad()
@@ -537,6 +535,7 @@ class WorldModelTrainer:
                 self.device,
             )
             return
+        self.logger.info("Running evaluation...")
         result = self.evaluator.evaluate(eval_model)
         if result is not None:
             self.logger.log_evaluation(result)

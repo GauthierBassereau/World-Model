@@ -3,17 +3,24 @@
 # =================
 
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
-import torch
 repo_id = "aractingi/droid_1.0.1"
 delta_timestamps = {
-    "observation.images.exterior_1_left": [-1, -10/15, -5/15, 0],
-    "observation.images.exterior_2_left": [-1, -10/15, -5/15, 0],
-    "observation.images.wrist_left": [-1, -10/15, -5/15, 0],
-    "observation.state": [-1, -10/15, -5/15, 0],
+    "observation.images.exterior_1_left": [-45/15, -40/15, -35/15, -30/15, -25/15, -20/15, -15/15, -10/15, -5/15, 0],
+    "observation.images.exterior_2_left": [-45/15, -40/15, -35/15, -30/15, -25/15, -20/15, -15/15, -10/15, -5/15, 0],
+    "observation.images.wrist_left": [-45/15, -40/15, -35/15, -30/15, -25/15, -20/15, -15/15, -10/15, -5/15, 0],
+    "observation.state": [-45/15, -40/15, -35/15, -30/15, -25/15, -20/15, -15/15, -10/15, -5/15, 0],
 }
-dataset = LeRobotDataset(repo_id, episodes=[2, 5], delta_timestamps=delta_timestamps)
-dataloader = torch.utils.data.DataLoader(dataset, batch_size=2)
-print(f"Length of dataloader: {len(dataloader)}")
+dataset = LeRobotDataset(repo_id, episodes=[50000], delta_timestamps=delta_timestamps)
+print(f"Selected episodes: {dataset.episodes}")
+print(f"Number of episodes selected: {dataset.num_episodes}")
+print(f"Number of frames selected: {dataset.num_frames}")
+import torch
+dataloader = torch.utils.data.DataLoader(
+    dataset,
+    batch_size=1,
+    shuffle=False,
+)
+print(f"Number of batches: {len(dataloader)}")
 
 # =================
 # Download Kinetics Dataset with Torchvision

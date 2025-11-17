@@ -7,13 +7,12 @@ optimization loop.
 """
 
 import logging
-from typing import Any, Dict, Iterable, Optional, TYPE_CHECKING, List, Tuple
+import math
+from typing import Any, Dict, Iterable, Optional, TYPE_CHECKING, List
 
 import numpy as np
-import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
 from torch.optim import Optimizer
 
 from world_model.flow_matching import EulerSolverConfig
@@ -60,6 +59,9 @@ class WorldModelLogger:
             raise ValueError("Euler solver bounds must be [0.0, 1.0].")
         self._sample_fps = sample_fps
         self._wandb_eval_defined = False
+        self._tau_values: List[torch.Tensor] = []
+        self._tau_bins: Optional[int] = None
+        self._tau_hist_logged = False
 
     # ------------------------------------------------------------------ helpers
     def info(self, message: str, *args: Any, **kwargs: Any) -> None:
@@ -102,8 +104,11 @@ class WorldModelLogger:
         return self.wandb_run
 
     def close(self) -> None:
-        if self.is_main_process and self.wandb_run:
-            self.wandb_run.finish()
+        if self.is_main_process:
+            if self.noise_log_limit is not None:
+                self._flush_tau_histograms(force=True)
+            if self.wandb_run:
+                self.wandb_run.finish()
         self.wandb_run = None
         self._wandb = None
 
@@ -123,10 +128,14 @@ class WorldModelLogger:
             message = " ".join(f"{key}={value:.5f}" for key, value in metrics.items())
             self.info("step=%d %s", self.current_step, message)
             if self.wandb_run is not None:
-                self.wandb_run.log(
-                    {f"train/{key}": value for key, value in metrics.items()},
-                    step=self.current_step,
-                )
+                payload: Dict[str, float] = {}
+                for key, value in metrics.items():
+                    if key in {"grad_norm", "learning_rate"}:
+                        payload[f"debug/{key}"] = value
+                    else:
+                        payload[f"train/{key}"] = value
+                if payload:
+                    self.wandb_run.log(payload, step=self.current_step)
 
     def process_gradients(
         self,
@@ -159,63 +168,88 @@ class WorldModelLogger:
     def log_distr_noise(
         self,
         tau: torch.Tensor,
-        weights: Optional[torch.Tensor] = None,
-        bins: int = 50,
+        bins: int = 25,
     ) -> None:
         if not self.is_main_process:
-            return
-        if self.noise_log_limit is not None and self.noise_log_count >= self.noise_log_limit:
             return
 
         values = tau.detach().to(dtype=torch.float32).flatten()
         if values.numel() == 0:
             return
 
-        weight_values: Optional[torch.Tensor] = None
-        if weights is not None:
-            if weights.shape != tau.shape:
-                raise ValueError("Weights tensor must match tau shape for logging.")
-            weight_values = weights.detach().to(dtype=torch.float32).flatten()
+        if self.wandb_run is None or self._wandb is None:
+            return
 
-        if self.wandb_run is not None and self._wandb is not None:
-            logs: Dict[str, Any] = {}
-            edges = torch.linspace(0.0, 1.0, bins + 1, device=values.device)
-            centers = 0.5 * (edges[:-1] + edges[1:])
-            if weight_values is not None:
-                indices = torch.bucketize(values, edges, right=True) - 1
-                indices = indices.clamp(min=0, max=bins - 1)
-                weight_hist = torch.zeros(bins, device=values.device, dtype=torch.float32)
-                weight_hist.scatter_add_(0, indices, weight_values)
-                histogram = torch.stack([centers, weight_hist], dim=1)
-                logs["noise/tau_weight_histogram"] = self._wandb.Table(
-                    data=histogram.detach().cpu().tolist(),
-                    columns=["tau", "weight_sum"],
-                )
-                self.debug(
-                    "Logged tau-weight histogram for %d samples (bins=%d).",
-                    int(weight_values.numel()),
-                    bins,
-                )
-            else:
-                indices = torch.bucketize(values, edges, right=True) - 1
-                indices = indices.clamp(min=0, max=bins - 1)
-                counts = torch.zeros(bins, device=values.device, dtype=torch.float32)
-                ones = torch.ones_like(values)
-                counts.scatter_add_(0, indices, ones)
-                histogram = torch.stack([centers, counts], dim=1)
-                logs["noise/tau_histogram"] = self._wandb.Table(
-                    data=histogram.detach().cpu().tolist(),
-                    columns=["tau", "count"],
-                )
-                self.debug(
-                    "Logged tau histogram for %d samples (bins=%d).",
-                    int(values.numel()),
-                    bins,
-                )
-            if logs:
-                self.wandb_run.log(logs, step=self.current_step, commit=False)
+        if self.noise_log_limit is None:
+            self._log_tau_histogram(
+                values=values,
+                bins=bins,
+            )
+            self.noise_log_count += 1
+            return
 
+        if self._tau_hist_logged:
+            return
+
+        self._tau_values.append(values.cpu())
+        self._tau_bins = bins
         self.noise_log_count += 1
+        if self.noise_log_limit is not None and self.noise_log_count >= self.noise_log_limit:
+            self._flush_tau_histograms()
+
+    def _flush_tau_histograms(self, force: bool = False) -> None:
+        if self._tau_hist_logged:
+            return
+        if not force and (self.noise_log_limit is None or self.noise_log_count < self.noise_log_limit):
+            return
+        if not self._tau_values:
+            return
+        if self.wandb_run is None or self._wandb is None:
+            return
+
+        values = torch.cat(self._tau_values, dim=0)
+        bins = self._tau_bins or 25
+        self._log_tau_histogram(values=values, bins=bins)
+        self._tau_hist_logged = True
+        self._tau_values.clear()
+        self._tau_bins = None
+
+    def _log_tau_histogram(
+        self,
+        *,
+        values: torch.Tensor,
+        bins: int,
+    ) -> None:
+        if self.wandb_run is None or self._wandb is None:
+            return
+        logs: Dict[str, Any] = {}
+        device = values.device
+        edges = torch.linspace(0.0, 1.0, bins + 1, device=device)
+        centers = 0.5 * (edges[:-1] + edges[1:])
+        sample_count = int(values.numel())
+        indices = torch.bucketize(values, edges, right=True) - 1
+        indices = indices.clamp(min=0, max=bins - 1)
+        counts = torch.zeros(bins, device=device, dtype=torch.float32)
+        ones = torch.ones_like(values)
+        counts.scatter_add_(0, indices, ones)
+        table = self._wandb.Table(columns=["tau", "count"])
+        flat = torch.stack([centers, counts], dim=1).detach().cpu().tolist()
+        for tau_value, count in flat:
+            truncated_tau = math.floor(float(tau_value) * 1000.0) / 1000.0
+            table.add_data(truncated_tau, float(count))
+        logs["debug/tau_histogram"] = self._wandb.plot.bar(
+            table,
+            "tau",
+            "count",
+            title="Tau histogram",
+        )
+        self.debug(
+            "Logged tau histogram for %d samples (bins=%d).",
+            sample_count,
+            bins,
+        )
+        if logs:
+            self.wandb_run.log(logs, step=self.current_step, commit=False)
 
     # ------------------------------------------------------------------ visual logging
     def log_evaluation(self, result: "EvaluationSummary") -> None:
@@ -232,22 +266,18 @@ class WorldModelLogger:
         if self.wandb_run is not None and result.metrics:
             if not self._wandb_eval_defined:
                 try:
-                    self.wandb_run.define_metric("eval_step")
-                    self.wandb_run.define_metric("eval/*", step_metric="eval_step")
+                    self.wandb_run.define_metric("evaluation_step")
+                    self.wandb_run.define_metric("evaluation/*", step_metric="evaluation_step")
                 except Exception:
                     pass
                 self._wandb_eval_defined = True
-            payload: Dict[str, Any] = {"eval_step": self.current_step}
+            payload: Dict[str, Any] = {"evaluation_step": self.current_step}
             payload.update(result.metrics)
-            plot_images = self._build_rollout_plot_images(result.metrics)
-            if plot_images:
-                payload.update(plot_images)
             self.wandb_run.log(payload, step=self.current_step)
-            video_payload = self._build_video_table(result.videos)
+        if self.wandb_run is not None and result.videos:
+            video_payload = self._build_video_payload(result.videos)
             if video_payload:
                 self.wandb_run.log(video_payload, step=self.current_step)
-        if self.wandb_run is None or not self._wandb or not result.videos:
-            return
 
     def _video_from_frames(self, frames: torch.Tensor) -> np.ndarray:
         if frames.ndim != 4:
@@ -269,71 +299,15 @@ class WorldModelLogger:
             return 10
         return max(1, int(round(self._sample_fps)))
 
-    def _build_rollout_plot_images(self, metrics: Dict[str, float]) -> Dict[str, "wandb.Image"]:
-        if self._wandb is None:
-            return {}
-        plots: Dict[str, "wandb.Image"] = {}
-        entries = (
-            ("mean", "Mean absolute error"),
-            ("var", "Variance of absolute error"),
-        )
-        for metric_type, ylabel in entries:
-            figure = self._build_rollout_plot(metrics, metric_type, ylabel)
-            if figure is None:
-                continue
-            image = self._wandb.Image(figure)
-            plt.close(figure)
-            plots[f"eval/rollout_{metric_type}_plot"] = image
-        return plots
-
-    @staticmethod
-    def _collect_rollout_series(metrics: Dict[str, float], metric_type: str) -> Dict[str, List[Tuple[int, float]]]:
-        series: Dict[str, List[Tuple[int, float]]] = {}
-        prefix = f"{metric_type}_t+"
-        for key, value in metrics.items():
-            if not key.startswith("eval/"):
-                continue
-            parts = key.split("/")
-            if len(parts) != 3:
-                continue
-            scenario, step_key = parts[1], parts[2]
-            if not step_key.startswith(prefix):
-                continue
-            try:
-                step = int(step_key[len(prefix):])
-            except ValueError:
-                continue
-            series.setdefault(scenario, []).append((step, value))
-        for values in series.values():
-            values.sort(key=lambda item: item[0])
-        return series
-
-    def _build_rollout_plot(self, metrics: Dict[str, float], metric_type: str, ylabel: str):
-        series = self._collect_rollout_series(metrics, metric_type)
-        if not series:
-            return None
-        fig, ax = plt.subplots(figsize=(6, 4))
-        for scenario, values in series.items():
-            steps = [step for step, _ in values]
-            vals = [val for _, val in values]
-            ax.plot(steps, vals, marker="o", label=scenario)
-        ax.set_xlabel("Rollout step (frames after conditioning)")
-        ax.set_ylabel(ylabel)
-        ax.set_title(f"Rollout {metric_type} vs. horizon")
-        ax.grid(True, linestyle="--", alpha=0.4)
-        ax.legend()
-        fig.tight_layout()
-        return fig
-
-    def _build_video_table(self, videos: Dict[str, torch.Tensor]) -> Dict[str, Any]:
+    def _build_video_payload(self, videos: Dict[str, torch.Tensor]) -> Dict[str, Any]:
         if self._wandb is None or not videos:
             return {}
-        table = self._wandb.Table(columns=["name", "video"])
+        payload: Dict[str, Any] = {}
         fps_value = self._resolve_fps()
         for key, frames in videos.items():
             array = self._video_from_frames(frames)
-            table.add_data(key, self._wandb.Video(array, fps=fps_value, format="mp4"))
-        return {"eval/videos": table}
+            payload[key] = self._wandb.Video(array, fps=fps_value, format="mp4")
+        return payload
 
     @staticmethod
     def _compute_grad_norm(parameters: Iterable[torch.nn.Parameter]) -> Optional[float]:

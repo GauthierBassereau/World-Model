@@ -1,5 +1,6 @@
 import argparse
 import math
+import random
 from dataclasses import replace
 from pathlib import Path
 from typing import Tuple
@@ -58,6 +59,12 @@ def parse_args() -> argparse.Namespace:
         "(by default they are forced to zero for clean statistics).",
     )
     parser.add_argument(
+        "--preserve-normalization",
+        action="store_true",
+        help="Use the action normalization settings from the config "
+        "(by default they are disabled to inspect raw action values).",
+    )
+    parser.add_argument(
         "--seed",
         type=int,
         default=1234,
@@ -71,6 +78,7 @@ def prepare_dataset_and_loader(
     *,
     batch_size_override: int | None,
     preserve_dropout: bool,
+    preserve_normalization: bool,
 ) -> Tuple[DatasetConfig, DataloaderConfig, torch.utils.data.DataLoader]:
     training_cfg = load_training_config(config_path)
 
@@ -80,6 +88,12 @@ def prepare_dataset_and_loader(
             dataset_cfg,
             drop_action_probability=0.0,
             independant_frames_probability=0.0,
+        )
+    if not preserve_normalization and dataset_cfg.action_normalization is not None:
+        dataset_cfg = replace(
+            dataset_cfg,
+            action_normalization=None,
+            action_normalization_params=None,
         )
 
     dataloader_cfg = training_cfg.dataloader
@@ -102,7 +116,6 @@ def prepare_dataset_and_loader(
 def collect_action_samples(
     loader: torch.utils.data.DataLoader,
     num_samples: int,
-    seed: int,
 ) -> np.ndarray:
     action_vectors = []
     last_report_count = -1
@@ -165,12 +178,15 @@ def plot_histograms(data: np.ndarray, output_path: Path) -> None:
 
 def main() -> None:
     args = parse_args()
+    random.seed(args.seed)
+    np.random.seed(args.seed)
     torch.manual_seed(args.seed)
 
     _, dataloader_cfg, loader = prepare_dataset_and_loader(
         args.config,
         batch_size_override=args.batch_size,
         preserve_dropout=args.preserve_dropout,
+        preserve_normalization=args.preserve_normalization,
     )
     try:
         dataset_length = len(loader.dataset)
@@ -181,7 +197,7 @@ def main() -> None:
         f"Sampling up to {args.num_samples} action vectors "
         f"using batch_size={dataloader_cfg.batch_size} from dataset..."
     )
-    samples = collect_action_samples(loader, args.num_samples, args.seed)
+    samples = collect_action_samples(loader, args.num_samples)
     print(f"Collected {samples.shape[0]} action vectors of dimension {samples.shape[1]}.")
 
     means = samples.mean(axis=0)

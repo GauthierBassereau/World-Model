@@ -65,14 +65,16 @@ class SequenceErrorStats:
         self.total_sq_sum += float(per_step_sq_sum[:length].sum().item())
         self.total_count += float(elements_per_step * length)
 
-    def as_dict(self, prefix: str) -> Dict[str, float]:
+    def as_dict(self, scenario: str) -> Dict[str, float]:
         metrics: Dict[str, float] = {}
+        rollout_prefix = f"evaluation_rollouts_metrics/{scenario}"
         if self.total_count > 0:
             mean = self.total_sum / self.total_count
             mean_sq = self.total_sq_sum / self.total_count
             var = max(mean_sq - mean * mean, 0.0)
-            metrics[f"{prefix}/mean"] = mean
-            metrics[f"{prefix}/var"] = var
+            metrics[f"{rollout_prefix}/mean"] = mean
+            metrics[f"{rollout_prefix}/var"] = var
+            metrics[f"evaluation/l1_loss/{scenario}"] = mean
         valid = self.step_count > 0
         means = torch.zeros_like(self.step_sum)
         vars = torch.zeros_like(self.step_sq_sum)
@@ -81,8 +83,8 @@ class SequenceErrorStats:
         vars = torch.clamp(vars - means.pow(2), min=0.0)
         for idx in range(self.max_steps):
             if self.step_count[idx] > 0:
-                metrics[f"{prefix}/mean_t+{idx}"] = float(means[idx].item())
-                metrics[f"{prefix}/var_t+{idx}"] = float(vars[idx].item())
+                metrics[f"{rollout_prefix}/mean_t+{idx}"] = float(means[idx].item())
+                metrics[f"{rollout_prefix}/var_t+{idx}"] = float(vars[idx].item())
         return metrics
 
 
@@ -176,7 +178,7 @@ class WorldModelEvaluator:
 
         metrics: Dict[str, float] = {}
         for scenario, _ in self.scenarios:
-            metrics.update(stats[scenario].as_dict(f"eval/{scenario}"))
+            metrics.update(stats[scenario].as_dict(scenario))
 
         if self.cfg.num_video_samples > 0:
             video_samples = video_samples[: self.cfg.num_video_samples]
@@ -185,7 +187,7 @@ class WorldModelEvaluator:
         videos: Dict[str, torch.Tensor] = {}
         for sample_idx, payload in enumerate(video_samples):
             for key, frames in payload.items():
-                videos[f"{key}_{sample_idx}"] = frames
+                videos[f"evaluation/video_samples/sample_{sample_idx}/{key}"] = frames
 
         return EvaluationSummary(metrics=metrics, videos=videos)
 
@@ -267,13 +269,12 @@ class WorldModelEvaluator:
                     use_actions,
                 )
 
-                with torch.no_grad():
-                    rollout = self.solver.sample(
-                        model,
-                        seq_latents_tensor,
-                        initial_signal=signal_tensor,
-                        **model_kwargs,
-                    )
+                rollout = self.solver.sample(
+                    model,
+                    seq_latents_tensor,
+                    initial_signal=signal_tensor,
+                    **model_kwargs,
+                )
 
                 if past_generated is not None:
                     updated = rollout[:, context_len : context_len + past_generated.shape[1], ...].detach()
@@ -321,11 +322,11 @@ class WorldModelEvaluator:
         samples: List[Dict[str, torch.Tensor]] = []
         for idx in range(available):
             entry: Dict[str, torch.Tensor] = {
-                "eval/ground_truth": frames[idx].detach().cpu(),
+                "ground_truth": frames[idx].detach().cpu(),
             }
             for scenario, latents in scenario_predictions.items():
                 decoded = self._decode_latents(latents[idx : idx + 1]).squeeze(0).cpu()
-                entry[f"eval/{scenario}"] = decoded
+                entry[scenario] = decoded
             samples.append(entry)
         return samples
 
