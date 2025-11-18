@@ -520,10 +520,11 @@ def _resolve_episode_split(
     if dataset_cfg.train_episodes:
         return dataset_cfg.train_episodes
 
-    if dataset_cfg.evaluation_episodes: # auto train = all except eval
-        available = _list_all_episode_indices(metadata)
-        exclude = set(dataset_cfg.evaluation_episodes)
-        return [idx for idx in available if idx not in exclude]
+    #TODO uncomment this, for now I want all data for train because droid has bugs, cannot do splits
+    # if dataset_cfg.evaluation_episodes: # auto train = all except eval
+    #     available = _list_all_episode_indices(metadata)
+    #     exclude = set(dataset_cfg.evaluation_episodes)
+    #     return [idx for idx in available if idx not in exclude]
 
     return None
 

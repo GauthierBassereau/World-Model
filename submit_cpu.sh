@@ -20,7 +20,7 @@ done
 sbatch \
   --job-name="$name" \
   --output="logs/%x.out" \
-  --nodes=1 --ntasks-per-node=1 --cpus-per-task=8 \
+  --nodes=1 --ntasks-per-node=1 --cpus-per-task=32 \
   --mem=64G --time=08:00:00 \
   --export=ALL \
   --wrap "bash -lc '

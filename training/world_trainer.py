@@ -464,7 +464,15 @@ class WorldModelTrainer:
                 actions_mask=actions_mask,
             )
             pred_clean_latents = outputs.get("pred_clean_latents")
-            loss_unreduced = F.mse_loss(pred_clean_latents, latents, reduction="none")
+
+            # Loss computation
+            one_minus_tau = 1.0 - tau_factor
+            denom = one_minus_tau.clamp_min(0.05) # From this paper: https://arxiv.org/pdf/2511.13720v1
+            v_true = (latents - noisy_latents) / denom
+            v_pred = (pred_clean_latents - noisy_latents) / denom
+            loss_unreduced = F.mse_loss(v_pred, v_true, reduction="none")
+
+            # Apply valid frame mask, some sequences may have padding frames which should not contribute to loss
             mask = frames_valid_mask.to(
                 device=loss_unreduced.device,
                 dtype=loss_unreduced.dtype,
