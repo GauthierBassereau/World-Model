@@ -143,6 +143,7 @@ class WorldModelBatch:
     sequence_actions: torch.Tensor
     independant_frames_mask: torch.Tensor
     actions_mask: torch.Tensor
+    frames_valid_mask: torch.Tensor
 
 
 logger = logging.getLogger(__name__)
@@ -224,7 +225,7 @@ def _ensure_delta_timestamps(
     step = dataset_cfg.frame_delta_seconds
     if step <= 0:
         step = 1.0 / metadata.fps
-    offsets = [-step * i for i in range(max_length - 1, -1, -1)]
+    offsets = [step * i for i in range(max_length)]
     delta = {camera: list(offsets) for camera in dataset_cfg.cameras}
 
     for key in dataset_cfg.action_keys:
@@ -283,10 +284,12 @@ class LeRobotSequenceCollator:
         action_sequences: List[torch.Tensor] = []
         independant_frames_mask: List[torch.Tensor] = []
         actions_mask: List[torch.Tensor] = []
+        frames_valid_masks: List[torch.Tensor] = []
 
         for sample in samples:
             camera_key = random.choices(self.camera_keys, weights=self.camera_weights, k=1)[0]
             frames = self._prepare_frames(sample, camera_key, target_length)
+            validity_mask = self._prepare_valid_mask(sample, camera_key, target_length)
             actions = self._prepare_actions(sample, target_length)
 
             use_independant_frame = random.random() < self.cfg.independant_frames_probability
@@ -300,20 +303,21 @@ class LeRobotSequenceCollator:
             independant_frames_mask.append(
                 torch.tensor(use_independant_frame, dtype=torch.bool, device=self.device)
             )
-            actions_mask.append(
-                torch.full(
-                    (target_length,),
-                    not (use_independant_frame or drop_actions),
-                    dtype=torch.bool,
-                    device=self.device,
-                )
+            base_action_mask = torch.full(
+                (target_length,),
+                not (use_independant_frame or drop_actions),
+                dtype=torch.bool,
+                device=self.device,
             )
+            actions_mask.append(base_action_mask & validity_mask)
+            frames_valid_masks.append(validity_mask)
 
         return WorldModelBatch(
             sequence_frames=torch.stack(frame_sequences, dim=0),
             sequence_actions=torch.stack(action_sequences, dim=0),
             independant_frames_mask=torch.stack(independant_frames_mask, dim=0),
             actions_mask=torch.stack(actions_mask, dim=0),
+            frames_valid_mask=torch.stack(frames_valid_masks, dim=0),
         )
 
     def _prepare_frames(
@@ -334,7 +338,31 @@ class LeRobotSequenceCollator:
         if frames.max() > 1.5:
             frames = frames / 255.0
         frames = frames.clamp(0.0, 1.0)
-        return frames[-target_length:].contiguous()
+        return frames[:target_length].contiguous()
+
+    def _prepare_valid_mask(
+        self,
+        sample: Dict[str, torch.Tensor],
+        camera_key: str,
+        target_length: int,
+    ) -> torch.Tensor:
+        pad_key = f"{camera_key}_is_pad"
+        if pad_key in sample:
+            pad_tensor = sample[pad_key].to(device=self.device, dtype=torch.bool)
+            if pad_tensor.ndim != 1:
+                raise ValueError(
+                    f"Expected padding mask '{pad_key}' to have 1 dimension, got {pad_tensor.ndim}."
+                )
+            if pad_tensor.shape[0] != self.max_sequence_length:
+                raise ValueError(
+                    f"Padding mask '{pad_key}' length {pad_tensor.shape[0]} does not match sequence length {self.max_sequence_length}."
+                )
+        else:
+            pad_tensor = torch.zeros(
+                (self.max_sequence_length,), dtype=torch.bool, device=self.device
+            )
+        valid = (~pad_tensor).to(dtype=torch.bool)
+        return valid[:target_length].contiguous()
 
     def _prepare_actions(
         self,
@@ -361,7 +389,7 @@ class LeRobotSequenceCollator:
         if not action_parts:
             raise ValueError("No action data collected; check DatasetConfig.action_keys.")
 
-        actions = torch.cat(action_parts, dim=-1)[-target_length:].contiguous()
+        actions = torch.cat(action_parts, dim=-1)[:target_length].contiguous()
         if self.cfg.action_representation == "delta":
             deltas = actions[1:] - actions[:-1]
             result = torch.zeros(

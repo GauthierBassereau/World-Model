@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, replace
 from typing import Dict, List, Optional, Tuple
 
@@ -46,24 +47,39 @@ class SequenceErrorStats:
         self.step_sq_sum = torch.zeros(max_steps, dtype=torch.float64)
         self.step_count = torch.zeros(max_steps, dtype=torch.float64)
 
-    def update(self, prediction: torch.Tensor, target: torch.Tensor) -> None:
+    def update(
+        self,
+        prediction: torch.Tensor,
+        target: torch.Tensor,
+        valid_mask: torch.Tensor,
+    ) -> None:
         if prediction.shape != target.shape:
             raise ValueError("Prediction and target must share the same shape for MAE stats.")
         if prediction.ndim != 4:
             raise ValueError("Expected tensors of shape [B, T, tokens, dim] for MAE stats.")
-        diff = torch.abs(prediction - target)
-        per_step_sum = diff.sum(dim=(0, 2, 3)).detach().double().cpu()
-        per_step_sq_sum = diff.pow(2).sum(dim=(0, 2, 3)).detach().double().cpu()
-        elements_per_step = diff.shape[0] * diff.shape[2] * diff.shape[3]
+
+        abs_diff = torch.abs(prediction - target)
+        squared_abs_diff = abs_diff.pow(2)
+
+        if valid_mask.shape[0] != prediction.shape[0] or valid_mask.shape[1] != prediction.shape[1]:
+            raise ValueError("valid_mask must match the batch and time dimensions of the tensors.")
+        mask = valid_mask.to(device=prediction.device, dtype=prediction.dtype).unsqueeze(-1).unsqueeze(-1)
+        expanded_mask = mask.expand_as(abs_diff)
+        abs_diff = abs_diff * expanded_mask
+        squared_abs_diff = squared_abs_diff * expanded_mask
+        per_step_count = expanded_mask.detach().double().cpu().sum(dim=(0, 2, 3))
+
+        per_step_sum = abs_diff.sum(dim=(0, 2, 3)).detach().double().cpu()
+        per_step_sq_sum = squared_abs_diff.sum(dim=(0, 2, 3)).detach().double().cpu()
         length = min(per_step_sum.shape[0], self.max_steps)
         if length <= 0:
             return
         self.step_sum[:length] += per_step_sum[:length]
         self.step_sq_sum[:length] += per_step_sq_sum[:length]
-        self.step_count[:length] += elements_per_step
+        self.step_count[:length] += per_step_count[:length]
         self.total_sum += float(per_step_sum[:length].sum().item())
         self.total_sq_sum += float(per_step_sq_sum[:length].sum().item())
-        self.total_count += float(elements_per_step * length)
+        self.total_count += float(per_step_count[:length].sum().item())
 
     def as_dict(self, scenario: str) -> Dict[str, float]:
         metrics: Dict[str, float] = {}
@@ -72,9 +88,10 @@ class SequenceErrorStats:
             mean = self.total_sum / self.total_count
             mean_sq = self.total_sq_sum / self.total_count
             var = max(mean_sq - mean * mean, 0.0)
-            metrics[f"{rollout_prefix}/mean"] = mean
-            metrics[f"{rollout_prefix}/var"] = var
+            l2 = math.sqrt(max(mean_sq, 0.0))
             metrics[f"evaluation/l1_loss/{scenario}"] = mean
+            metrics[f"evaluation/l2_loss/{scenario}"] = l2
+            metrics[f"evaluation/var/{scenario}"] = var
         valid = self.step_count > 0
         means = torch.zeros_like(self.step_sum)
         vars = torch.zeros_like(self.step_sq_sum)
@@ -165,7 +182,8 @@ class WorldModelEvaluator:
             for batch_idx, batch in enumerate(self.dataloader):
                 batch_stats, sample_payloads = self._evaluate_batch(model, batch)
                 for scenario, value in batch_stats.items():
-                    stats[scenario].update(value[0], value[1])
+                    prediction, target, valid_mask = value
+                    stats[scenario].update(prediction, target, valid_mask)
                 if sample_payloads and self.cfg.num_video_samples > 0:
                     remaining = self.cfg.num_video_samples - len(video_samples)
                     if remaining > 0:
@@ -195,11 +213,15 @@ class WorldModelEvaluator:
         self,
         model: nn.Module,
         batch: WorldModelBatch,
-    ) -> Tuple[Dict[str, Tuple[torch.Tensor, torch.Tensor]], List[Dict[str, torch.Tensor]]]:
+    ) -> Tuple[
+        Dict[str, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
+        List[Dict[str, torch.Tensor]],
+    ]:
         frames = batch.sequence_frames.to(self.device, non_blocking=True)
         actions = batch.sequence_actions.to(self.device, non_blocking=True)
         independant_mask = None
         actions_mask = None
+        frames_valid_mask = batch.frames_valid_mask.to(self.device, non_blocking=True)
 
         latents = self._encode_frames(frames)
         batch_size, seq_len = latents.shape[0], latents.shape[1]
@@ -209,14 +231,16 @@ class WorldModelEvaluator:
         observed_latents = latents[:, :context_len, ...].detach()
         target_future = latents[:, context_len:, ...].detach() if future_len > 0 else None
 
-        batch_metrics: Dict[str, Tuple[torch.Tensor, torch.Tensor]] = {}
+        batch_metrics: Dict[str, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = {}
         scenario_sequences: Dict[str, torch.Tensor] = {}
+        future_mask = frames_valid_mask[:, context_len:]
 
         for scenario, use_actions in self.scenarios:
             if future_len <= 0:
                 scenario_sequences[scenario] = observed_latents
                 empty = torch.zeros_like(observed_latents[:, :0])
-                batch_metrics[scenario] = (empty, empty)
+                empty_mask = future_mask
+                batch_metrics[scenario] = (empty, empty, empty_mask)
                 continue
 
             generated_frames: List[torch.Tensor] = []
@@ -286,7 +310,7 @@ class WorldModelEvaluator:
                 predictions.append(pred_frame)
 
             predicted_stack = torch.cat(predictions, dim=1)
-            batch_metrics[scenario] = (predicted_stack, target_future)
+            batch_metrics[scenario] = (predicted_stack, target_future, future_mask)
 
             full_sequence = torch.cat([observed_latents, torch.cat(generated_frames, dim=1)], dim=1)
             scenario_sequences[scenario] = full_sequence

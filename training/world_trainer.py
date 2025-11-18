@@ -50,6 +50,7 @@ class TrainerLoopConfig:
     precision: str = "bf16"
     seed: int = 1234
     device: Optional[str] = None
+    evaluation_interval: int = 1000
     resume_checkpoint: Optional[str] = None
     single_batch_overfit: bool = False
     lr_warmup_steps: int = 0
@@ -66,7 +67,6 @@ class LoggingConfig:
     log_interval: int = 10
     checkpoint_interval: int = 1_000
     output_dir: str = "checkpoints"
-    sample_interval: Optional[int] = 1_000
     tau_log_limit: int = 200
 
 
@@ -443,6 +443,7 @@ class WorldModelTrainer:
             if batch.actions_mask is not None
             else None
         )
+        frames_valid_mask = batch.frames_valid_mask.to(self.device, non_blocking=True)
 
         latents = self._encode_frames(frames)
 
@@ -461,7 +462,16 @@ class WorldModelTrainer:
                 actions_mask=actions_mask,
             )
             pred_clean_latents = outputs.get("pred_clean_latents")
-            loss = F.mse_loss(pred_clean_latents, latents)
+            loss_unreduced = F.mse_loss(pred_clean_latents, latents, reduction="none")
+            mask = frames_valid_mask.to(
+                device=loss_unreduced.device,
+                dtype=loss_unreduced.dtype,
+            ).unsqueeze(-1).unsqueeze(-1)
+            expanded_mask = mask.expand_as(loss_unreduced)
+            weighted_loss = loss_unreduced * expanded_mask
+            denom = expanded_mask.sum(dtype=torch.float32).clamp_min(1.0)
+            weighted_sum = weighted_loss.sum(dtype=torch.float32)
+            loss = weighted_sum / denom
             scaled_loss = loss / self.config.trainer.grad_accum_steps
 
         if self.use_scaler:
@@ -523,7 +533,7 @@ class WorldModelTrainer:
     def _maybe_run_evaluation(self, step: int) -> None:
         if self.evaluator is None:
             return
-        interval = self.logger.sample_interval
+        interval = self.config.trainer.evaluation_interval
         if interval is None or interval <= 0 or step % interval != 0:
             return
         eval_model = self.ema_model if self.ema_model is not None else self.model

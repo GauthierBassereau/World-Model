@@ -48,7 +48,6 @@ class WorldModelLogger:
         self.cfg = logging_cfg
         self.local = _create_local_logger()
         self.is_main_process = is_main_process
-        self.sample_interval = logging_cfg.sample_interval
         self.noise_log_limit = logging_cfg.tau_log_limit if logging_cfg.tau_log_limit > 0 else None
         self.noise_log_count = 0
         self.current_step = 0
@@ -256,11 +255,14 @@ class WorldModelLogger:
         if not self.is_main_process or result is None:
             return
         if result.metrics:
-            summary_parts = [
-                f"{key}={value:.5f}"
-                for key, value in result.metrics.items()
-                if key.endswith("/mean") or key.endswith("/var")
-            ]
+            summary_keys = sorted(
+                key
+                for key in result.metrics.keys()
+                if key.startswith("evaluation/l1_loss/")
+                or key.startswith("evaluation/l2_loss/")
+                or key.startswith("evaluation/var/")
+            )
+            summary_parts = [f"{key}={result.metrics[key]:.5f}" for key in summary_keys]
             if summary_parts:
                 self.info("step=%d eval %s", self.current_step, " ".join(summary_parts))
         if self.wandb_run is not None and result.metrics:
