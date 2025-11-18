@@ -465,9 +465,11 @@ class WorldModelTrainer:
             )
             pred_clean_latents = outputs.get("pred_clean_latents")
 
-            # Loss computation
+            # Loss computation -> Basically following Dreamerv3 and JiT(https://arxiv.org/pdf/2511.13720v1) papers
+            # It is better to predict in x space because manifold is lower dim there than in noise space
+            # But keep the v prediction formula, because it reweights the loss depending on tau
             one_minus_tau = 1.0 - tau_factor
-            denom = one_minus_tau.clamp_min(0.05) # From this paper: https://arxiv.org/pdf/2511.13720v1
+            denom = one_minus_tau.clamp_min(0.05)
             v_true = (latents - noisy_latents) / denom
             v_pred = (pred_clean_latents - noisy_latents) / denom
             loss_unreduced = F.mse_loss(v_pred, v_true, reduction="none")
