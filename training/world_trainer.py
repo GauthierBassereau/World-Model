@@ -1,6 +1,6 @@
 import copy
-import yaml
 import random
+import yaml
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass, is_dataclass
 from functools import partial
@@ -145,6 +145,7 @@ class WorldModelTrainer:
         self._cached_overfit_batch: Optional[WorldModelBatch] = None
         self._sampler_epoch = 0
         self._dataloader_iter = None
+        self._checkpoint_dir: Optional[Path] = None
 
         # Managing devices and distributed setup
         dist.init_process_group(backend="nccl")
@@ -268,6 +269,7 @@ class WorldModelTrainer:
         if self.ema_cfg.enabled:
             self._init_ema_model()
         self.logger.init_wandb(_dataclass_to_dict(self.config))
+        self._checkpoint_dir = self._resolve_checkpoint_dir()
         if self.config.trainer.single_batch_overfit:
             self.logger.info("Single-batch overfit enabled; reusing the first batch for all updates.")
 
@@ -564,9 +566,9 @@ class WorldModelTrainer:
     def _save_checkpoint(self, step: int) -> None:
         if not self.is_main_process:
             return
-        output_dir = Path(self.config.logging.output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        checkpoint_path = output_dir / f"world_model_step_{step:06d}.pt"
+        checkpoint_dir = self._checkpoint_dir or self._resolve_checkpoint_dir()
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        checkpoint_path = checkpoint_dir / f"world_model_step_{step:06d}.pt"
         payload = {
             "model": self.model.state_dict(),
             "optimizer": self.optimizer.state_dict(),
@@ -585,6 +587,21 @@ class WorldModelTrainer:
         if self.world_size > 1 and dist.is_initialized():
             dist.barrier()
             dist.destroy_process_group()
+
+    def _resolve_checkpoint_dir(self) -> Path:
+        base_dir = Path(self.config.logging.output_dir)
+        run_name = self._get_active_run_name()
+        if run_name:
+            return base_dir / run_name
+        return base_dir / "no_name"
+
+    def _get_active_run_name(self) -> Optional[str]:
+        wandb_run = getattr(self.logger, "wandb_run", None)
+        if wandb_run is not None:
+            name = getattr(wandb_run, "name", None)
+            if name:
+                return name
+        return None
 
     def _maybe_load_checkpoint(self) -> None:
         checkpoint_path = self.config.trainer.resume_checkpoint

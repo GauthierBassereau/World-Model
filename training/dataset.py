@@ -8,6 +8,8 @@ import random
 import torch
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
+from torchvision.transforms import InterpolationMode
+from torchvision.transforms import v2 as transforms_v2
 
 from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
 
@@ -147,6 +149,17 @@ class WorldModelBatch:
 
 
 logger = logging.getLogger(__name__)
+
+_DROID_RESIZE_CROP_TRANSFORM = transforms_v2.Compose(
+    [
+        transforms_v2.Resize(
+            size=(224, 320),
+            interpolation=InterpolationMode.BILINEAR,
+            antialias=True,
+        ),
+        transforms_v2.CenterCrop((224, 224)),
+    ]
+)
 
 
 class ResilientLeRobotDataset(LeRobotDataset):
@@ -562,6 +575,7 @@ def build_world_model_dataloader(
         delta_timestamps=delta_timestamps,
         tolerance_s=0.01,
         max_decode_failures=dataset_cfg_local.decoder_retry_attempts,
+        image_transforms=_DROID_RESIZE_CROP_TRANSFORM,
     )
 
     eval_split = split == "eval"

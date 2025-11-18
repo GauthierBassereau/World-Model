@@ -20,7 +20,7 @@
 
 ## 4. Data
 
--  Learning diverse world dynamics, interactions between objects -> Kinetics 700 (~700Gb) ---(?)--> HowTo100M, Ego4D, Something-Something V2, EPIC-KITCHENS
+-  Learning diverse world dynamics, interactions between objects -> Kinetics 700 (~700Gb) ---(?)--> OpenVid1M, HowTo100M, Ego4D, Something-Something V2, EPIC-KITCHENS
 -  Learning robot interactions + action conditioning with world -> DROID (~400Gb) ---(?)--> SOAR, agibot_alpha
 
 Note: most of these datasets have language instructions for each video -> I wonder how fast the WM can learn to condition its generation on text instead of action ?

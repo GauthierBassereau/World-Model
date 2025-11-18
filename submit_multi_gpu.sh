@@ -7,6 +7,8 @@ set -euo pipefail
 #   3: path/to/script.py
 #   4+: [optional args to script]
 
+# Helper for seeing available gpu and nodes: sinfo -p gpu -N   -O "NodeHost:15,StateShort:10,Gres:30,GresUsed:30"
+
 NUM_GPUS="${1:?Usage: ./submit_multi_gpu.sh NUM_GPUS GPU_TYPE path/to/script.py [args...]}"
 GPU_TYPE="${2:?Usage: ./submit_multi_gpu.sh NUM_GPUS GPU_TYPE path/to/script.py [args...]}"
 shift 2
