@@ -78,7 +78,7 @@ class EMAConfig:
     decay: float = 0.999
     device: Optional[str] = None
 
-    def validate(self) -> None:
+    def __post_init__(self) -> None:
         if not 0.0 <= self.decay < 1.0:
             raise ValueError("ema.decay must satisfy 0.0 <= decay < 1.0.")
 
@@ -96,38 +96,7 @@ class WorldModelTrainingConfig:
     evaluation: EvaluationConfig = EvaluationConfig()
     
     
-def load_training_config(path: str | Path) -> WorldModelTrainingConfig:
-    with open(path, "r", encoding="utf-8") as handle:
-        raw: Dict[str, Any] = yaml.safe_load(handle)
 
-    diffusion_kwargs = dict(raw.get("diffusion", {}))
-    world_model_kwargs = dict(raw.get("world_model", {}))
-    trainer_kwargs = dict(raw.get("trainer", {}))
-    trainer_cfg = TrainerLoopConfig(**trainer_kwargs)
-    evaluation_cfg = EvaluationConfig(**raw.get("evaluation", {}))
-
-    cfg = WorldModelTrainingConfig(
-        dataset=DatasetConfig(**raw.get("dataset", {})),
-        dataloader=DataloaderConfig(**raw.get("dataloader", {})),
-        optimizer=OptimizerConfig(**raw.get("optimizer", {})),
-        trainer=trainer_cfg,
-        logging=LoggingConfig(**raw.get("logging", {})),
-        diffusion=DiffusionConfig(**diffusion_kwargs),
-        world_model=WorldModelConfig(**world_model_kwargs),
-        ema=EMAConfig(**raw.get("ema", {})),
-        evaluation=evaluation_cfg,
-    )
-    cfg.diffusion.validate()
-    cfg.ema.validate()
-    return cfg
-
-
-def _dataclass_to_dict(obj: Any) -> Any:
-    if is_dataclass(obj):
-        return {key: _dataclass_to_dict(value) for key, value in asdict(obj).items()}
-    if isinstance(obj, (list, tuple)):
-        return [_dataclass_to_dict(item) for item in obj]
-    return obj
 
 
 class WorldModelTrainer:
@@ -270,7 +239,7 @@ class WorldModelTrainer:
         self._maybe_load_checkpoint()
         if self.ema_cfg.enabled:
             self._init_ema_model()
-        self.logger.init_wandb(_dataclass_to_dict(self.config))
+        self.logger.init_wandb(asdict(self.config))
         self._checkpoint_dir = self._resolve_checkpoint_dir()
         if self.config.trainer.single_batch_overfit:
             self.logger.info("Single-batch overfit enabled; reusing the first batch for all updates.")
@@ -584,7 +553,7 @@ class WorldModelTrainer:
         }
         if self.use_scaler:
             payload["scaler"] = self.scaler.state_dict()
-        payload["config"] = _dataclass_to_dict(self.config)
+        payload["config"] = asdict(self.config)
         if self.ema_model is not None:
             payload["ema_model"] = self.ema_model.state_dict()
         torch.save(payload, checkpoint_path)

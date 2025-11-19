@@ -16,7 +16,7 @@ class DiffusionConfig:
     linear_weight_slope: float = 0.9
     linear_weight_intercept: float = 0.1
 
-    def validate(self) -> None:
+    def __post_init__(self) -> None:
         if self.base_dimension <= 0:
             raise ValueError("diffusion.base_dimension must be strictly positive.")
         std_tensor = torch.as_tensor(self.noise_std, dtype=torch.float32)
@@ -114,7 +114,7 @@ class EulerSolverConfig:
     min_signal: float = 0.0
     max_signal: float = 1.0
 
-    def validate(self) -> None:
+    def __post_init__(self) -> None:
         if self.step_size <= 0.0 or not math.isfinite(self.step_size):
             raise ValueError("EulerSolver.step_size must be a positive finite value.")
         if not 0.0 <= self.min_signal < self.max_signal <= 1.0:
@@ -124,7 +124,6 @@ class EulerSolverConfig:
 class EulerSolver:
     def __init__(self, config: EulerSolverConfig) -> None:
         self.config = config
-        self.config.validate()
 
     def _prepare_initial_signal(
         self,
