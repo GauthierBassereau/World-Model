@@ -133,7 +133,7 @@ class WorldModelBackbone(nn.Module):
     def _build_temporal_mask(
         time_steps: int,
         context_length: Optional[int],
-        independant_frames_mask: Optional[torch.Tensor],
+        independent_frames_mask: Optional[torch.Tensor],
         batch_size: int,
         device: torch.device,
     ) -> torch.Tensor:
@@ -146,8 +146,8 @@ class WorldModelBackbone(nn.Module):
             mask = mask & context_band
         mask = mask.unsqueeze(0).unsqueeze(0).expand(batch_size, 1, time_steps, time_steps).clone() # need to clone so each batch has its own storage since some are different.
         
-        if independant_frames_mask is not None:
-            independent = independant_frames_mask.to(device=device, dtype=torch.bool).view(batch_size, 1, 1, 1)
+        if independent_frames_mask is not None:
+            independent = independent_frames_mask.to(device=device, dtype=torch.bool).view(batch_size, 1, 1, 1)
             all_false = torch.zeros_like(mask, dtype=torch.bool)
             mask = torch.where(independent, all_false, mask)
 
@@ -159,7 +159,7 @@ class WorldModelBackbone(nn.Module):
         noise_levels: torch.Tensor, # [B, S, 1]
         actions: Optional[torch.Tensor] = None, # [B, S, D]
         # ------------------ specific arguments for training purposes
-        independant_frames_mask: Optional[torch.Tensor] = None, # [B, 1]
+        independent_frames_mask: Optional[torch.Tensor] = None, # [B, 1]
         actions_mask: Optional[torch.Tensor] = None, # [B, 1]
     ) -> Dict[str, torch.Tensor]:
         batch_size, time_steps, latent_tokens, _ = noisy_latents.shape
@@ -199,7 +199,7 @@ class WorldModelBackbone(nn.Module):
         temporal_mask = self._build_temporal_mask(
             time_steps, 
             self.config.temporal_context_length, 
-            independant_frames_mask, 
+            independent_frames_mask, 
             batch_size, 
             device
         )

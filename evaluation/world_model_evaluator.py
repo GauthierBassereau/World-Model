@@ -219,7 +219,7 @@ class WorldModelEvaluator:
     ]:
         frames = batch.sequence_frames.to(self.device, non_blocking=True)
         actions = batch.sequence_actions.to(self.device, non_blocking=True)
-        independant_mask = None
+        independent_mask = None
         actions_mask = None
         frames_valid_mask = batch.frames_valid_mask.to(self.device, non_blocking=True)
 
@@ -288,7 +288,7 @@ class WorldModelEvaluator:
                 model_kwargs = self._build_model_kwargs(
                     actions,
                     actions_mask,
-                    independant_mask,
+                    independent_mask,
                     length,
                     use_actions,
                 )
@@ -322,13 +322,13 @@ class WorldModelEvaluator:
         self,
         actions: Optional[torch.Tensor],
         actions_mask: Optional[torch.Tensor],
-        independant_mask: Optional[torch.Tensor],
+        independent_mask: Optional[torch.Tensor],
         length: int,
         use_actions: bool,
     ) -> Dict[str, torch.Tensor]:
         kwargs: Dict[str, torch.Tensor] = {}
-        if independant_mask is not None:
-            kwargs["independant_frames_mask"] = independant_mask[:, :length]
+        if independent_mask is not None:
+            kwargs["independent_frames_mask"] = independent_mask[:, :length]
         if use_actions and actions is not None:
             kwargs["actions"] = actions[:, :length]
             if actions_mask is not None:

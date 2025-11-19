@@ -55,7 +55,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--preserve-dropout",
         action="store_true",
-        help="Use the drop_action_probability and independant_frames_probability from the config "
+        help="Use the drop_action_probability and independent_frames_probability from the config "
         "(by default they are forced to zero for clean statistics).",
     )
     parser.add_argument(
@@ -87,7 +87,7 @@ def prepare_dataset_and_loader(
         dataset_cfg = replace(
             dataset_cfg,
             drop_action_probability=0.0,
-            independant_frames_probability=0.0,
+            independent_frames_probability=0.0,
         )
     if not preserve_normalization and dataset_cfg.action_normalization is not None:
         dataset_cfg = replace(

@@ -437,9 +437,9 @@ class WorldModelTrainer:
 
         frames = frames_cpu.to(self.device, non_blocking=True)
         actions = batch.sequence_actions.to(self.device, non_blocking=True)
-        independant_frames_mask = (
-            batch.independant_frames_mask.to(self.device, non_blocking=True)
-            if batch.independant_frames_mask is not None
+        independent_frames_mask = (
+            batch.independent_frames_mask.to(self.device, non_blocking=True)
+            if batch.independent_frames_mask is not None
             else None
         )
         actions_mask = (
@@ -462,7 +462,7 @@ class WorldModelTrainer:
                 noisy_latents,
                 noise_levels=tau,
                 actions=actions,
-                independant_frames_mask=independant_frames_mask,
+                independent_frames_mask=independent_frames_mask,
                 actions_mask=actions_mask,
             )
             pred_clean_latents = outputs.get("pred_clean_latents")
@@ -472,7 +472,7 @@ class WorldModelTrainer:
             # But keep the v prediction formula, because it reweights the loss depending on tau
             one_minus_tau = 1.0 - tau_factor
             one_minus_tau = one_minus_tau.clamp_min(0.05)
-            v_true = (latents - noisy_latents) / one_minus_tau
+            v_true = latents - base_noise
             v_pred = (pred_clean_latents - noisy_latents) / one_minus_tau
             loss_unreduced = F.mse_loss(v_pred, v_true, reduction="none")
 

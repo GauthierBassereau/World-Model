@@ -62,7 +62,7 @@ dataset:
     7: 0.8
     12: 0.2
   frame_delta_seconds: 5.0 / 15.0
-  independant_frames_probability: 0.3 # from Dreamerv4
+  independent_frames_probability: 0.3 # from Dreamerv4
   drop_action_probability: 0.75 # from Dreamerv4
   decoder_retry_attempts: 10
 

@@ -45,7 +45,7 @@ class DatasetConfig:
     sequence_length_eval: Optional[int] = None
     sequence_length_distribution: Dict[int, float] = field(default_factory=lambda: {4: 1.0})
     frame_delta_seconds: float | str = 5.0 / 15.0
-    independant_frames_probability: float = 0.0
+    independent_frames_probability: float = 0.0
     drop_action_probability: float = 0.0
 
     def __post_init__(self) -> None:
@@ -143,7 +143,7 @@ class DatasetConfig:
 class WorldModelBatch:
     sequence_frames: torch.Tensor
     sequence_actions: torch.Tensor
-    independant_frames_mask: torch.Tensor
+    independent_frames_mask: torch.Tensor
     actions_mask: torch.Tensor
     frames_valid_mask: torch.Tensor
 
@@ -250,17 +250,15 @@ class LeRobotSequenceCollator:
     def __init__(
         self,
         dataset_cfg: DatasetConfig,
-        device: Optional[torch.device] = None,
     ) -> None:
         self.cfg = dataset_cfg
-        self.device = device or torch.device("cpu")
 
         if not self.cfg.cameras:
             raise ValueError("DatasetConfig.cameras must contain at least one camera key.")
         if not self.cfg.action_keys:
             raise ValueError("DatasetConfig.action_keys must contain at least one key.")
-        if not 0.0 <= self.cfg.independant_frames_probability <= 1.0:
-            raise ValueError("DatasetConfig.independant_frames_probability must be between 0 and 1.")
+        if not 0.0 <= self.cfg.independent_frames_probability <= 1.0:
+            raise ValueError("DatasetConfig.independent_frames_probability must be between 0 and 1.")
         if not 0.0 <= self.cfg.drop_action_probability <= 1.0:
             raise ValueError("DatasetConfig.drop_action_probability must be between 0 and 1.")
 
@@ -295,7 +293,7 @@ class LeRobotSequenceCollator:
 
         frame_sequences: List[torch.Tensor] = []
         action_sequences: List[torch.Tensor] = []
-        independant_frames_mask: List[torch.Tensor] = []
+        independent_frames_mask: List[torch.Tensor] = []
         actions_mask: List[torch.Tensor] = []
         frames_valid_masks: List[torch.Tensor] = []
 
@@ -305,22 +303,21 @@ class LeRobotSequenceCollator:
             validity_mask = self._prepare_valid_mask(sample, camera_key, target_length)
             actions = self._prepare_actions(sample, target_length)
 
-            use_independant_frame = random.random() < self.cfg.independant_frames_probability
+            use_independent_frame = random.random() < self.cfg.independent_frames_probability
             drop_actions = random.random() < self.cfg.drop_action_probability
 
-            if use_independant_frame or drop_actions:
+            if use_independent_frame or drop_actions:
                 actions.zero_()
 
             frame_sequences.append(frames)
             action_sequences.append(actions)
-            independant_frames_mask.append(
-                torch.tensor(use_independant_frame, dtype=torch.bool, device=self.device)
+            independent_frames_mask.append(
+                torch.tensor(use_independent_frame, dtype=torch.bool)
             )
             base_action_mask = torch.full(
                 (target_length,),
-                not (use_independant_frame or drop_actions),
+                not (use_independent_frame or drop_actions),
                 dtype=torch.bool,
-                device=self.device,
             )
             actions_mask.append(base_action_mask & validity_mask)
             frames_valid_masks.append(validity_mask)
@@ -328,7 +325,7 @@ class LeRobotSequenceCollator:
         return WorldModelBatch(
             sequence_frames=torch.stack(frame_sequences, dim=0),
             sequence_actions=torch.stack(action_sequences, dim=0),
-            independant_frames_mask=torch.stack(independant_frames_mask, dim=0),
+            independant_frames_mask=torch.stack(independent_frames_mask, dim=0),
             actions_mask=torch.stack(actions_mask, dim=0),
             frames_valid_mask=torch.stack(frames_valid_masks, dim=0),
         )
@@ -339,7 +336,7 @@ class LeRobotSequenceCollator:
         camera_key: str,
         target_length: int,
     ) -> torch.Tensor:
-        frames = sample[camera_key].to(self.device)
+        frames = sample[camera_key]
         if frames.ndim != 4:
             raise ValueError(f"Expected frames of shape [T, C, H, W], got {tuple(frames.shape)}.")
         if frames.shape[0] != self.max_sequence_length:
@@ -348,6 +345,7 @@ class LeRobotSequenceCollator:
             )
 
         frames = frames.to(torch.float32)
+        # Heuristic to detect if images are in [0, 255] or [0, 1]
         if frames.max() > 1.5:
             frames = frames / 255.0
         frames = frames.clamp(0.0, 1.0)
@@ -361,7 +359,7 @@ class LeRobotSequenceCollator:
     ) -> torch.Tensor:
         pad_key = f"{camera_key}_is_pad"
         if pad_key in sample:
-            pad_tensor = sample[pad_key].to(device=self.device, dtype=torch.bool)
+            pad_tensor = sample[pad_key].to(dtype=torch.bool)
             if pad_tensor.ndim != 1:
                 raise ValueError(
                     f"Expected padding mask '{pad_key}' to have 1 dimension, got {pad_tensor.ndim}."
@@ -372,7 +370,7 @@ class LeRobotSequenceCollator:
                 )
         else:
             pad_tensor = torch.zeros(
-                (self.max_sequence_length,), dtype=torch.bool, device=self.device
+                (self.max_sequence_length,), dtype=torch.bool
             )
         valid = (~pad_tensor).to(dtype=torch.bool)
         return valid[:target_length].contiguous()
@@ -386,7 +384,7 @@ class LeRobotSequenceCollator:
         for key in self.cfg.action_keys:
             if key not in sample:
                 raise KeyError(f"Sample is missing required action key '{key}'.")
-            part = sample[key].to(self.device)
+            part = sample[key]
             if part.ndim == 1:
                 part = part.unsqueeze(-1)
             if part.ndim != 2:
@@ -442,8 +440,8 @@ class LeRobotSequenceCollator:
             raise ValueError("action_normalization_params are required for normalization.")
         norm_type = self.cfg.action_normalization
         if norm_type == "min_max":
-            raw_min = torch.as_tensor(params["min"], dtype=torch.float32, device=self.device)
-            raw_max = torch.as_tensor(params["max"], dtype=torch.float32, device=self.device)
+            raw_min = torch.as_tensor(params["min"], dtype=torch.float32)
+            raw_max = torch.as_tensor(params["max"], dtype=torch.float32)
             if raw_min.ndim != 1 or raw_max.ndim != 1:
                 raise ValueError("min and max normalization parameters must be 1D sequences.")
             if raw_min.shape[0] != feature_dim or raw_max.shape[0] != feature_dim:
@@ -453,8 +451,8 @@ class LeRobotSequenceCollator:
                 raise ValueError("For min-max normalization, each max must be greater than min.")
             offset = raw_min
         elif norm_type == "mean_std":
-            raw_mean = torch.as_tensor(params["mean"], dtype=torch.float32, device=self.device)
-            raw_std = torch.as_tensor(params["std"], dtype=torch.float32, device=self.device)
+            raw_mean = torch.as_tensor(params["mean"], dtype=torch.float32)
+            raw_std = torch.as_tensor(params["std"], dtype=torch.float32)
             if raw_mean.ndim != 1 or raw_std.ndim != 1:
                 raise ValueError("mean and std normalization parameters must be 1D sequences.")
             if raw_mean.shape[0] != feature_dim or raw_std.shape[0] != feature_dim:
@@ -520,11 +518,15 @@ def _resolve_episode_split(
     if dataset_cfg.train_episodes:
         return dataset_cfg.train_episodes
 
-    #TODO uncomment this, for now I want all data for train because droid has bugs, cannot do splits
     # if dataset_cfg.evaluation_episodes: # auto train = all except eval
     #     available = _list_all_episode_indices(metadata)
     #     exclude = set(dataset_cfg.evaluation_episodes)
     #     return [idx for idx in available if idx not in exclude]
+
+    if dataset_cfg.evaluation_episodes:
+        available = _list_all_episode_indices(metadata)
+        exclude = set(dataset_cfg.evaluation_episodes)
+        return [idx for idx in available if idx not in exclude]
 
     return None
 
@@ -539,14 +541,14 @@ def build_world_model_dataloader(
     seed: Optional[int] = None,
     split: Literal["train", "eval"] = "train",
 ) -> DataLoader:
-    device = device or torch.device("cpu")
+    # device argument is kept for compatibility but not used for collator anymore
     dataset_cfg_local = copy.deepcopy(dataset_cfg) if split == "eval" else dataset_cfg
     if split == "eval":
         if dataset_cfg.sequence_length_eval is not None:
             dataset_cfg_local.sequence_length_distribution = {
                 int(dataset_cfg.sequence_length_eval): 1.0
             }
-        dataset_cfg_local.independant_frames_probability = 0.0
+        dataset_cfg_local.independent_frames_probability = 0.0
         dataset_cfg_local.drop_action_probability = 0.0
         grad_accum_steps = 1
 
@@ -593,7 +595,7 @@ def build_world_model_dataloader(
         )
         shuffle = False
 
-    collate = LeRobotSequenceCollator(dataset_cfg_local, device=device)
+    collate = LeRobotSequenceCollator(dataset_cfg_local)
 
     dataloader = DataLoader(
         dataset,
