@@ -34,7 +34,7 @@ sbatch \
   --partition=gpu \
   --gres="gpu:${GPU_TYPE}:${NUM_GPUS}" \
   --nodes=1 --ntasks-per-node="${NUM_GPUS}" \
-  --cpus-per-task=6 \
+  --cpus-per-task=8 \
   --mem=128G --time=3-00:00:00 \
   --export=ALL \
   --wrap "bash -lc '

@@ -2,27 +2,32 @@
 # Download Droid Dataset with LeRobot
 # =================
 
-# from lerobot.datasets.lerobot_dataset import LeRobotDataset
-# repo_id = "aractingi/droid_1.0.1"
-# dataset = LeRobotDataset(repo_id)
+from lerobot.datasets.lerobot_dataset import LeRobotDataset
+import torch
+repo_id = "aractingi/droid_1.0.1"
+episodes = list(range(0, 10000))
+dataset = LeRobotDataset(repo_id, episodes=episodes)
+print(dataset)
+dataloader = torch.utils.data.DataLoader(dataset, batch_size=4, shuffle=True)
+print("DataLoader created. Number of batches:", len(dataloader))
 
 # =================
 # Split LeRobot Dataset
 # =================
 
-from pathlib import Path
-from lerobot.datasets.lerobot_dataset import LeRobotDataset
-from lerobot.datasets.dataset_tools import split_dataset
+# from pathlib import Path
+# from lerobot.datasets.lerobot_dataset import LeRobotDataset
+# from lerobot.datasets.dataset_tools import split_dataset
 
-base = LeRobotDataset("aractingi/droid_1.0.1")
-splits = {"train": 0.95, "val": 0.05}
-split_ds = split_dataset(base, splits, output_dir=Path("/gpfs/helios/home/gauthierbernarda/data/droid"))
+# base = LeRobotDataset("aractingi/droid_1.0.1")
+# splits = {"train": 0.95, "val": 0.05}
+# split_ds = split_dataset(base, splits, output_dir=Path("/gpfs/helios/home/gauthierbernarda/data/droid"))
 
-train_root = Path("/gpfs/helios/home/gauthierbernarda/data/droid_splits/train")
-val_root = Path("/gpfs/helios/home/gauthierbernarda/data/droid_splits/val")
+# train_root = Path("/gpfs/helios/home/gauthierbernarda/data/droid_splits/train")
+# val_root = Path("/gpfs/helios/home/gauthierbernarda/data/droid_splits/val")
 
-train_ds = LeRobotDataset("droid-train", root=train_root)
-val_ds   = LeRobotDataset("droid-val", root=val_root)
+# train_ds = LeRobotDataset("droid-train", root=train_root)
+# val_ds   = LeRobotDataset("droid-val", root=val_root)
 
 # =================
 # Download Kinetics Dataset with Torchvision

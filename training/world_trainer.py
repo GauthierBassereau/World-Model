@@ -1,5 +1,7 @@
 import copy
 import random
+import datetime
+import time
 import yaml
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass, is_dataclass
@@ -148,7 +150,7 @@ class WorldModelTrainer:
         self._checkpoint_dir: Optional[Path] = None
 
         # Managing devices and distributed setup
-        dist.init_process_group(backend="nccl")
+        dist.init_process_group(backend="nccl", timeout=datetime.timedelta(minutes=15))
         self.world_size = dist.get_world_size()
         self.rank = dist.get_rank()
         self.device_idx = self.rank % torch.cuda.device_count()
@@ -469,21 +471,17 @@ class WorldModelTrainer:
             # It is better to predict in x space because manifold is lower dim there than in noise space
             # But keep the v prediction formula, because it reweights the loss depending on tau
             one_minus_tau = 1.0 - tau_factor
-            denom = one_minus_tau.clamp_min(0.05)
-            v_true = (latents - noisy_latents) / denom
-            v_pred = (pred_clean_latents - noisy_latents) / denom
+            one_minus_tau = one_minus_tau.clamp_min(0.05)
+            v_true = (latents - noisy_latents) / one_minus_tau
+            v_pred = (pred_clean_latents - noisy_latents) / one_minus_tau
             loss_unreduced = F.mse_loss(v_pred, v_true, reduction="none")
 
             # Apply valid frame mask, some sequences may have padding frames which should not contribute to loss
-            mask = frames_valid_mask.to(
-                device=loss_unreduced.device,
-                dtype=loss_unreduced.dtype,
-            ).unsqueeze(-1).unsqueeze(-1)
-            expanded_mask = mask.expand_as(loss_unreduced)
-            weighted_loss = loss_unreduced * expanded_mask
-            denom = expanded_mask.sum(dtype=torch.float32).clamp_min(1.0)
-            weighted_sum = weighted_loss.sum(dtype=torch.float32)
-            loss = weighted_sum / denom
+            frame_mask = frames_valid_mask.to(device=loss_unreduced.device, dtype=loss_unreduced.dtype)
+            frame_loss = loss_unreduced.mean(dim=(-1, -2))
+            masked_loss = frame_loss * frame_mask
+            denom = frame_mask.sum().clamp_min(1.0)
+            loss = masked_loss.sum() / denom
             scaled_loss = loss / self.config.trainer.grad_accum_steps
 
         if self.use_scaler:
@@ -492,7 +490,7 @@ class WorldModelTrainer:
             scaled_loss.backward()
 
         return {
-            "loss": float(loss.detach().cpu()),
+            "loss": float(scaled_loss)
         }
 
     @torch.no_grad()
