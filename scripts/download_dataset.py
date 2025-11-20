@@ -2,19 +2,26 @@
 # Download Droid Dataset with LeRobot
 # =================
 
-from lerobot.datasets.lerobot_dataset import LeRobotDataset
+from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
 import torch
 repo_id = "aractingi/droid_1.0.1"
-episodes = [2, 3, 4, 5]
+episodes = [0]
 delta_timestamps = {
-    "observation.images.exterior_1_left": [-1, 10/15, 5/15, 0]
+    "observation.images.wrist_left": [-1, -10/15, -5/15, 0, 5/15, 10/15, 1],
 }
-
 dataset = LeRobotDataset(repo_id, episodes=episodes, delta_timestamps=delta_timestamps)
-print(dataset)
-dataloader = torch.utils.data.DataLoader(dataset, batch_size=16, shuffle=True)
-for batch in dataloader:
-    print(f"Received batch index {batch['index']}", end="\r")
+print(f"Dataset length: {len(dataset)}")
+dataloader = torch.utils.data.DataLoader(
+    dataset,
+    batch_size=1,
+    shuffle=False,
+)
+print(f"length of dataloader: {len(dataloader)}")
+for i, data in enumerate(dataloader):
+    print(f"Batch {i}:")
+    print(data.keys())
+    print(data["observation.images.wrist_left_is_pad"])
+    
 # =================
 # Split LeRobot Dataset
 # =================

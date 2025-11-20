@@ -90,8 +90,10 @@ class TrainDataConfig:
 
 
 @dataclass
-class EvalDataConfig(EvaluationConfig):
-    eval_dataset: DatasetConfig = field(default_factory=DatasetConfig)
+class EvalDataConfig:
+    eval_dataset: DatasetConfig = field(
+        default_factory=lambda: DatasetConfig(episode_midpoint_only=True)
+    )
     eval_dataloader: DataloaderConfig = field(default_factory=DataloaderConfig)
 
 
@@ -99,6 +101,7 @@ class EvalDataConfig(EvaluationConfig):
 class WorldModelTrainingConfig:
     train_data: TrainDataConfig = field(default_factory=TrainDataConfig)
     eval_data: EvalDataConfig = field(default_factory=EvalDataConfig)
+    evaluator: EvaluationConfig = field(default_factory=EvaluationConfig)
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
     trainer: TrainerLoopConfig = field(default_factory=TrainerLoopConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
@@ -176,34 +179,33 @@ class WorldModelTrainer:
         )
 
         self.evaluator: Optional[WorldModelEvaluator] = None
-        if self.is_main_process:
-            try:
-                evaluator = WorldModelEvaluator(
-                    config=config.eval_data,
-                    dataset_cfg=config.eval_data.eval_dataset,
-                    dataloader_cfg=config.eval_data.eval_dataloader,
-                    diffusion_cfg=self.flow_cfg,
-                    autoencoder=self.autoencoder,
-                    device=self.device,
-                    seed=seed,
-                    solver_cfg=euler_cfg,
-                )
-                if evaluator.dataloader is None:
+        try:
+            evaluator = WorldModelEvaluator(
+                config=config.evaluator,
+                dataset_cfg=config.eval_data.eval_dataset,
+                dataloader_cfg=config.eval_data.eval_dataloader,
+                diffusion_cfg=self.flow_cfg,
+                autoencoder=self.autoencoder,
+                device=self.device,
+                seed=seed,
+                solver_cfg=euler_cfg,
+                rank=self.rank,
+                world_size=self.world_size,
+                is_main_process=self.is_main_process,
+            )
+            if evaluator.dataloader is None:
+                if self.is_main_process:
                     self.logger.warning(
                         "Evaluation dataset split unavailable; metrics will be skipped."
                     )
-                else:
-                    self.evaluator = evaluator
-            except ValueError as exc:
+            else:
+                self.evaluator = evaluator
+        except ValueError as exc:
+            if self.is_main_process:
                 self.logger.warning(
                     "Evaluation disabled due to configuration issue: %s",
                     exc,
                 )
-        else:
-            self.logger.info(
-                "Evaluation only runs on rank 0; skipping on rank %d.",
-                self.rank,
-            )
             
         self.optimizer = torch.optim.AdamW(
             self.model.parameters(),
@@ -397,8 +399,7 @@ class WorldModelTrainer:
                 mean_metrics.update(grad_metrics)
             mean_metrics = self._sync_metrics(mean_metrics)
             self.logger.log_training_metrics(mean_metrics)
-            if self.is_main_process:
-                self._maybe_run_evaluation(step)
+            self._maybe_run_evaluation(step)
 
             if (
                 self.config.logging.checkpoint_interval
@@ -534,9 +535,10 @@ class WorldModelTrainer:
                 self.device,
             )
             return
-        self.logger.info("Running evaluation...")
+        if self.is_main_process:
+            self.logger.info("Running evaluation...")
         result = self.evaluator.evaluate(eval_model)
-        if result is not None:
+        if result is not None and self.is_main_process:
             self.logger.log_evaluation(result)
 
     def _resolve_total_steps(self) -> int:

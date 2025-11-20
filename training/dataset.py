@@ -6,7 +6,7 @@ import logging
 import random
 
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 from torch.utils.data.distributed import DistributedSampler
 from torchvision.transforms import InterpolationMode
 from torchvision.transforms import v2 as transforms_v2
@@ -40,6 +40,7 @@ class DatasetConfig:
     action_normalization_params: Optional[Dict[str, List[float]]] = None
 
     episodes: Optional[List[int]] = None
+    episode_midpoint_only: bool = False
     sequence_length_distribution: Dict[int, float] = field(default_factory=lambda: {4: 1.0})
     frame_delta_seconds: Union[float, str] = 5.0 / 15.0
     independent_frames_probability: float = 0.0
@@ -249,6 +250,50 @@ def _coerce_frame_delta(value: Union[float, str]) -> float:
     if result <= 0:
         raise ValueError("frame_delta_seconds must be strictly positive.")
     return result
+
+def _compute_episode_midpoints(
+    dataset: ResilientLeRobotDataset,
+    episodes: Optional[List[int]],
+) -> Tuple[List[int], List[int]]:
+    """
+    Return a single middle-frame index for each target episode (global index) and the episode ids used.
+
+    When the dataset is initialized with a subset of episodes, the metadata still contains offsets for
+    the full dataset. We therefore compute midpoints relative to the actually loaded subset ordering.
+    """
+    meta_eps = getattr(getattr(dataset, "meta", None), "episodes", None)
+    if meta_eps is None:
+        raise AttributeError("Dataset does not expose episode metadata required for midpoint sampling.")
+
+    target_episode_ids = list(episodes) if episodes is not None else list(range(len(meta_eps)))
+
+    loaded_episodes = getattr(dataset, "episodes", None)
+    loaded_episodes = list(loaded_episodes) if loaded_episodes is not None else list(range(len(meta_eps)))
+
+    midpoint_map: Dict[int, int] = {}
+    current_idx = 0
+    for ep_id in loaded_episodes:
+        if ep_id < 0 or ep_id >= len(meta_eps):
+            raise ValueError(
+                f"Episode id {ep_id} requested but metadata only contains {len(meta_eps)} episodes."
+            )
+        ep = meta_eps[ep_id]
+        length = ep.get("length")
+        if length is None:
+            raise ValueError(f"Episode {ep_id} is missing a length field required for midpoint calculation.")
+        if ep_id in target_episode_ids:
+            midpoint_map[ep_id] = current_idx + int(length) // 2
+        current_idx += int(length)
+
+    missing = [ep_id for ep_id in target_episode_ids if ep_id not in midpoint_map]
+    if missing:
+        raise ValueError(
+            "Failed to compute midpoint indices for requested episodes (not present in loaded subset): "
+            + ", ".join(str(ep) for ep in missing)
+        )
+
+    midpoint_indices = [midpoint_map[ep_id] for ep_id in target_episode_ids]
+    return midpoint_indices, target_episode_ids
 
 
 def _ensure_delta_timestamps(
@@ -556,6 +601,16 @@ def build_world_model_dataloader(
     )
     if rank is None or rank == 0:
         print(f"[x] Dataset created with {len(dataset_cfg.episodes) if dataset_cfg.episodes else 'all'} episodes, with length {len(dataset)}.")
+
+    if dataset_cfg.episode_midpoint_only:
+        midpoint_indices, episode_ids_used = _compute_episode_midpoints(dataset, dataset_cfg.episodes)
+        dataset = Subset(dataset, midpoint_indices)
+        # Carry episode ids alongside subset order for downstream consumers (e.g., video logging)
+        setattr(dataset, "episode_ids", episode_ids_used)
+        if rank is None or rank == 0:
+            print(
+                f"[x] Using midpoint-only sampling; {len(midpoint_indices)} episodes mapped to {len(dataset)} samples."
+            )
 
     if distributed:
         sampler = DistributedSampler(
