@@ -5,12 +5,16 @@
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 import torch
 repo_id = "aractingi/droid_1.0.1"
-episodes = list(range(0, 10000))
-dataset = LeRobotDataset(repo_id, episodes=episodes)
-print(dataset)
-dataloader = torch.utils.data.DataLoader(dataset, batch_size=4, shuffle=True)
-print("DataLoader created. Number of batches:", len(dataloader))
+episodes = [2, 3, 4, 5]
+delta_timestamps = {
+    "observation.images.exterior_1_left": [-1, 10/15, 5/15, 0]
+}
 
+dataset = LeRobotDataset(repo_id, episodes=episodes, delta_timestamps=delta_timestamps)
+print(dataset)
+dataloader = torch.utils.data.DataLoader(dataset, batch_size=16, shuffle=True)
+for batch in dataloader:
+    print(f"Received batch index {batch['index']}", end="\r")
 # =================
 # Split LeRobot Dataset
 # =================

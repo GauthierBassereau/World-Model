@@ -5,6 +5,8 @@ from training.world_trainer import (
 )
 from world_model.backbone import WorldModelBackbone
 
+# Use it like:
+# python scripts/train_world_model.py configs/pretraining.yaml
 
 def main() -> None:
     config = pyrallis.parse(config_class=WorldModelTrainingConfig)

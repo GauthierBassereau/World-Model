@@ -9,8 +9,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
+import pyrallis
 from training.dataset import DataloaderConfig, DatasetConfig, build_world_model_dataloader
-from training.world_trainer import load_training_config
+from training.world_trainer import WorldModelTrainingConfig
 
 
 def parse_args() -> argparse.Namespace:
@@ -80,9 +81,9 @@ def prepare_dataset_and_loader(
     preserve_dropout: bool,
     preserve_normalization: bool,
 ) -> Tuple[DatasetConfig, DataloaderConfig, torch.utils.data.DataLoader]:
-    training_cfg = load_training_config(config_path)
+    training_cfg = pyrallis.parse(config_class=WorldModelTrainingConfig, config_path=str(config_path), args=[])
 
-    dataset_cfg = training_cfg.dataset
+    dataset_cfg = training_cfg.train_data.train_dataset
     if not preserve_dropout:
         dataset_cfg = replace(
             dataset_cfg,
@@ -96,7 +97,7 @@ def prepare_dataset_and_loader(
             action_normalization_params=None,
         )
 
-    dataloader_cfg = training_cfg.dataloader
+    dataloader_cfg = training_cfg.train_data.train_dataloader
     shuffle = True
     if batch_size_override is not None:
         dataloader_cfg = replace(dataloader_cfg, batch_size=max(1, batch_size_override))

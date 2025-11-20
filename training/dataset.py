@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Literal, Set
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Literal, Set, Union
 
 import copy
 import logging
@@ -13,9 +13,6 @@ from torchvision.transforms import v2 as transforms_v2
 
 from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
 
-ActionRepresentation = Literal["delta", "position"]
-ActionNormalizationType = Literal["min_max", "mean_std"]
-
 
 @dataclass
 class DataloaderConfig:
@@ -27,24 +24,24 @@ class DataloaderConfig:
 
 @dataclass
 class DatasetConfig:
-    repo_id: str = "lerobot/droid_1.0.1"
+    repo_id: str = "aractingi/droid_1.0.1"
     decoder_retry_attempts: int = 5
-    cameras: Sequence[str] = (
+    cameras: Tuple[str, ...] = (
         "observation.images.exterior_1_left",
         "observation.images.exterior_2_left",
+        "observation.images.wrist_left",
     )
     camera_probabilities: Optional[Dict[str, float]] = None
-    action_keys: Sequence[str] = (
-        "observation.state"
+    action_keys: Tuple[str, ...] = (
+        "observation.state",
     )
-    action_representation: ActionRepresentation = "delta"
-    action_normalization: Optional[ActionNormalizationType] = None
-    action_normalization_params: Optional[Dict[str, Sequence[float]]] = None
-    train_episodes: Optional[Sequence[int]] = None  # None -> auto
-    evaluation_episodes: Optional[Sequence[int]] = None
-    sequence_length_eval: Optional[int] = None
+    action_representation: str = "delta"
+    action_normalization: Optional[str] = None
+    action_normalization_params: Optional[Dict[str, List[float]]] = None
+
+    episodes: Optional[List[int]] = None
     sequence_length_distribution: Dict[int, float] = field(default_factory=lambda: {4: 1.0})
-    frame_delta_seconds: float | str = 5.0 / 15.0
+    frame_delta_seconds: Union[float, str] = 5.0 / 15.0
     independent_frames_probability: float = 0.0
     drop_action_probability: float = 0.0
 
@@ -116,20 +113,7 @@ class DatasetConfig:
                     raise ValueError(
                         "All action_normalization_params sequences must have the same length."
                     )
-        self.train_episodes = self._normalize_episode_indices(self.train_episodes)
-        self.evaluation_episodes = self._normalize_episode_indices(self.evaluation_episodes)
-        if self.train_episodes and self.evaluation_episodes:
-            overlap = set(self.train_episodes) & set(self.evaluation_episodes)
-            if overlap:
-                raise ValueError(
-                    "train_episodes and evaluation_episodes must be disjoint; overlapping indices: "
-                    + ", ".join(str(idx) for idx in sorted(overlap))
-                )
-        if self.sequence_length_eval is not None:
-            value = int(self.sequence_length_eval)
-            if value < 2:
-                raise ValueError("DatasetConfig.sequence_length_eval must be >= 2.")
-            self.sequence_length_eval = value
+        self.episodes = self._normalize_episode_indices(self.episodes)
 
     @staticmethod
     def _normalize_episode_indices(indices: Optional[Sequence[int]]) -> Optional[List[int]]:
@@ -163,7 +147,10 @@ _DROID_RESIZE_CROP_TRANSFORM = transforms_v2.Compose(
 
 
 class ResilientLeRobotDataset(LeRobotDataset):
-    """Dataset wrapper that skips samples whose decoding fails."""
+    """
+    Dataset wrapper that skips samples whose decoding fails.
+    If a failure occurs, it jumps to a different episode rather than the next frame.
+    """
 
     def __init__(
         self,
@@ -184,33 +171,68 @@ class ResilientLeRobotDataset(LeRobotDataset):
         last_error: Optional[RuntimeError] = None
 
         while attempts < min(self.max_decode_failures, total):
+            # If we circled back to a known bad index, skip it immediately
             if candidate in self._bad_indices:
+                # Simple skip to avoid infinite recursion on cached bad indices
+                # We use a small prime skip (e.g. 17) to desynchronize
+                candidate = (candidate + 17) % total
                 attempts += 1
-                candidate = (candidate + 1) % total
                 continue
+
             try:
                 return super().__getitem__(candidate)
             except RuntimeError as exc:
                 last_error = exc
                 self._bad_indices.add(candidate)
                 attempts += 1
+                
+                # --- Smart Episode Skip Logic ---
+                # 1. Identify the Episode ID of the failed sample
+                current_ep_id = self.episode_ids[candidate].item()
+                
+                # 2. Calculate the length of this specific episode
+                # episode_data_index maps ID -> (start_index, end_index)
+                ep_start = self.episode_data_index["from"][current_ep_id].item()
+                ep_end = self.episode_data_index["to"][current_ep_id].item()
+                ep_length = ep_end - ep_start
+
                 logger.warning(
-                    "Decoder failure for dataset index %d (attempt %d/%d): %s. Skipping sample.",
+                    "Decoder failure at index %d (Episode %d). Attempt %d/%d. "
+                    "Error: %s. Jumping forward %d frames to find a new episode.",
                     candidate,
+                    current_ep_id,
                     attempts,
                     self.max_decode_failures,
                     exc,
+                    ep_length
                 )
-                candidate = (candidate + 1) % total
+
+                # 3. Jump forward by the episode length
+                # This effectively targets the same relative position in the NEXT episode
+                candidate = (candidate + ep_length) % total
+
+                # 4. Verify we actually left the episode 
+                # (In rare cases of filtered datasets or identical lengths, we might land back in same ID)
+                # We peek at the new candidate's episode ID and nudge if necessary.
+                safety_counter = 0
+                while (
+                    self.episode_ids[candidate].item() == current_ep_id 
+                    and safety_counter < 10
+                ):
+                    # Jump 10% of total size or at least 100 frames to force exit
+                    jump_step = max(100, total // 10)
+                    candidate = (candidate + jump_step) % total
+                    safety_counter += 1
+                # --------------------------------
 
         if last_error is not None:
             raise RuntimeError(
-                f"Failed to fetch dataset sample after {attempts} decode retries."
+                f"Failed to fetch dataset sample after {attempts} decode retries (tried {attempts} different episodes)."
             ) from last_error
         raise RuntimeError("Unable to fetch dataset sample due to repeated decoder errors.")
 
 
-def _coerce_frame_delta(value: float | str) -> float:
+def _coerce_frame_delta(value: Union[float, str]) -> float:
     if isinstance(value, (int, float)):
         result = float(value)
     elif isinstance(value, str):
@@ -238,7 +260,8 @@ def _ensure_delta_timestamps(
     step = dataset_cfg.frame_delta_seconds
     if step <= 0:
         step = 1.0 / metadata.fps
-    offsets = [step * i for i in range(max_length)]
+    # Generate offsets symmetric around 0
+    offsets = [step * (i - (max_length - 1) / 2) for i in range(max_length)]
     delta = {camera: list(offsets) for camera in dataset_cfg.cameras}
 
     for key in dataset_cfg.action_keys:
@@ -325,7 +348,7 @@ class LeRobotSequenceCollator:
         return WorldModelBatch(
             sequence_frames=torch.stack(frame_sequences, dim=0),
             sequence_actions=torch.stack(action_sequences, dim=0),
-            independant_frames_mask=torch.stack(independent_frames_mask, dim=0),
+            independent_frames_mask=torch.stack(independent_frames_mask, dim=0),
             actions_mask=torch.stack(actions_mask, dim=0),
             frames_valid_mask=torch.stack(frames_valid_masks, dim=0),
         )
@@ -494,43 +517,6 @@ class LeRobotSequenceCollator:
             )[0]
 
 
-def _list_all_episode_indices(metadata: LeRobotDatasetMetadata) -> List[int]:
-    episodes = getattr(metadata, "total_episodes", None)
-    if episodes is None:
-        raise ValueError("Unable to determine total number of episodes in the dataset.")
-    return list(range(episodes))
-
-
-def _resolve_episode_split(
-    dataset_cfg: DatasetConfig,
-    metadata: LeRobotDatasetMetadata,
-    split: Literal["train", "eval"],
-) -> Optional[List[int]]:
-    if split not in {"train", "eval"}:
-        raise ValueError(f"Unknown dataset split '{split}'.")
-    if split == "eval":
-        if not dataset_cfg.evaluation_episodes:
-            raise ValueError(
-                "dataset.evaluation_episodes must be provided to build the evaluation split."
-            )
-        return dataset_cfg.evaluation_episodes
-
-    if dataset_cfg.train_episodes:
-        return dataset_cfg.train_episodes
-
-    # if dataset_cfg.evaluation_episodes: # auto train = all except eval
-    #     available = _list_all_episode_indices(metadata)
-    #     exclude = set(dataset_cfg.evaluation_episodes)
-    #     return [idx for idx in available if idx not in exclude]
-
-    if dataset_cfg.evaluation_episodes:
-        available = _list_all_episode_indices(metadata)
-        exclude = set(dataset_cfg.evaluation_episodes)
-        return [idx for idx in available if idx not in exclude]
-
-    return None
-
-
 def build_world_model_dataloader(
     dataset_cfg: DatasetConfig,
     dataloader_cfg: DataloaderConfig,
@@ -539,21 +525,9 @@ def build_world_model_dataloader(
     rank: Optional[int] = None,
     world_size: Optional[int] = None,
     seed: Optional[int] = None,
-    split: Literal["train", "eval"] = "train",
 ) -> DataLoader:
-    # device argument is kept for compatibility but not used for collator anymore
-    dataset_cfg_local = copy.deepcopy(dataset_cfg) if split == "eval" else dataset_cfg
-    if split == "eval":
-        if dataset_cfg.sequence_length_eval is not None:
-            dataset_cfg_local.sequence_length_distribution = {
-                int(dataset_cfg.sequence_length_eval): 1.0
-            }
-        dataset_cfg_local.independent_frames_probability = 0.0
-        dataset_cfg_local.drop_action_probability = 0.0
-        grad_accum_steps = 1
-
-    metadata = LeRobotDatasetMetadata(dataset_cfg_local.repo_id)
-    delta_timestamps = _ensure_delta_timestamps(dataset_cfg_local, metadata)
+    metadata = LeRobotDatasetMetadata(dataset_cfg.repo_id)
+    delta_timestamps = _ensure_delta_timestamps(dataset_cfg, metadata)
 
     effective_world_size = world_size or 1
     distributed = effective_world_size > 1
@@ -570,40 +544,40 @@ def build_world_model_dataloader(
 
     sampler: Optional[DistributedSampler] = None
 
-    episodes = _resolve_episode_split(dataset_cfg_local, metadata, split)
-
+    if rank is None or rank == 0:
+        print("[ ] Building dataset and dataloader...")
     dataset = ResilientLeRobotDataset(
-        dataset_cfg_local.repo_id,
-        episodes=episodes,
+        dataset_cfg.repo_id,
+        episodes=dataset_cfg.episodes,
         delta_timestamps=delta_timestamps,
         tolerance_s=0.01,
-        max_decode_failures=dataset_cfg_local.decoder_retry_attempts,
+        max_decode_failures=dataset_cfg.decoder_retry_attempts,
         image_transforms=_DROID_RESIZE_CROP_TRANSFORM,
     )
-
-    eval_split = split == "eval"
-    shuffle = dataloader_cfg.shuffle # and not eval_split # False during eval and configured shuffle for train # For now keep shuffle during eval to get varied samples because we won't run eval on full eval dataset too long at least not during training
+    if rank is None or rank == 0:
+        print(f"[x] Dataset created with {len(dataset_cfg.episodes) if dataset_cfg.episodes else 'all'} episodes, with length {len(dataset)}.")
 
     if distributed:
         sampler = DistributedSampler(
             dataset,
             num_replicas=world_size,
             rank=rank or 0,
-            shuffle=shuffle,
+            shuffle=dataloader_cfg.shuffle,
             drop_last=True,
             seed=seed or 0,
         )
-        shuffle = False
 
-    collate = LeRobotSequenceCollator(dataset_cfg_local)
+    collate = LeRobotSequenceCollator(dataset_cfg)
 
     dataloader = DataLoader(
         dataset,
         batch_size=dataloader_batch_size,
-        shuffle=shuffle if sampler is None else False,
+        shuffle=dataloader_cfg.shuffle if sampler is None else False,
         sampler=sampler,
         num_workers=dataloader_cfg.num_workers,
         pin_memory=dataloader_cfg.pin_memory,
         collate_fn=collate,
     )
+    if rank is None or rank == 0:
+        print(f"[x] Dataloader built with {len(dataset_cfg.episodes) if dataset_cfg.episodes else 'all'} episodes, with length {len(dataloader)}.")
     return dataloader

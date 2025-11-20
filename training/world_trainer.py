@@ -4,10 +4,10 @@ import datetime
 import time
 import yaml
 from contextlib import nullcontext
-from dataclasses import asdict, dataclass, is_dataclass
+from dataclasses import asdict, dataclass, is_dataclass, field
 from functools import partial
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -84,19 +84,28 @@ class EMAConfig:
 
 
 @dataclass
-class WorldModelTrainingConfig:
-    dataset: DatasetConfig = DatasetConfig()
-    dataloader: DataloaderConfig = DataloaderConfig()
-    optimizer: OptimizerConfig = OptimizerConfig()
-    trainer: TrainerLoopConfig = TrainerLoopConfig()
-    logging: LoggingConfig = LoggingConfig()
-    diffusion: DiffusionConfig = DiffusionConfig()
-    world_model: WorldModelConfig = WorldModelConfig()
-    ema: EMAConfig = EMAConfig()
-    evaluation: EvaluationConfig = EvaluationConfig()
-    
-    
+class TrainDataConfig:
+    train_dataset: DatasetConfig = field(default_factory=DatasetConfig)
+    train_dataloader: DataloaderConfig = field(default_factory=DataloaderConfig)
 
+
+@dataclass
+class EvalDataConfig(EvaluationConfig):
+    eval_dataset: DatasetConfig = field(default_factory=DatasetConfig)
+    eval_dataloader: DataloaderConfig = field(default_factory=DataloaderConfig)
+
+
+@dataclass
+class WorldModelTrainingConfig:
+    train_data: TrainDataConfig = field(default_factory=TrainDataConfig)
+    eval_data: EvalDataConfig = field(default_factory=EvalDataConfig)
+    optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
+    trainer: TrainerLoopConfig = field(default_factory=TrainerLoopConfig)
+    logging: LoggingConfig = field(default_factory=LoggingConfig)
+    diffusion: DiffusionConfig = field(default_factory=DiffusionConfig)
+    world_model: WorldModelConfig = field(default_factory=WorldModelConfig)
+    ema: EMAConfig = field(default_factory=EMAConfig)
+    ode_solver: EulerSolverConfig = field(default_factory=EulerSolverConfig)
 
 
 class WorldModelTrainer:
@@ -119,7 +128,7 @@ class WorldModelTrainer:
         self._checkpoint_dir: Optional[Path] = None
 
         # Managing devices and distributed setup
-        dist.init_process_group(backend="nccl", timeout=datetime.timedelta(minutes=15))
+        dist.init_process_group(backend="nccl", timeout=datetime.timedelta(minutes=30))
         self.world_size = dist.get_world_size()
         self.rank = dist.get_rank()
         self.device_idx = self.rank % torch.cuda.device_count()
@@ -146,19 +155,20 @@ class WorldModelTrainer:
             max_signal=1.0,
         )
 
-        sample_fps = 1.0 / self.config.dataset.frame_delta_seconds
+        sample_fps = 1.0 / self.config.train_data.train_dataset.frame_delta_seconds
         self.logger = WorldModelLogger(
             config.logging,
             euler_cfg=euler_cfg,
             sample_fps=sample_fps,
             is_main_process=self.is_main_process,
         )
+        self.logger.log_config(asdict(config))
 
-        if config.dataloader.batch_size % (config.trainer.grad_accum_steps * self.world_size) != 0:
+        if config.train_data.train_dataloader.batch_size % (config.trainer.grad_accum_steps * self.world_size) != 0:
             raise ValueError("Global batch size must be divisible by world_size * grad_accum_steps.")
         self.dataloader = build_world_model_dataloader(
-            dataset_cfg=config.dataset,
-            dataloader_cfg=config.dataloader,
+            dataset_cfg=config.train_data.train_dataset,
+            dataloader_cfg=config.train_data.train_dataloader,
             grad_accum_steps=config.trainer.grad_accum_steps,
             seed=seed,
             rank=self.rank,
@@ -169,9 +179,9 @@ class WorldModelTrainer:
         if self.is_main_process:
             try:
                 evaluator = WorldModelEvaluator(
-                    config=config.evaluation,
-                    dataset_cfg=config.dataset,
-                    dataloader_cfg=config.dataloader,
+                    config=config.eval_data,
+                    dataset_cfg=config.eval_data.eval_dataset,
+                    dataloader_cfg=config.eval_data.eval_dataloader,
                     diffusion_cfg=self.flow_cfg,
                     autoencoder=self.autoencoder,
                     device=self.device,
@@ -436,7 +446,7 @@ class WorldModelTrainer:
             )
             pred_clean_latents = outputs.get("pred_clean_latents")
 
-            # Loss computation -> Basically following Dreamerv3 and JiT(https://arxiv.org/pdf/2511.13720v1) papers
+            # Loss computation -> Basically following Dreamerv4 and JiT(https://arxiv.org/pdf/2511.13720v1) papers
             # It is better to predict in x space because manifold is lower dim there than in noise space
             # But keep the v prediction formula, because it reweights the loss depending on tau
             one_minus_tau = 1.0 - tau_factor

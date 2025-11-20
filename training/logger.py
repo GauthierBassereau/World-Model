@@ -14,6 +14,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.optim import Optimizer
+import yaml
 
 from world_model.flow_matching import EulerSolverConfig
 
@@ -74,6 +75,10 @@ class WorldModelLogger:
     def debug(self, message: str, *args: Any, **kwargs: Any) -> None:
         if self.is_main_process:
             self.local.debug(message, *args, **kwargs)
+
+    def log_config(self, config: Dict[str, Any]) -> None:
+        if self.is_main_process:
+            self.info("Configuration:\n%s", yaml.dump(config, sort_keys=False))
 
     # ------------------------------------------------------------------ lifecycle
     def init_wandb(
