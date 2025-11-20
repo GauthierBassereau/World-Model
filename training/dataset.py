@@ -155,17 +155,17 @@ class ResilientLeRobotDataset(LeRobotDataset):
     def __init__(
         self,
         *args,
-        max_retries: int = 10,
+        max_decode_failures: int = 10,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
-        self.max_retries = max_retries
+        self.max_decode_failures = max_decode_failures
 
     def __getitem__(self, index: int) -> dict[str, torch.Tensor]:
         attempts = 0
         current_index = index
         
-        while attempts < self.max_retries:
+        while attempts < self.max_decode_failures:
             try:
                 return super().__getitem__(current_index)
             
@@ -181,7 +181,7 @@ class ResilientLeRobotDataset(LeRobotDataset):
                 logger.warning(
                     f"Data loading failed at index {current_index}. "
                     f"Error: {e}. "
-                    f"Retry {attempts}/{self.max_retries} with new index {new_index}."
+                    f"Retry {attempts}/{self.max_decode_failures} with new index {new_index}."
                 )
                 
                 current_index = new_index
