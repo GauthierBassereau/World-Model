@@ -149,88 +149,48 @@ _DROID_RESIZE_CROP_TRANSFORM = transforms_v2.Compose(
 
 class ResilientLeRobotDataset(LeRobotDataset):
     """
-    Dataset wrapper that skips samples whose decoding fails.
-    If a failure occurs, it jumps to a different episode rather than the next frame.
+    A wrapper around LeRobotDataset that handles decoding errors by 
+    resampling a random index from the dataset.
     """
-
     def __init__(
         self,
         *args,
-        max_decode_failures: int = 5,
+        max_retries: int = 10,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
-        if max_decode_failures < 1:
-            raise ValueError("max_decode_failures must be >= 1.")
-        self.max_decode_failures = max_decode_failures
-        self._bad_indices: Set[int] = set()
+        self.max_retries = max_retries
 
-    def __getitem__(self, index: int) -> Dict[str, torch.Tensor]:
-        total = len(self)
+    def __getitem__(self, index: int) -> dict[str, torch.Tensor]:
         attempts = 0
-        candidate = index % total
-        last_error: Optional[RuntimeError] = None
-
-        while attempts < min(self.max_decode_failures, total):
-            # If we circled back to a known bad index, skip it immediately
-            if candidate in self._bad_indices:
-                # Simple skip to avoid infinite recursion on cached bad indices
-                # We use a small prime skip (e.g. 17) to desynchronize
-                candidate = (candidate + 17) % total
-                attempts += 1
-                continue
-
+        current_index = index
+        
+        while attempts < self.max_retries:
             try:
-                return super().__getitem__(candidate)
-            except RuntimeError as exc:
-                last_error = exc
-                self._bad_indices.add(candidate)
+                return super().__getitem__(current_index)
+            
+            except (RuntimeError, OSError, ValueError) as e:
+                # We catch RuntimeError (torchcodec), OSError (file corruption), 
+                # and ValueError (sometimes generic decoding issues)
                 attempts += 1
                 
-                # --- Smart Episode Skip Logic ---
-                # 1. Identify the Episode ID of the failed sample
-                current_ep_id = self.episode_ids[candidate].item()
+                # Pick a new random index from the total available frames
+                new_index = random.randint(0, len(self) - 1)
                 
-                # 2. Calculate the length of this specific episode
-                # episode_data_index maps ID -> (start_index, end_index)
-                ep_start = self.episode_data_index["from"][current_ep_id].item()
-                ep_end = self.episode_data_index["to"][current_ep_id].item()
-                ep_length = ep_end - ep_start
-
+                # Log a warning so we aren't training on garbage silently
                 logger.warning(
-                    "Decoder failure at index %d (Episode %d). Attempt %d/%d. "
-                    "Error: %s. Jumping forward %d frames to find a new episode.",
-                    candidate,
-                    current_ep_id,
-                    attempts,
-                    self.max_decode_failures,
-                    exc,
-                    ep_length
+                    f"Data loading failed at index {current_index}. "
+                    f"Error: {e}. "
+                    f"Retry {attempts}/{self.max_retries} with new index {new_index}."
                 )
+                
+                current_index = new_index
 
-                # 3. Jump forward by the episode length
-                # This effectively targets the same relative position in the NEXT episode
-                candidate = (candidate + ep_length) % total
-
-                # 4. Verify we actually left the episode 
-                # (In rare cases of filtered datasets or identical lengths, we might land back in same ID)
-                # We peek at the new candidate's episode ID and nudge if necessary.
-                safety_counter = 0
-                while (
-                    self.episode_ids[candidate].item() == current_ep_id 
-                    and safety_counter < 10
-                ):
-                    # Jump 10% of total size or at least 100 frames to force exit
-                    jump_step = max(100, total // 10)
-                    candidate = (candidate + jump_step) % total
-                    safety_counter += 1
-                # --------------------------------
-
-        if last_error is not None:
-            raise RuntimeError(
-                f"Failed to fetch dataset sample after {attempts} decode retries (tried {attempts} different episodes)."
-            ) from last_error
-        raise RuntimeError("Unable to fetch dataset sample due to repeated decoder errors.")
+        # If we exhaust retries, raise the last error
+        raise RuntimeError(
+            f"Failed to fetch a valid sample after {self.max_retries} retries. "
+            "The dataset might be heavily corrupted or the decoder is incompatible."
+        )
 
 
 def _coerce_frame_delta(value: Union[float, str]) -> float:
