@@ -6,6 +6,7 @@ auxiliary visualisations so that the trainer can remain focused on the
 optimization loop.
 """
 
+import time
 import logging
 import math
 from typing import Any, Dict, Iterable, Optional, TYPE_CHECKING, List
@@ -21,7 +22,7 @@ from src.world_model.diffusion import EulerSolverConfig
 if TYPE_CHECKING:
     from src.training.world_trainer import LoggingConfig
     import wandb
-    from src.evaluation.world_model_evaluator import EvaluationSummary
+    from src.evaluation.world_evaluator import EvaluationSummary
     
 
 def _create_local_logger() -> logging.Logger:
@@ -62,6 +63,8 @@ class WorldModelLogger:
         self._tau_values: List[torch.Tensor] = []
         self._tau_bins: Optional[int] = None
         self._tau_hist_logged = False
+        self._last_step_time: Optional[float] = None
+        self._step_duration: Optional[float] = None
 
     # ------------------------------------------------------------------ helpers
     def info(self, message: str, *args: Any, **kwargs: Any) -> None:
@@ -120,6 +123,10 @@ class WorldModelLogger:
     def start_step(self, step: int) -> None:
         self.current_step = step
         self.current_micro_step = 0
+        now = time.time()
+        if self._last_step_time is not None:
+            self._step_duration = now - self._last_step_time
+        self._last_step_time = now
 
     def start_micro_step(self, micro_step: int) -> None:
         self.current_micro_step = micro_step
@@ -138,6 +145,8 @@ class WorldModelLogger:
                         payload[f"debug/{key}"] = value
                     else:
                         payload[f"train/{key}"] = value
+                if self._step_duration is not None:
+                    payload["debug/train_seconds_per_step"] = self._step_duration
                 if payload:
                     self.wandb_run.log(payload, step=self.current_step)
 

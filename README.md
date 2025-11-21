@@ -29,9 +29,8 @@ Note: most of these datasets have language instructions for each video -> I wond
 Todos:
   - Add a log of time/step
   - Add a script that takes a run and create a graph with Y axis the L1 loss on eval and X axis the rollout horizon (t+1, t+2 etc...) to see accumulation and error. And plot the curve for different eval timesteps to see the evolution.
-  - split droid dataset ? somehow without burning all hpc credits
+  - [In progress] split droid dataset ? somehow without burning all hpc credits
   - Fix eval dataset for eval, converting index of entire dataset to the subset one ?
-  - Make the codebase cleaner, I think I want to create a src folder with all the non scripts and logs etc... in it, just the core code.
   - Take the rollout function out of the eval, I think it should be something appart that can be called for other things, I am thinking for the futur interactive world model. And then I think I can merge the rest of the eval code direclty into trainer. Need to be careful to not make this too hard to read, has to be super clean.
   - Also the whole z predicted trnasformed to velocity, I think this transformation should be a function, maybe put it in flow matching, I can reuse it later, and even in Euler solver.
   - Implement the opetion to have x-loss with reweigthing just like Dreamerv4

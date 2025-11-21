@@ -3,6 +3,7 @@ __pycache__/
 .vscode/
 .DS_Store
 .matplotlib/
+.agent/
 
 *.pt
 *.png
@@ -11,4 +12,3 @@ __pycache__/
 archive/important_papers_text/
 wandb/
 logs/
-.agents/

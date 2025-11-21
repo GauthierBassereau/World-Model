@@ -22,7 +22,7 @@ from src.training.dataset import (
     WorldModelBatch,
     build_world_model_dataloader,
 )
-from src.evaluation.world_model_evaluator import (
+from src.evaluation.world_evaluator import (
     EvaluationConfig,
     WorldModelEvaluator,
 )
