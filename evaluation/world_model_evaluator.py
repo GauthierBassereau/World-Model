@@ -30,7 +30,7 @@ class EvaluationConfig:
     rollout_start_frame: int = 6
     rollout_signal_level: float = 0.9
     clean_signal_level: float = 1.0
-    precision: str = "float32"
+    precision: str = "bf16"
 
 
 @dataclass
@@ -247,8 +247,8 @@ class WorldModelEvaluator:
         Dict[str, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
         List[Dict[str, torch.Tensor]],
     ]:
-        dtype = torch.bfloat16 if self.cfg.precision == "bfloat16" else torch.float32
-        is_autocast = self.cfg.precision == "bfloat16"
+        dtype = torch.bfloat16 if self.cfg.precision == "bf16" else torch.float32
+        is_autocast = self.cfg.precision == "bf16"
         
         with torch.autocast(device_type=self.device.type, dtype=dtype, enabled=is_autocast):
             frames = batch.sequence_frames.to(self.device, non_blocking=True)

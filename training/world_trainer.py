@@ -42,7 +42,7 @@ class OptimizerConfig:
     betas: Tuple[float, float] = (0.9, 0.95)
     weight_decay: float = 0.0
     eps: float = 1e-8
-    grad_clip_norm: Optional[float] = 1.0
+    grad_clip_norm: Optional[float] = None
 
 
 @dataclass
@@ -145,7 +145,6 @@ class WorldModelTrainer:
         self.autoencoder.to(self.device).eval()
         for param in self.autoencoder.parameters():
             param.requires_grad_(False)
-        print(f"[rank {self.rank}] Compiling World Model...")
         
         self.model = torch.compile(self.model)
         self.autoencoder = torch.compile(self.autoencoder)
@@ -156,23 +155,16 @@ class WorldModelTrainer:
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(seed)
 
-        euler_cfg = EulerSolverConfig(
-            step_size=EulerSolverConfig().step_size,
-            min_signal=0.0,
-            max_signal=1.0,
-        )
-
         sample_fps = 1.0 / self.config.train_data.train_dataset.frame_delta_seconds
         self.logger = WorldModelLogger(
             config.logging,
-            euler_cfg=euler_cfg,
+            euler_cfg=self.config.euler_cfg,
             sample_fps=sample_fps,
             is_main_process=self.is_main_process,
         )
+
         self.logger.log_config(asdict(config))
 
-        if config.train_data.train_dataloader.batch_size % (config.trainer.grad_accum_steps * self.world_size) != 0:
-            raise ValueError("Global batch size must be divisible by world_size * grad_accum_steps.")
         self.dataloader = build_world_model_dataloader(
             dataset_cfg=config.train_data.train_dataset,
             dataloader_cfg=config.train_data.train_dataloader,
@@ -218,6 +210,7 @@ class WorldModelTrainer:
             weight_decay=config.optimizer.weight_decay,
             eps=config.optimizer.eps,
         )
+
         self._init_lr_schedule()
         
         self._train_module: nn.Module
@@ -231,24 +224,20 @@ class WorldModelTrainer:
         else:
             self._train_module = self.model
 
-        autocast_enabled = config.trainer.precision in {"bf16", "fp16"} and self.device.type == "cuda"
-        autocast_dtype = torch.bfloat16 if config.trainer.precision == "bf16" else torch.float16
+        autocast_enabled = config.trainer.precision == "bf16" and self.device.type == "cuda"
         if autocast_enabled:
             self._autocast_scope = partial(
                 torch.autocast,
                 device_type=self.device.type,
-                dtype=autocast_dtype,
+                dtype=torch.bfloat16,
                 enabled=True,
             )
         else:
             self._autocast_scope = nullcontext
-        self.use_scaler = config.trainer.precision == "fp16" and self.device.type == "cuda" # don't need to use scaler with bf16 since it rarely overflows in practice (from very safe source)
-        self.scaler = torch.amp.GradScaler(enabled=self.use_scaler)
         self.logger.info(
-            "AMP settings: autocast=%s (dtype=%s), grad_scaler=%s",
+            "AMP settings: autocast=%s (dtype=%s)",
             autocast_enabled,
-            autocast_dtype if autocast_enabled else None,
-            self.use_scaler,
+            torch.bfloat16 if autocast_enabled else None,
         )
 
         self.global_step = 0
@@ -284,7 +273,6 @@ class WorldModelTrainer:
         self._lr_schedule_enabled = self._warmup_enabled or (
             self._final_lrs is not None and self._lr_final_step is not None
         )
-
 
     def _init_ema_model(self) -> None:
         ema_device = torch.device(self.ema_cfg.device) if self.ema_cfg.device else self.device
@@ -375,20 +363,18 @@ class WorldModelTrainer:
                 for key, value in metrics.items():
                     accum_metrics[key] = accum_metrics.get(key, 0.0) + value
 
-            grad_metrics = self.logger.process_gradients(
-                model=self.model,
-                optimizer=self.optimizer,
-                scaler=self.scaler if self.use_scaler else None,
-                clip_norm=self.config.optimizer.grad_clip_norm,
-            )
+            if self.config.optimizer.grad_clip_norm is not None:
+                torch.nn.utils.clip_grad_norm_(
+                    self.model.parameters(),
+                    self.config.optimizer.grad_clip_norm,
+                )
 
-            if self.use_scaler:
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
-            else:
-                self.optimizer.step()
+            grad_metrics = self.logger.log_grad_norm(model=self.model)
+            
+            self.optimizer.step()
 
             self._update_ema()
+
             if self.device.type == "cuda" and step == 1:
                 peak_mem_gb = torch.cuda.max_memory_allocated(self.device) / (1024**3)
                 print(f"[GPU {self.device.index}] step {step} peak memory: {peak_mem_gb:.2f} GB", flush=True)
@@ -455,7 +441,7 @@ class WorldModelTrainer:
             # It is better to predict in x space because manifold is lower dim there than in noise space
             # But keep the v prediction formula, because it reweights the loss depending on tau
             one_minus_tau = 1.0 - tau_factor
-            one_minus_tau = one_minus_tau.clamp_min(0.05)
+            one_minus_tau = one_minus_tau.clamp_min(0.05) # Same as JIT paper
             v_true = latents - base_noise
             v_pred = (pred_clean_latents - noisy_latents) / one_minus_tau
             loss_unreduced = F.mse_loss(v_pred, v_true, reduction="none")
@@ -468,10 +454,7 @@ class WorldModelTrainer:
             loss = masked_loss.sum() / denom
             scaled_loss = loss / self.config.trainer.grad_accum_steps
 
-        if self.use_scaler:
-            self.scaler.scale(scaled_loss).backward()
-        else:
-            scaled_loss.backward()
+        scaled_loss.backward()
 
         return {
             "loss": float(scaled_loss)
@@ -567,8 +550,6 @@ class WorldModelTrainer:
             "optimizer": self.optimizer.state_dict(),
             "step": step,
         }
-        if self.use_scaler:
-            payload["scaler"] = self.scaler.state_dict()
         payload["config"] = asdict(self.config)
         if self.ema_model is not None:
             payload["ema_model"] = self.ema_model.state_dict()
@@ -603,8 +584,6 @@ class WorldModelTrainer:
         ckpt = torch.load(checkpoint_path, map_location=self.device)
         self.model.load_state_dict(ckpt["model"])
         self.optimizer.load_state_dict(ckpt["optimizer"])
-        if self.use_scaler and "scaler" in ckpt:
-            self.scaler.load_state_dict(ckpt["scaler"])
         self.global_step = int(ckpt.get("step", 0))
         if "ema_model" in ckpt:
             self._ema_checkpoint_state = ckpt["ema_model"]

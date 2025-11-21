@@ -141,27 +141,18 @@ class WorldModelLogger:
                 if payload:
                     self.wandb_run.log(payload, step=self.current_step)
 
-    def process_gradients(
+    def log_grad_norm(
         self,
         *,
         model: nn.Module,
-        optimizer: Optimizer,
-        scaler: Optional[torch.amp.GradScaler] = None,
-        clip_norm: Optional[float] = None,
     ) -> Dict[str, float]:
-        if scaler is not None:
-            scaler.unscale_(optimizer)
-
         params_with_grad = [param for param in model.parameters() if param.grad is not None]
         if not params_with_grad:
             return {}
 
-        if clip_norm is not None:
-            total_norm = torch.nn.utils.clip_grad_norm_(params_with_grad, clip_norm)
-        else:
-            total_norm = self._compute_grad_norm(params_with_grad)
-            if total_norm is None:
-                return {}
+        total_norm = self._compute_grad_norm(params_with_grad)
+        if total_norm is None:
+            return {}
 
         if isinstance(total_norm, torch.Tensor):
             grad_norm = float(total_norm.detach().cpu().item())

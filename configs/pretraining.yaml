@@ -11,7 +11,6 @@ trainer:
   evaluation_interval: 500
   max_steps: null
   grad_accum_steps: 8
-  precision: bf16
   seed: 3
   device: cuda
   resume_checkpoint: null
@@ -27,7 +26,6 @@ evaluator:
   rollout_start_frame: 6
   rollout_signal_level: 0.9
   clean_signal_level: 1.0
-  precision: bf16
 
 train_data:
   train_dataset:
@@ -93,10 +91,11 @@ optimizer:
   grad_clip_norm: 1.0
 
 diffusion:
-  base_dimension: 4096 # from RAE paper, to determine noise schedule depending on effective latent dimension
   noise_mean: 0.0   # Set noise_mean=0.0 and noise_std=1.0 to recover a unit Gaussian prior.
   noise_std: 1.0
   noise_sampling: dimension # {"dimension", "linear", "uniform"}; choose the draw distribution
+  base_dimension: 4096 # from RAE paper, to determine noise schedule depending on effective latent dimension
+  effective_latent_dimension: 196608 # 768*16*16
   linear_weight_slope: 0.9 # used when noise_sampling == "linear"; pdf(s) ∝ intercept + slope * s with s in [0, 1]
   linear_weight_intercept: 0.1
 
