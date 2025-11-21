@@ -145,6 +145,10 @@ class WorldModelTrainer:
         self.autoencoder.to(self.device).eval()
         for param in self.autoencoder.parameters():
             param.requires_grad_(False)
+        print(f"[rank {self.rank}] Compiling World Model...")
+        
+        self.model = torch.compile(self.model)
+        self.autoencoder = torch.compile(self.autoencoder)
 
         seed = config.trainer.seed*self.world_size + self.rank
         random.seed(seed)
@@ -477,7 +481,7 @@ class WorldModelTrainer:
     def _encode_frames(self, frames: torch.Tensor) -> torch.Tensor:
         batch, steps, channels, height, width = frames.shape
         flat = frames.view(batch * steps, channels, height, width)
-        latents = self.autoencoder.encode(flat)
+        latents = self.autoencoder.encode(flat).detach().clone() # Detach and clone needed because compile mess with autograd graph
         tokens, dim = latents.shape[1], latents.shape[2]
         return latents.view(batch, steps, tokens, dim)
 

@@ -56,7 +56,7 @@ train_data:
     batch_size: 256 # global batch size
     shuffle: true
     num_workers: 0
-    pin_memory: false
+    pin_memory: true
 
 eval_data:
   eval_dataset:
@@ -93,7 +93,7 @@ optimizer:
   grad_clip_norm: 1.0
 
 diffusion:
-  base_dimension: 16384 # 4096 # from RAE paper, to determine noise schedule depending on effective latent dimension
+  base_dimension: 4096 # from RAE paper, to determine noise schedule depending on effective latent dimension
   noise_mean: 0.0   # Set noise_mean=0.0 and noise_std=1.0 to recover a unit Gaussian prior.
   noise_std: 1.0
   noise_sampling: dimension # {"dimension", "linear", "uniform"}; choose the draw distribution

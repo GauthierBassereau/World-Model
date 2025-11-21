@@ -20,8 +20,8 @@ done
 sbatch \
   --job-name="$name" \
   --output="logs/%x.out" \
-  --nodes=1 --ntasks-per-node=1 --cpus-per-task=16 \
-  --mem=400G --time=3-00:00:00 \
+  --nodes=1 --ntasks-per-node=1 --cpus-per-task=12 \
+  --mem=32G --time=8-00:00:00 \
   --export=ALL \
   --wrap "bash -lc '
     set -euo pipefail
