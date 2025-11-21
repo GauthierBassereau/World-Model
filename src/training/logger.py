@@ -16,12 +16,12 @@ import torch.nn as nn
 from torch.optim import Optimizer
 import yaml
 
-from world_model.flow_matching import EulerSolverConfig
+from src.world_model.diffusion import EulerSolverConfig
 
 if TYPE_CHECKING:
-    from training.world_trainer import LoggingConfig
+    from src.training.world_trainer import LoggingConfig
     import wandb
-    from evaluation.world_model_evaluator import EvaluationSummary
+    from src.evaluation.world_model_evaluator import EvaluationSummary
     
 
 def _create_local_logger() -> logging.Logger:

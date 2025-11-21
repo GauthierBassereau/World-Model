@@ -2,8 +2,8 @@
 
 import torch
 import torch.nn as nn
-from rae_dino.decoder.mae_decoder import GeneralDecoder
-from rae_dino.encoder.dinov2 import Dinov2withNorm
+from src.rae_dino.decoder.mae_decoder import GeneralDecoder
+from src.rae_dino.encoder.dinov2 import Dinov2withNorm
 from transformers import AutoConfig, AutoImageProcessor
 from typing import Optional
 from math import sqrt

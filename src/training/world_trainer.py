@@ -15,26 +15,26 @@ import torch.nn.functional as F
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
 
-from rae_dino.rae import RAE
-from training.dataset import (
+from src.rae_dino.rae import RAE
+from src.training.dataset import (
     DataloaderConfig,
     DatasetConfig,
     WorldModelBatch,
     build_world_model_dataloader,
 )
-from evaluation.world_model_evaluator import (
+from src.evaluation.world_model_evaluator import (
     EvaluationConfig,
     WorldModelEvaluator,
 )
-from world_model.flow_matching import (
+from src.world_model.diffusion import (
     DiffusionConfig,
     NoiseScheduler,
     EulerSolverConfig,
     sample_base_noise,
 )
-from world_model.backbone import WorldModelConfig
+from src.world_model.backbone import WorldModelConfig
 
-from training.logger import WorldModelLogger
+from src.training.logger import WorldModelLogger
 
 @dataclass
 class OptimizerConfig:

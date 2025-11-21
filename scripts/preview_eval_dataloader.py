@@ -8,8 +8,8 @@ import torch
 from torchvision.io import write_video
 from torchvision.utils import make_grid, save_image
 
-from training.dataset import WorldModelBatch, build_world_model_dataloader
-from training.world_trainer import WorldModelTrainingConfig
+from src.training.dataset import WorldModelBatch, build_world_model_dataloader
+from src.training.world_trainer import WorldModelTrainingConfig
 
 
 def parse_args() -> argparse.Namespace:

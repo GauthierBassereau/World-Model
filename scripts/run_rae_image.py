@@ -33,8 +33,8 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from rae_dino.rae import RAE
-from world_model.flow_matching import DiffusionConfig, sample_base_noise
+from src.rae_dino.rae import RAE
+from src.world_model.diffusion import DiffusionConfig, sample_base_noise
 
 
 def parse_args() -> argparse.Namespace:

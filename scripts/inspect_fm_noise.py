@@ -5,8 +5,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-from training.world_trainer import load_training_config
-from world_model.flow_matching import NoiseScheduler
+from src.training.world_trainer import load_training_config
+from src.world_model.diffusion import NoiseScheduler
 
 
 def parse_args() -> argparse.Namespace:

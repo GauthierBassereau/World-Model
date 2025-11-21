@@ -10,8 +10,8 @@ import numpy as np
 import torch
 
 import pyrallis
-from training.dataset import DataloaderConfig, DatasetConfig, build_world_model_dataloader
-from training.world_trainer import WorldModelTrainingConfig
+from src.training.dataset import DataloaderConfig, DatasetConfig, build_world_model_dataloader
+from src.training.world_trainer import WorldModelTrainingConfig
 
 
 def parse_args() -> argparse.Namespace:

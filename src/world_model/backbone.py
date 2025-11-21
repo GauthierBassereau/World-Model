@@ -4,7 +4,7 @@ from typing import Dict, Optional
 import torch
 import torch.nn as nn
 
-from world_model.components import (
+from src.world_model.components import (
     TransformerBlock,
     RMSNorm,
     _rope_cache,

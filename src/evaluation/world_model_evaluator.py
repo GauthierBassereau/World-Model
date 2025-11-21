@@ -8,13 +8,13 @@ import torch.distributed as dist
 import torch.nn as nn
 from torch.utils.data import Subset
 
-from training.dataset import (
+from src.training.dataset import (
     DataloaderConfig,
     DatasetConfig,
     WorldModelBatch,
     build_world_model_dataloader,
 )
-from world_model.flow_matching import (
+from src.world_model.diffusion import (
     DiffusionConfig,
     EulerSolver,
     EulerSolverConfig,

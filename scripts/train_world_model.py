@@ -1,9 +1,9 @@
 import pyrallis
-from training.world_trainer import (
+from src.training.world_trainer import (
     WorldModelTrainer,
     WorldModelTrainingConfig,
 )
-from world_model.backbone import WorldModelBackbone
+from src.world_model.backbone import WorldModelBackbone
 
 # Use it like:
 # python scripts/train_world_model.py configs/pretraining.yaml
