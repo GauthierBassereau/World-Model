@@ -23,6 +23,7 @@ class WorldModelConfig:
     temporal_context_length: int = 30
     rope_base: float = 1000.0
     qk_norm_eps: float = 1e-6
+    attn_logit_softcapping: Optional[float] = None
 
 
 class WorldModelBackbone(nn.Module):
@@ -63,6 +64,7 @@ class WorldModelBackbone(nn.Module):
                     qk_norm_eps=self.config.qk_norm_eps,
                     use_temporal=use_temporal,
                     frozen_prefix_tokens=self.config.num_registers + 2,
+                    attn_logit_softcapping=config.attn_logit_softcapping,
                 )
             )
         self.layers = nn.ModuleList(blocks)

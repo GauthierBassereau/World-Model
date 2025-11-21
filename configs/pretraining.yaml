@@ -117,6 +117,7 @@ world_model: # ~400M parameters
   temporal_context_length: 9
   rope_base: 1000.0 # small because context length of WM is tiny (9)
   qk_norm_eps: 1.0e-06 # Put None for no QK norm, RAE doesn't use, Dreamerv4 does, but I think it is better to use for this kind of world model rollouts, safer.
+  attn_logit_softcapping: 50.0 # None for no softcapping -> able to use fused_attention
 
 ode_solver: # this is for evaluation
   step_size: 0.02

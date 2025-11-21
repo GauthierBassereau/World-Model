@@ -96,6 +96,7 @@ class Attention(nn.Module):
         attn_drop: float = 0.0,
         proj_drop: float = 0.0,
         fused_attn: bool = True,
+        attn_logit_softcapping: Optional[float] = None,
     ) -> None:
         super().__init__()
         if dim % num_heads != 0:
@@ -105,6 +106,7 @@ class Attention(nn.Module):
         self.head_dim = dim // num_heads
         self.scale = self.head_dim ** -0.5
         self.fused_attn = fused_attn
+        self.attn_logit_softcapping = attn_logit_softcapping
 
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
         if qk_norm_eps is None:
@@ -146,7 +148,10 @@ class Attention(nn.Module):
         if attn_mask is not None:
             attn_mask_formatted = attn_mask.to(dtype=q.dtype, device=q.device)
 
-        if self.fused_attn:
+        # Disable fused attention if soft capping is required, as SDPA doesn't support it
+        use_fused = self.fused_attn and (self.attn_logit_softcapping is None)
+
+        if use_fused:
             q = q.to(dtype=v.dtype)
             k = k.to(dtype=v.dtype)
             attn_output = F.scaled_dot_product_attention(
@@ -158,8 +163,15 @@ class Attention(nn.Module):
             )
         else:
             attn_logits = torch.matmul(q, k.transpose(-2, -1)) * self.scale
+            
+            if self.attn_logit_softcapping is not None:
+                attn_logits = attn_logits / self.attn_logit_softcapping
+                attn_logits = torch.tanh(attn_logits)
+                attn_logits = attn_logits * self.attn_logit_softcapping
+
             if attn_mask_formatted is not None:
                 attn_logits = attn_logits + attn_mask_formatted
+            
             attn_weights = attn_logits.softmax(dim=-1)
             attn_weights = self.attn_drop(attn_weights)
             attn_output = torch.matmul(attn_weights, v)
@@ -179,6 +191,7 @@ class TransformerBlock(nn.Module):
         qk_norm_eps: float,
         use_temporal: bool,
         frozen_prefix_tokens: int = 0,
+        attn_logit_softcapping: Optional[float] = None,
     ) -> None:
         super().__init__()
         assert frozen_prefix_tokens > 0, "frozen_prefix_tokens variable needs to be > 0"
@@ -192,6 +205,7 @@ class TransformerBlock(nn.Module):
             num_heads=num_heads,
             qkv_bias=False,
             qk_norm_eps=qk_norm_eps,
+            attn_logit_softcapping=attn_logit_softcapping,
         )
 
         if use_temporal:
@@ -201,6 +215,7 @@ class TransformerBlock(nn.Module):
                 num_heads=num_heads,
                 qkv_bias=False,
                 qk_norm_eps=qk_norm_eps,
+                attn_logit_softcapping=attn_logit_softcapping,
             )
         else:
             self.temporal_norm = None
