@@ -493,4 +493,5 @@ class WorldModelBackbone(nn.Module):
         else:
             action_tokens = actions_embed
         if actions_mask is not None:
-            mask = actions_mask.to(dtype=torch.bool, device
+            mask = actions_mask.to(dtype=torch.bool, device=device)
+        return {} # Dummy return to allow import

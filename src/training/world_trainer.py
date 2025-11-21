@@ -16,99 +16,26 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
 
 from src.rae_dino.rae import RAE
-from src.training.dataset import (
-    DataloaderConfig,
-    DatasetConfig,
-    WorldModelBatch,
-    build_world_model_dataloader,
-)
-from src.evaluation.world_evaluator import (
-    EvaluationConfig,
-    WorldModelEvaluator,
-)
+from src.dataset.collator import WorldModelBatch
+from src.dataset.loader import build_world_model_dataloader
+from src.training.world_evaluator import WorldModelEvaluator
 from src.world_model.diffusion import (
-    DiffusionConfig,
     NoiseScheduler,
-    EulerSolverConfig,
     sample_base_noise,
 )
-from src.world_model.backbone import WorldModelConfig
 
 from src.training.logger import WorldModelLogger
 
-@dataclass
-class OptimizerConfig:
-    lr: float = 1e-4
-    betas: Tuple[float, float] = (0.9, 0.95)
-    weight_decay: float = 0.0
-    eps: float = 1e-8
-    grad_clip_norm: Optional[float] = None
-
-
-@dataclass
-class TrainerLoopConfig:
-    max_steps: Optional[int] = 10_000
-    grad_accum_steps: int = 1
-    precision: str = "bf16"
-    seed: int = 1234
-    device: Optional[str] = None
-    evaluation_interval: int = 1000
-    resume_checkpoint: Optional[str] = None
-    single_batch_overfit: bool = False
-    lr_warmup_steps: int = 0
-    lr_warmup_lr: Optional[float] = None
-    lr_final: Optional[float] = None
-    lr_final_step: Optional[int] = None
-
-
-@dataclass
-class LoggingConfig:
-    project: str = "world_model"
-    entity: Optional[str] = None
-    run_name: Optional[str] = None
-    log_interval: int = 10
-    checkpoint_interval: int = 1_000
-    output_dir: str = "checkpoints"
-    tau_log_limit: int = 200
-
-
-@dataclass
-class EMAConfig:
-    enabled: bool = False
-    decay: float = 0.999
-    device: Optional[str] = None
-
-    def __post_init__(self) -> None:
-        if not 0.0 <= self.decay < 1.0:
-            raise ValueError("ema.decay must satisfy 0.0 <= decay < 1.0.")
-
-
-@dataclass
-class TrainDataConfig:
-    train_dataset: DatasetConfig = field(default_factory=DatasetConfig)
-    train_dataloader: DataloaderConfig = field(default_factory=DataloaderConfig)
-
-
-@dataclass
-class EvalDataConfig:
-    eval_dataset: DatasetConfig = field(
-        default_factory=lambda: DatasetConfig(episode_midpoint_only=True)
-    )
-    eval_dataloader: DataloaderConfig = field(default_factory=DataloaderConfig)
-
-
-@dataclass
-class WorldModelTrainingConfig:
-    train_data: TrainDataConfig = field(default_factory=TrainDataConfig)
-    eval_data: EvalDataConfig = field(default_factory=EvalDataConfig)
-    evaluator: EvaluationConfig = field(default_factory=EvaluationConfig)
-    optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
-    trainer: TrainerLoopConfig = field(default_factory=TrainerLoopConfig)
-    logging: LoggingConfig = field(default_factory=LoggingConfig)
-    diffusion: DiffusionConfig = field(default_factory=DiffusionConfig)
-    world_model: WorldModelConfig = field(default_factory=WorldModelConfig)
-    ema: EMAConfig = field(default_factory=EMAConfig)
-    ode_solver: EulerSolverConfig = field(default_factory=EulerSolverConfig)
+from src.training.configs import (
+    OptimizerConfig,
+    TrainerLoopConfig,
+    LoggingConfig,
+    EMAConfig,
+    TrainDataConfig,
+    EvalDataConfig,
+    WorldModelTrainingConfig,
+)
+from src.training.utils import set_seed, sync_metrics
 
 
 class WorldModelTrainer:
@@ -149,16 +76,13 @@ class WorldModelTrainer:
         self.model = torch.compile(self.model)
         self.autoencoder = torch.compile(self.autoencoder)
 
-        seed = config.trainer.seed*self.world_size + self.rank
-        random.seed(seed)
-        torch.manual_seed(seed)
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(seed)
+        seed = set_seed(config.trainer.seed, self.world_size, self.rank)
 
         sample_fps = 1.0 / self.config.train_data.train_dataset.frame_delta_seconds
+        euler_cfg = self.config.ode_solver
         self.logger = WorldModelLogger(
             config.logging,
-            euler_cfg=self.config.euler_cfg,
+            euler_cfg=euler_cfg,
             sample_fps=sample_fps,
             is_main_process=self.is_main_process,
         )
@@ -495,17 +419,7 @@ class WorldModelTrainer:
 
 
     def _sync_metrics(self, metrics: Dict[str, float]) -> Dict[str, float]:
-        if self.world_size == 1 or not metrics:
-            return metrics
-        keys = sorted(metrics.keys())
-        values = torch.tensor(
-            [float(metrics[key]) for key in keys],
-            device=self.device,
-            dtype=torch.float32,
-        )
-        dist.all_reduce(values, op=dist.ReduceOp.SUM)
-        values /= self.world_size
-        return {key: float(value) for key, value in zip(keys, values.tolist())}
+        return sync_metrics(metrics, self.world_size, self.device)
 
     def _maybe_run_evaluation(self, step: int) -> None:
         if self.evaluator is None:

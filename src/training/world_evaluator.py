@@ -1,25 +1,20 @@
-
 import math
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.distributed as dist
 import torch.nn as nn
-from torch.utils.data import Subset
 
-from src.training.dataset import (
-    DataloaderConfig,
-    DatasetConfig,
-    WorldModelBatch,
-    build_world_model_dataloader,
-)
+from src.dataset.configs import DataloaderConfig, DatasetConfig
+from src.dataset.collator import WorldModelBatch
+from src.dataset.loader import build_world_model_dataloader
 from src.world_model.diffusion import (
     DiffusionConfig,
     EulerSolver,
     EulerSolverConfig,
-    sample_base_noise,
 )
+from src.world_model.rollout import rollout_latents
 
 
 @dataclass
@@ -258,7 +253,7 @@ class WorldModelEvaluator:
             frames_valid_mask = batch.frames_valid_mask.to(self.device, non_blocking=True)
 
             latents = self._encode_frames(frames)
-            batch_size, seq_len = latents.shape[0], latents.shape[1]
+            seq_len = latents.shape[1]
             context_len = min(self.cfg.rollout_start_frame, max(seq_len - 1, 1))
             future_len = max(seq_len - context_len, 0)
 
@@ -277,76 +272,21 @@ class WorldModelEvaluator:
                     batch_metrics[scenario] = (empty, empty, empty_mask)
                     continue
 
-                generated_frames: List[torch.Tensor] = []
-                predictions: List[torch.Tensor] = []
-
-                for step in range(future_len):
-                    past_generated = torch.cat(generated_frames, dim=1) if generated_frames else None
-                    noise_frame = sample_base_noise(
-                        latents[:, context_len + step : context_len + step + 1, ...],
-                        self.flow_cfg,
-                    )
-
-                    seq_latents_parts = [observed_latents]
-                    signal_parts = [
-                        torch.full(
-                            (batch_size, context_len),
-                            self.cfg.clean_signal_level,
-                            dtype=latents.dtype,
-                            device=self.device,
-                        )
-                    ]
-                    if past_generated is not None:
-                        seq_latents_parts.append(past_generated)
-                        signal_parts.append(
-                            torch.full(
-                                (batch_size, past_generated.shape[1]),
-                                self.cfg.rollout_signal_level,
-                                dtype=latents.dtype,
-                                device=self.device,
-                            )
-                        )
-                    seq_latents_parts.append(noise_frame)
-                    signal_parts.append(
-                        torch.zeros(
-                            (batch_size, 1),
-                            dtype=latents.dtype,
-                            device=self.device,
-                        )
-                    )
-
-                    seq_latents_tensor = torch.cat(seq_latents_parts, dim=1)
-                    signal_tensor = torch.cat(signal_parts, dim=1)
-
-                    length = seq_latents_tensor.shape[1]
-                    model_kwargs = self._build_model_kwargs(
-                        actions,
-                        actions_mask,
-                        independent_mask,
-                        length,
-                        use_actions,
-                    )
-
-                    rollout = self.solver.sample(
-                        model,
-                        seq_latents_tensor,
-                        initial_signal=signal_tensor,
-                        **model_kwargs,
-                    )
-
-                    if past_generated is not None:
-                        updated = rollout[:, context_len : context_len + past_generated.shape[1], ...].detach()
-                        for idx in range(len(generated_frames)):
-                            generated_frames[idx] = updated[:, idx : idx + 1, ...]
-
-                    pred_frame = rollout[:, -1:, ...].detach()
-                    generated_frames.append(pred_frame)
-                    predictions.append(pred_frame)
-
-                predicted_stack = torch.cat(predictions, dim=1)
+                predicted_stack, full_sequence = rollout_latents(
+                    model,
+                    self.solver,
+                    latents,
+                    flow_cfg=self.flow_cfg,
+                    context_len=context_len,
+                    future_len=future_len,
+                    clean_signal_level=self.cfg.clean_signal_level,
+                    rollout_signal_level=self.cfg.rollout_signal_level,
+                    use_actions=use_actions,
+                    actions=actions,
+                    actions_mask=actions_mask,
+                    independent_mask=independent_mask,
+                )
                 batch_metrics[scenario] = (predicted_stack, target_future, future_mask)
-
-                full_sequence = torch.cat([observed_latents, torch.cat(generated_frames, dim=1)], dim=1)
                 scenario_sequences[scenario] = full_sequence
 
             video_samples = self._prepare_video_samples(
@@ -395,23 +335,6 @@ class WorldModelEvaluator:
             if entry:
                 all_samples.extend(entry)
         return all_samples
-
-    def _build_model_kwargs(
-        self,
-        actions: Optional[torch.Tensor],
-        actions_mask: Optional[torch.Tensor],
-        independent_mask: Optional[torch.Tensor],
-        length: int,
-        use_actions: bool,
-    ) -> Dict[str, torch.Tensor]:
-        kwargs: Dict[str, torch.Tensor] = {}
-        if independent_mask is not None:
-            kwargs["independent_frames_mask"] = independent_mask[:, :length]
-        if use_actions and actions is not None:
-            kwargs["actions"] = actions[:, :length]
-            if actions_mask is not None:
-                kwargs["actions_mask"] = actions_mask[:, :length]
-        return kwargs
 
     def _prepare_video_samples(
         self,

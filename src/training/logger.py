@@ -22,7 +22,7 @@ from src.world_model.diffusion import EulerSolverConfig
 if TYPE_CHECKING:
     from src.training.world_trainer import LoggingConfig
     import wandb
-    from src.evaluation.world_evaluator import EvaluationSummary
+    from src.training.world_evaluator import EvaluationSummary
     
 
 def _create_local_logger() -> logging.Logger:
