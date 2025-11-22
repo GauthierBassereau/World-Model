@@ -16,12 +16,12 @@ class RAE(nn.Module):
         dinov2_path: str = "facebook/dinov2-with-registers-base",
         encoder_input_size: int = 224,  # always 224 because decoder is expecting this.
         # ---- decoder configs ----
-        decoder_config_path: str = "rae_dino/decoder/config.json",
+        decoder_config_path: str = "src/rae_dino/decoder/config.json",
         decoder_patch_size: int = 16,
-        pretrained_decoder_path: str = "rae_dino/decoder/decoder_weights/ViTXL_n08.pt",
+        pretrained_decoder_path: str = "src/rae_dino/decoder/decoder_weights/ViTXL_n08.pt",
         # ---- noising and normalization -----
         noise_tau: float = 0.0,  # For inference set to 0.0
-        normalization_stat_path: Optional[str] = "rae_dino/encoder/stat.pt",
+        normalization_stat_path: Optional[str] = "src/rae_dino/encoder/stat.pt",
         eps: float = 1e-5,
     ):
         super().__init__()

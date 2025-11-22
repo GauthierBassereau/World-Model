@@ -21,6 +21,7 @@ from src.dataset.loader import build_world_model_dataloader
 from src.training.world_evaluator import WorldModelEvaluator
 from src.world_model.diffusion import (
     NoiseScheduler,
+    latents_to_velocity,
     sample_base_noise,
 )
 
@@ -144,11 +145,11 @@ class WorldModelTrainer:
                 device_ids=[self.device_idx],
                 gradient_as_bucket_view=False,
             )
-            print(f"[rank {self.rank}] model wrapped in DDP.", flush=True)
+            print(f"[rank {self.rank}] Backbone wrapped in DDP.", flush=True)
         else:
             self._train_module = self.model
 
-        autocast_enabled = config.trainer.precision == "bf16" and self.device.type == "cuda"
+        autocast_enabled = config.trainer.precision in {"bf16", "bfloat16"} and self.device.type == "cuda"
         if autocast_enabled:
             self._autocast_scope = partial(
                 torch.autocast,
@@ -175,20 +176,21 @@ class WorldModelTrainer:
 
 
     def _init_lr_schedule(self) -> None:
+        optimizer_cfg = self.config.optimizer
         trainer_cfg = self.config.trainer
         self._base_lrs = [group["lr"] for group in self.optimizer.param_groups]
-        warmup_lr = trainer_cfg.lr_warmup_lr
+        warmup_lr = optimizer_cfg.lr_warmup_lr
         self._warmup_start_lrs = [
             min(warmup_lr, base_lr) if warmup_lr is not None else 0.0
             for base_lr in self._base_lrs
         ]
-        self._warmup_steps = max(0, trainer_cfg.lr_warmup_steps)
+        self._warmup_steps = max(0, optimizer_cfg.lr_warmup_steps)
         self._warmup_enabled = self._warmup_steps > 0
 
-        final_lr = trainer_cfg.lr_final
+        final_lr = optimizer_cfg.lr_final
         if final_lr is not None:
             self._final_lrs = [final_lr for _ in self.optimizer.param_groups]
-            final_step = trainer_cfg.lr_final_step or trainer_cfg.max_steps
+            final_step = optimizer_cfg.lr_final_step or trainer_cfg.max_steps
             self._lr_final_step = final_step
         else:
             self._final_lrs = None
@@ -199,7 +201,7 @@ class WorldModelTrainer:
         )
 
     def _init_ema_model(self) -> None:
-        ema_device = torch.device(self.ema_cfg.device) if self.ema_cfg.device else self.device
+        ema_device = torch.device(self.device)
         self.ema_model = copy.deepcopy(self.model).to(ema_device)
         for param in self.ema_model.parameters():
             param.requires_grad_(False)
@@ -218,21 +220,30 @@ class WorldModelTrainer:
     def _update_ema(self) -> None:
         if not self.ema_model:
             return
-        decay = self.ema_cfg.decay
-        if decay >= 1.0:
+        
+        # Ramp up decay from 0.0 to target over 'warmup' steps
+        # This prevents the EMA from holding onto the random initialization 
+        step = self.global_step
+        target_decay = self.ema_cfg.decay
+        
+        # Example: effective decay is min(target, (1 + step) / (10 + step))
+        # This is used in original DDPM / various World Model implementations
+        cur_decay = min(target_decay, (1 + step) / (self.ema_cfg.warmup_steps + step))
+
+        if cur_decay >= 1.0:
             return
         with torch.no_grad():
             for ema_param, param in self._ema_param_pairs:
                 source = param.data
                 if source.device != ema_param.device:
                     source = source.to(ema_param.device)
-                ema_param.data.mul_(decay).add_(source, alpha=1.0 - decay)
+                ema_param.data.mul_(cur_decay).add_(source, alpha=1.0 - cur_decay)
             for ema_buffer, buffer in self._ema_buffer_pairs:
                 source = buffer.data
                 if source.device != ema_buffer.device:
                     source = source.to(ema_buffer.device)
                 ema_buffer.data.copy_(source)
-
+        
     def _apply_lr_schedule(self, step: int) -> None:
         if not self._lr_schedule_enabled:
             return
@@ -364,10 +375,12 @@ class WorldModelTrainer:
             # Loss computation -> Basically following Dreamerv4 and JiT(https://arxiv.org/pdf/2511.13720v1) papers
             # It is better to predict in x space because manifold is lower dim there than in noise space
             # But keep the v prediction formula, because it reweights the loss depending on tau
-            one_minus_tau = 1.0 - tau_factor
-            one_minus_tau = one_minus_tau.clamp_min(0.05) # Same as JIT paper
             v_true = latents - base_noise
-            v_pred = (pred_clean_latents - noisy_latents) / one_minus_tau
+            v_pred = latents_to_velocity(
+                pred_clean_latents=pred_clean_latents,
+                noisy_latents=noisy_latents,
+                noise_levels=tau,
+            )
             loss_unreduced = F.mse_loss(v_pred, v_true, reduction="none")
 
             # Apply valid frame mask, some sequences may have padding frames which should not contribute to loss
@@ -469,6 +482,17 @@ class WorldModelTrainer:
             payload["ema_model"] = self.ema_model.state_dict()
         torch.save(payload, checkpoint_path)
         self.logger.info("Saved checkpoint to %s", checkpoint_path)
+        self._sync_ema_across_ranks()
+
+    def _sync_ema_across_ranks(self):
+        if self.world_size <= 1 or self.ema_model is None:
+            return
+        
+        # Broadcast EMA parameters from rank 0 to ensure consistency (there can be some divergence due to non-deterministic floating-point addition)
+        for param in self.ema_model.parameters():
+            dist.broadcast(param.data, src=0)
+        for buffer in self.ema_model.buffers():
+            dist.broadcast(buffer.data, src=0)
 
     def close(self) -> None:
         self.logger.close()

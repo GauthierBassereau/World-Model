@@ -14,11 +14,15 @@ class OptimizerConfig:
     weight_decay: float = 0.0
     eps: float = 1e-8
     grad_clip_norm: Optional[float] = None
+    lr_warmup_steps: int = 0
+    lr_warmup_lr: Optional[float] = None
+    lr_final: Optional[float] = None
+    lr_final_step: Optional[int] = None
 
 
 @dataclass
 class TrainerLoopConfig:
-    max_steps: Optional[int] = 10_000
+    max_steps: Optional[int] = None
     grad_accum_steps: int = 1
     precision: str = "bf16"
     seed: int = 1234
@@ -26,10 +30,6 @@ class TrainerLoopConfig:
     evaluation_interval: int = 1000
     resume_checkpoint: Optional[str] = None
     single_batch_overfit: bool = False
-    lr_warmup_steps: int = 0
-    lr_warmup_lr: Optional[float] = None
-    lr_final: Optional[float] = None
-    lr_final_step: Optional[int] = None
 
 
 @dataclass
@@ -47,7 +47,7 @@ class LoggingConfig:
 class EMAConfig:
     enabled: bool = False
     decay: float = 0.999
-    device: Optional[str] = None
+    warmup_steps: int = 10
 
     def __post_init__(self) -> None:
         if not 0.0 <= self.decay < 1.0:

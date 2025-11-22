@@ -2,23 +2,19 @@ logging:
   project: world_model
   entity: null
   run_name: null
-  log_interval: 1
-  checkpoint_interval: 500
   output_dir: checkpoints
+  log_interval: 1
   tau_log_limit: 100
+  checkpoint_interval: 500
 
 trainer:
-  evaluation_interval: 500
-  max_steps: null
   grad_accum_steps: 8
   seed: 3
+  precision: bf16
   device: cuda
+  evaluation_interval: 500
   resume_checkpoint: null
   single_batch_overfit: false
-  lr_warmup_steps: 500
-  lr_warmup_lr: 5.0e-6
-  lr_final: null
-  lr_final_step: null
 
 evaluator:
   max_batches: 1
@@ -26,6 +22,22 @@ evaluator:
   rollout_start_frame: 6
   rollout_signal_level: 0.9
   clean_signal_level: 1.0
+
+optimizer:
+  lr: 1.0e-4
+  betas: [0.9, 0.95]
+  weight_decay: 0.0
+  eps: 1.0e-08
+  grad_clip_norm: 1.0
+  lr_warmup_steps: 500
+  lr_warmup_lr: 1.0e-6
+  lr_final: null
+  lr_final_step: null
+
+ema:
+  enabled: false # Not sure Dreamerv4 uses it, but usually Flow matching training is better with it so...
+  decay: 0.9995
+  warmup_steps: 10 # standard don't touch
 
 train_data:
   train_dataset:
@@ -43,7 +55,7 @@ train_data:
       mean: [0.01428347627459065, 0.23987777195473095, -0.014661363646208965, -2.027954954645529, -0.035476306435143545, 2.3233678805030076, 0.08326671319745274, 0.36085284714413735]
       std: [0.3244343844169754, 0.5158281965633522, 0.2901322476548548, 0.5021871776809874, 0.5331921797732538, 0.46856794632856424, 0.7446577730524244, 0.40315882970033534]
     sequence_length_distribution: # Dreamerv4 doesn't specify the proportion but I'll guess 0.8 short batches at the begginning and towards the end go to full long batches probably. For now let's keep small batches, will implement the evolution of this distribution later.
-      "5": 0.8
+      "7": 0.8
       "11": 0.2
     frame_delta_seconds: 5.0 / 15.0
     independent_frames_probability: 0.3 # from Dreamerv4
@@ -53,13 +65,13 @@ train_data:
   train_dataloader:
     batch_size: 256 # global batch size
     shuffle: true
-    num_workers: 0
+    num_workers: 2
     pin_memory: true
 
 eval_data:
   eval_dataset:
     repo_id: aractingi/droid_1.0.1
-    episodes: [0, 1, 2, 3]
+    episodes: [0, 1, 2, 3, 4, 5, 6, 7]
     episode_midpoint_only: true
     cameras:
       - observation.images.exterior_1_left
@@ -78,17 +90,10 @@ eval_data:
     decoder_retry_attempts: 10
 
   eval_dataloader:
-    batch_size: 4
+    batch_size: 8
     shuffle: false
     num_workers: 0
     pin_memory: false
-
-optimizer:
-  lr: 1.0e-4
-  betas: [0.9, 0.95]
-  weight_decay: 0.0
-  eps: 1.0e-08
-  grad_clip_norm: 1.0
 
 diffusion:
   noise_mean: 0.0   # Set noise_mean=0.0 and noise_std=1.0 to recover a unit Gaussian prior.
@@ -96,13 +101,6 @@ diffusion:
   noise_sampling: dimension # {"dimension", "linear", "uniform"}; choose the draw distribution
   base_dimension: 4096 # from RAE paper, to determine noise schedule depending on effective latent dimension
   effective_latent_dimension: 196608 # 768*16*16
-  linear_weight_slope: 0.9 # used when noise_sampling == "linear"; pdf(s) ∝ intercept + slope * s with s in [0, 1]
-  linear_weight_intercept: 0.1
-
-ema:
-  enabled: false # Not sure Dreamerv4 uses it, but usually Flow matching training is better with it so...
-  decay: 0.9995
-  device: null
 
 world_model: # ~400M parameters
   input_dim: 768
@@ -119,6 +117,6 @@ world_model: # ~400M parameters
   attn_logit_softcapping: 50.0 # None for no softcapping -> able to use fused_attention
 
 ode_solver: # this is for evaluation
-  step_size: 0.02
+  step_size: 0.01
   min_signal: 0.0
   max_signal: 1.0

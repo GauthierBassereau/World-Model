@@ -64,7 +64,7 @@ class WorldModelBackbone(nn.Module):
                     qk_norm_eps=self.config.qk_norm_eps,
                     use_temporal=use_temporal,
                     num_registers=self.config.num_registers,
-                    frozen_conditioning_tokens=2, # Noise + Action
+                    frozen_token_index=0, # Noise token
                     attn_logit_softcapping=config.attn_logit_softcapping,
                 )
             )
@@ -108,32 +108,15 @@ class WorldModelBackbone(nn.Module):
     def _build_spatial_mask(
         latent_tokens: int,
         num_registers: int,
+        frozen_token_index: int,
         device: torch.device,
     ) -> torch.Tensor:
         tokens_per_frame = latent_tokens + 2 + num_registers
-        mask = torch.zeros(tokens_per_frame, tokens_per_frame, dtype=torch.bool, device=device)
-        reg_end = num_registers
-        noise_idx = num_registers
-        action_idx = num_registers + 1
-        latent_start = num_registers + 2
+        mask = torch.ones(tokens_per_frame, tokens_per_frame, dtype=torch.bool, device=device)
         
-        # Latents attend to: themselves, noise, action, registers
-        mask[latent_start:, latent_start:] = True
-        mask[latent_start:, noise_idx] = True
-        mask[latent_start:, action_idx] = True
-        mask[latent_start:, :reg_end] = True
-        
-        # Noise attends to itself
-        mask[noise_idx, noise_idx] = True
-        
-        # Action attends to itself
-        mask[action_idx, action_idx] = True
-        
-        # Registers attend to: latents, noise, action, themselves
-        mask[:reg_end, latent_start:] = True
-        mask[:reg_end, noise_idx] = True
-        mask[:reg_end, action_idx] = True
-        mask[:reg_end, :reg_end] = True
+        # Frozen token (Noise) only attends to itself
+        mask[frozen_token_index, :] = False
+        mask[frozen_token_index, frozen_token_index] = True
         
         return mask
 
@@ -187,19 +170,14 @@ class WorldModelBackbone(nn.Module):
         
         register_tokens = self.register_tokens.unsqueeze(0).unsqueeze(0).expand(batch_size, time_steps, -1, -1)
 
-        x = torch.cat((register_tokens, noise_tokens, action_tokens, noisy_tokens), dim=2)
+        x = torch.cat((noise_tokens, action_tokens, register_tokens, noisy_tokens), dim=2)
         tokens_per_frame = x.shape[2]
 
         spatial_mask = self._build_spatial_mask(
             latent_tokens, 
             self.config.num_registers, 
+            0, # frozen_token_index
             device
-        )
-        spatial_rope = _rope_cache(
-            tokens_per_frame,
-            self.config.latent_dim // self.config.num_heads,
-            self.config.rope_base,
-            str(device),
         )
         temporal_mask = self._build_temporal_mask(
             time_steps, 
@@ -208,12 +186,9 @@ class WorldModelBackbone(nn.Module):
             batch_size, 
             device
         )
-        temporal_rope = _rope_cache(
-            time_steps,
-            self.config.latent_dim // self.config.num_heads,
-            self.config.rope_base,
-            str(device),
-        )
+
+        spatial_rope = _rope_cache(tokens_per_frame, self.config.latent_dim // self.config.num_heads, self.config.rope_base, str(device))
+        temporal_rope = _rope_cache(time_steps, self.config.latent_dim // self.config.num_heads, self.config.rope_base, str(device))
 
         for block in self.layers:
             x = block(

@@ -107,6 +107,30 @@ def sample_base_noise(latents: torch.Tensor, config: DiffusionConfig) -> torch.T
     return noise * std + mean
 
 
+def latents_to_velocity(
+    pred_clean_latents: torch.Tensor,
+    noisy_latents: torch.Tensor,
+    noise_levels: torch.Tensor,
+    min_denom: float = 0.05,
+) -> torch.Tensor:
+    """
+    Transform model predictions into velocity field used for flow matching.
+    Expects noise_levels to have shape [batch, time] aligned with the first two
+    dimensions of the latent tensors.
+    """
+    if pred_clean_latents.shape != noisy_latents.shape:
+        raise ValueError("pred_clean_latents and noisy_latents must share the same shape.")
+    if noise_levels.ndim != 2:
+        raise ValueError("noise_levels must have shape [batch, time].")
+    if min_denom <= 0.0 or not math.isfinite(min_denom):
+        raise ValueError("min_denom must be a positive finite value.")
+
+    noise_levels = noise_levels.to(device=noisy_latents.device, dtype=noisy_latents.dtype)
+    denom = (1.0 - noise_levels).clamp_min(min_denom)
+    denom = denom.unsqueeze(-1).unsqueeze(-1)
+    return (pred_clean_latents - noisy_latents) / denom
+
+
 # ------------------------------------------------------------------ ODE Solver
 @dataclass
 class EulerSolverConfig:
@@ -224,15 +248,11 @@ class EulerSolver:
             if pred_clean.dtype != dtype:
                 pred_clean = pred_clean.to(dtype)
 
-            denom = 1.0 - noise_levels
-            valid = denom > 1e-5
-            denom = torch.where(valid, denom, torch.ones_like(denom))
-            denom = denom.unsqueeze(-1).unsqueeze(-1)
-            velocity = (pred_clean - current_latents) / denom
-            velocity = torch.where(
-                valid.unsqueeze(-1).unsqueeze(-1),
-                velocity,
-                torch.zeros_like(velocity),
+            velocity = latents_to_velocity(
+                pred_clean_latents=pred_clean,
+                noisy_latents=current_latents,
+                noise_levels=noise_levels,
+                min_denom=0.05,
             )
 
             delta = (target_signal - current_signal).clamp(min=0.0, max=cfg.step_size)

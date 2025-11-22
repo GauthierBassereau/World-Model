@@ -150,7 +150,6 @@ class WorldModelEvaluator:
                 dataset_cfg=dataset_cfg,
                 dataloader_cfg=dataloader_cfg,
                 grad_accum_steps=1,
-                device=device,
                 rank=self.rank if self.world_size > 1 else None,
                 world_size=self.world_size if self.world_size > 1 else None,
                 seed=seed,

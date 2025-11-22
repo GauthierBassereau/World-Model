@@ -186,15 +186,15 @@ class TransformerBlock(nn.Module):
         qk_norm_eps: float,
         use_temporal: bool,
         num_registers: int,
-        frozen_conditioning_tokens: int = 2, # Defaults to Noise + Action
+        frozen_token_index: int = 0, # Defaults to Noise token at index 0
         attn_logit_softcapping: Optional[float] = None,
     ) -> None:
         super().__init__()
         self.use_temporal = use_temporal
         self.num_registers = num_registers
-        self.frozen_conditioning_tokens = frozen_conditioning_tokens
+        self.frozen_token_index = frozen_token_index
 
-        # Indices for slicing: [Registers (update) | Conditioning (freeze) | Latents (update)]
+        # Indices for slicing: [Noise (freeze) | Action (update) | Registers (update) | Latents (update)]
 
         self.spatial_norm = RMSNorm(dim)
         self.spatial_attn = Attention(
@@ -227,11 +227,8 @@ class TransformerBlock(nn.Module):
         tokens = x.shape[2]
         mask = torch.ones(tokens, dtype=x.dtype, device=x.device)
         
-        # Only freeze the conditioning tokens (Noise/Action)
-        start_freeze = self.num_registers
-        end_freeze = self.num_registers + self.frozen_conditioning_tokens
-        
-        mask[start_freeze:end_freeze] = 0.0
+        # Only freeze the specific token
+        mask[self.frozen_token_index] = 0.0
         
         return mask.view(1, 1, tokens, 1)
 
@@ -246,7 +243,6 @@ class TransformerBlock(nn.Module):
         spatial_cos, spatial_sin = spatial_rope
         update_mask = self._build_update_mask(x)
         bsz, time_steps, tokens, dim = x.shape
-
         # 1. Spatial Attention (Full Context)
         spatial_input = self.spatial_norm(x).reshape(bsz * time_steps, tokens, dim)
         spatial_bias = _build_attention_bias(
@@ -263,15 +259,13 @@ class TransformerBlock(nn.Module):
         spatial_out = spatial_out.view(bsz, time_steps, tokens, dim) * update_mask
         x = x + spatial_out
 
-        # 2. Temporal Attention (Optimization: Skip Frozen Tokens)
-        # Only run temporal attention on tokens that are actually allowed to update (Registers + Latents)
-        start_freeze = self.num_registers
-        end_freeze = self.num_registers + self.frozen_conditioning_tokens
+        # 2. Temporal Attention (Optimization: Skip Frozen Token)
+        # Only run temporal attention on tokens that are actually allowed to update
         
-        # Creating a boolean mask of tokens to process
+        # Creating a boolean mask of tokens to process (all except frozen_token_index)
         active_indices = torch.cat([
-            torch.arange(0, start_freeze, device=x.device),
-            torch.arange(end_freeze, tokens, device=x.device)
+            torch.arange(0, self.frozen_token_index, device=x.device),
+            torch.arange(self.frozen_token_index + 1, tokens, device=x.device)
         ])
 
         if self.use_temporal:
@@ -304,7 +298,7 @@ class TransformerBlock(nn.Module):
             temporal_out = temporal_out.view(bsz, active_tokens_count, time_steps, dim).permute(0, 2, 1, 3)
             
             # Scatter back to full size variable (initialized as zero so frozen stays zero)
-            full_temporal_out = torch.zeros_like(x)
+            full_temporal_out = torch.zeros_like(x, dtype=temporal_out.dtype)
             full_temporal_out.index_copy_(2, active_indices, temporal_out)
             
             x = x + full_temporal_out
@@ -312,186 +306,9 @@ class TransformerBlock(nn.Module):
         x_active = x.index_select(2, active_indices)
         mlp_out = self.mlp(self.mlp_norm(x_active))
         
-        full_mlp_out = torch.zeros_like(x)
+        full_mlp_out = torch.zeros_like(x, dtype=mlp_out.dtype)
         full_mlp_out.index_copy_(2, active_indices, mlp_out)
             
         x = x + full_mlp_out
         
         return x
-
-
-# ==============================================================================
-# Updated Backbone & Config
-# ==============================================================================
-
-@dataclass
-class WorldModelConfig:
-    latent_dim: int = 1024
-    input_dim: int = 768
-    action_dim: int = 8 # Updated to match YAML (7 joint + 1 gripper)
-    num_registers: int = 4
-    depth: int = 24
-    num_heads: int = 16
-    mlp_multiplier: float = 4.0
-    temporal_attention_interval: int = 4
-    temporal_context_length: int = 9 # Updated to match YAML
-    rope_base: float = 1000.0
-    qk_norm_eps: float = 1e-6
-    attn_logit_softcapping: Optional[float] = 50.0 # Updated to match YAML (allows fused attn disable check)
-
-
-class WorldModelBackbone(nn.Module):
-    def __init__(self, config: WorldModelConfig) -> None:
-        super().__init__()
-        self.config = config
-
-        self.input_proj = (
-            nn.Linear(self.config.input_dim, self.config.latent_dim, bias=False)
-            if self.config.input_dim != self.config.latent_dim
-            else nn.Identity()
-        )
-
-        self.noise_embed = nn.Sequential(
-            nn.Linear(1, self.config.latent_dim),
-            nn.SiLU(),
-            nn.Linear(self.config.latent_dim, self.config.latent_dim),
-        )
-
-        self.base_action_embed = nn.Parameter(torch.empty(self.config.latent_dim))
-        self.action_proj = nn.Linear(self.config.action_dim, self.config.latent_dim)
-
-        self.register_tokens = nn.Parameter(
-            torch.empty(self.config.num_registers, self.config.latent_dim)
-        )
-
-        blocks = []
-        for layer_idx in range(self.config.depth):
-            use_temporal = (layer_idx % self.config.temporal_attention_interval) == 0
-            blocks.append(
-                TransformerBlock(
-                    dim=self.config.latent_dim,
-                    num_heads=self.config.num_heads,
-                    mlp_multiplier=self.config.mlp_multiplier,
-                    qk_norm_eps=self.config.qk_norm_eps,
-                    use_temporal=use_temporal,
-                    num_registers=self.config.num_registers,
-                    frozen_conditioning_tokens=2, # Noise + Action
-                    attn_logit_softcapping=config.attn_logit_softcapping,
-                )
-            )
-        self.layers = nn.ModuleList(blocks)
-
-        self.final_norm = RMSNorm(self.config.latent_dim)
-        self.output_proj = nn.Linear(self.config.latent_dim, self.config.input_dim)
-        
-        self.initialize_weights()
-        
-    def initialize_weights(self):
-        # Fix: Improved Initialization for Deep Transformers
-        def _basic_init(module):
-            if isinstance(module, nn.Linear):
-                # Truncated normal is better for deep transformers than Xavier
-                torch.nn.init.trunc_normal_(module.weight, std=0.02)
-                if module.bias is not None:
-                    nn.init.constant_(module.bias, 0)
-        self.apply(_basic_init)
-        
-        nn.init.normal_(self.base_action_embed, std=0.02)
-        nn.init.normal_(self.register_tokens, std=0.02)
-        
-        nn.init.zeros_(self.noise_embed[-1].weight)
-        nn.init.zeros_(self.noise_embed[-1].bias)
-        
-        with torch.no_grad():
-            self.action_proj.weight.mul_(0.1) 
-        nn.init.zeros_(self.action_proj.bias)
-        
-        # Zero-init output projections for identity-at-init behavior
-        for block in self.layers:
-            nn.init.zeros_(block.spatial_attn.out_proj.weight)
-            if block.temporal_attn is not None:
-                nn.init.zeros_(block.temporal_attn.out_proj.weight)
-            nn.init.zeros_(block.mlp.w3.weight)
-        
-        nn.init.zeros_(self.output_proj.weight)
-        nn.init.zeros_(self.output_proj.bias)
-
-    @staticmethod
-    def _build_spatial_mask(
-        latent_tokens: int,
-        num_registers: int,
-        device: torch.device,
-    ) -> torch.Tensor:
-        tokens_per_frame = latent_tokens + 2 + num_registers
-        mask = torch.zeros(tokens_per_frame, tokens_per_frame, dtype=torch.bool, device=device)
-        reg_end = num_registers
-        noise_idx = num_registers
-        action_idx = num_registers + 1
-        latent_start = num_registers + 2
-        
-        # Latents attend to: themselves, noise, action, registers
-        mask[latent_start:, latent_start:] = True
-        mask[latent_start:, noise_idx] = True
-        mask[latent_start:, action_idx] = True
-        mask[latent_start:, :reg_end] = True
-        
-        # Noise attends to itself
-        mask[noise_idx, noise_idx] = True
-        
-        # Action attends to itself
-        mask[action_idx, action_idx] = True
-        
-        # Registers attend to: latents, noise, action, themselves
-        mask[:reg_end, latent_start:] = True
-        mask[:reg_end, noise_idx] = True
-        mask[:reg_end, action_idx] = True
-        mask[:reg_end, :reg_end] = True
-        
-        return mask
-
-    @staticmethod
-    def _build_temporal_mask(
-        time_steps: int,
-        context_length: Optional[int],
-        independent_frames_mask: Optional[torch.Tensor],
-        batch_size: int,
-        device: torch.device,
-    ) -> torch.Tensor:
-        # Fix: Diagonal 0 (Causal) instead of -1 (Strictly Past)
-        mask = torch.tril(
-            torch.ones(time_steps, time_steps, dtype=torch.bool, device=device),
-            diagonal=0, 
-        )
-        if context_length is not None and context_length < time_steps:
-            context_band = torch.triu(mask, diagonal=-(context_length))
-            mask = mask & context_band
-        mask = mask.unsqueeze(0).unsqueeze(0).expand(batch_size, 1, time_steps, time_steps).clone()
-        
-        if independent_frames_mask is not None:
-            independent = independent_frames_mask.to(device=device, dtype=torch.bool).view(batch_size, 1, 1, 1)
-            all_false = torch.zeros_like(mask, dtype=torch.bool)
-            mask = torch.where(independent, all_false, mask)
-
-        return mask
-
-    def forward(
-        self,
-        noisy_latents: torch.Tensor, # [Batch, Sequence, Tokens, Dimension]
-        noise_levels: torch.Tensor, # [B, S, 1]
-        actions: Optional[torch.Tensor] = None, # [B, S, D]
-        independent_frames_mask: Optional[torch.Tensor] = None, # [B, 1]
-        actions_mask: Optional[torch.Tensor] = None, # [B, 1]
-    ) -> Dict[str, torch.Tensor]:
-        batch_size, time_steps, latent_tokens, _ = noisy_latents.shape
-        device = noisy_latents.device
-
-        noisy_tokens = self.input_proj(noisy_latents)
-        
-        actions_embed = self.base_action_embed.view(1, 1, 1, -1).expand(batch_size, time_steps, 1, -1)
-        if actions is not None:
-            action_tokens = actions_embed + self.action_proj(actions).unsqueeze(2)
-        else:
-            action_tokens = actions_embed
-        if actions_mask is not None:
-            mask = actions_mask.to(dtype=torch.bool, device=device)
-        return {} # Dummy return to allow import
