@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union, Dict
 
 from src.dataset.configs import DataloaderConfig, DatasetConfig
 from src.training.world_evaluator import EvaluationConfig
@@ -9,16 +9,11 @@ from src.world_model.backbone import WorldModelConfig
 
 @dataclass
 class OptimizerConfig:
-    lr: float = 1e-4
+    lr: Union[float, Dict[str, float]] = 1e-4
     betas: Tuple[float, float] = (0.9, 0.95)
     weight_decay: float = 0.0
     eps: float = 1e-8
     grad_clip_norm: Optional[float] = None
-    lr_warmup_steps: int = 0
-    lr_warmup_lr: Optional[float] = None
-    lr_final: Optional[float] = None
-    lr_schedule_start_step: int = 0
-    lr_schedule_final_step: Optional[int] = None
 
 
 @dataclass

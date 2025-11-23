@@ -128,9 +128,20 @@ class WorldModelTrainer:
                     exc,
                 )
             
+        initial_lr = config.optimizer.lr
+        if isinstance(initial_lr, dict):
+            # If dict, use the value at the smallest step, or 0.0 if empty (unlikely)
+            if initial_lr:
+                # Keys are strings from config, convert to int
+                schedule = {int(k): v for k, v in initial_lr.items()}
+                min_step = min(schedule.keys())
+                initial_lr = schedule[min_step]
+            else:
+                initial_lr = 0.0
+
         self.optimizer = torch.optim.AdamW(
             self.model.parameters(),
-            lr=config.optimizer.lr,
+            lr=initial_lr,
             betas=config.optimizer.betas,
             weight_decay=config.optimizer.weight_decay,
             eps=config.optimizer.eps,
@@ -175,29 +186,19 @@ class WorldModelTrainer:
 
 
     def _init_lr_schedule(self) -> None:
-        optimizer_cfg = self.config.optimizer
-        trainer_cfg = self.config.trainer
-        self._base_lrs = [group["lr"] for group in self.optimizer.param_groups]
-        warmup_lr = optimizer_cfg.lr_warmup_lr
-        self._warmup_start_lrs = [
-            min(warmup_lr, base_lr) if warmup_lr is not None else 0.0
-            for base_lr in self._base_lrs
-        ]
-        self._warmup_steps = max(0, optimizer_cfg.lr_warmup_steps)
-        self._warmup_enabled = self._warmup_steps > 0
-
-        final_lr = optimizer_cfg.lr_final
-        if final_lr is not None:
-            self._final_lrs = [final_lr for _ in self.optimizer.param_groups]
-            final_step = optimizer_cfg.lr_schedule_final_step or trainer_cfg.max_steps
-            self._lr_schedule_final_step = final_step
+        lr_config = self.config.optimizer.lr
+        self._lr_schedule: Optional[List[Tuple[int, float]]] = None
+        
+        if isinstance(lr_config, dict):
+            # Convert keys to int and sort
+            try:
+                schedule = {int(k): v for k, v in lr_config.items()}
+            except ValueError as e:
+                raise ValueError(f"LR schedule keys must be convertible to integers. Got error: {e}")
+            self._lr_schedule = sorted(schedule.items(), key=lambda x: x[0])
         else:
-            self._final_lrs = None
-            self._lr_schedule_final_step = None
-
-        self._lr_schedule_enabled = self._warmup_enabled or (
-            self._final_lrs is not None and self._lr_schedule_final_step is not None
-        )
+            # Constant LR, no schedule needed effectively, but we can just set it as None
+            self._lr_schedule = None
 
     def _init_ema_model(self) -> None:
         ema_device = torch.device(self.device)
@@ -239,26 +240,28 @@ class WorldModelTrainer:
                 ema_buffer.data.copy_(source)
         
     def _apply_lr_schedule(self, step: int) -> None:
-        if not self._lr_schedule_enabled:
+        if self._lr_schedule is None:
             return
+
+        # Linear interpolation
+        # Schedule is a sorted list of (step, lr)
+        # Find the segment [start_step, end_step] that contains 'step'
         
-        start_step = self.config.optimizer.lr_schedule_start_step
-        current_step = max(step - start_step, 1)
+        target_lr = self._lr_schedule[-1][1] # Default to last LR if beyond
         
-        for idx, group in enumerate(self.optimizer.param_groups):
-            base_lr = self._base_lrs[idx]
-            target_lr = base_lr
-            if self._warmup_enabled and current_step <= self._warmup_steps:
-                start_lr = self._warmup_start_lrs[idx]
-                progress = current_step / max(1, self._warmup_steps)
-                target_lr = start_lr + (base_lr - start_lr) * progress
-            elif self._final_lrs is not None and self._lr_schedule_final_step is not None:
-                relative_final_step = max(self._lr_schedule_final_step - start_step, 0)
-                duration = max(1, relative_final_step - self._warmup_steps)
-                warmup_offset = max(current_step - self._warmup_steps, 0)
-                progress = min(warmup_offset, duration) / duration
-                final_lr = self._final_lrs[idx]
-                target_lr = base_lr + (final_lr - base_lr) * progress
+        if step <= self._lr_schedule[0][0]:
+            target_lr = self._lr_schedule[0][1]
+        else:
+            for i in range(len(self._lr_schedule) - 1):
+                start_step, start_lr = self._lr_schedule[i]
+                end_step, end_lr = self._lr_schedule[i+1]
+                
+                if start_step < step <= end_step:
+                    progress = (step - start_step) / (end_step - start_step)
+                    target_lr = start_lr + (end_lr - start_lr) * progress
+                    break
+        
+        for group in self.optimizer.param_groups:
             group["lr"] = target_lr
 
     def train(self) -> None:

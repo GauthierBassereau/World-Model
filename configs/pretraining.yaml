@@ -9,11 +9,11 @@ logging:
 
 trainer:
   grad_accum_steps: 8
-  seed: 5
+  seed: 3
   precision: bf16
   evaluation_interval: 500
-  resume: true # takes the checkpoint step and optimizer state
-  load_checkpoint: /gpfs/helios/home/gauthierbernarda/git/World-Model/checkpoints/lucky-violet-162/world_model_step_005000.pt
+  resume: false # takes the checkpoint step and optimizer state
+  load_checkpoint: null
 
 
 evaluator:
@@ -24,13 +24,9 @@ evaluator:
   clean_signal_level: 1.0
 
 optimizer:
-  lr: 1.0e-4
-  lr_warmup_steps: 0
-  lr_warmup_lr: 1.0e-6
-  lr_final: 2.0e-5
-  lr_schedule_start_step: 5000
-  lr_schedule_final_step: 7000
-  betas: [0.9, 0.95]
+  lr:
+    "0": 1.0e-6
+    "500": 1.0e-4
   weight_decay: 0.0
   eps: 1.0e-08
   grad_clip_norm: 1.0
@@ -38,7 +34,7 @@ optimizer:
 ema:
   enabled: false # Not sure Dreamerv4 uses it, but usually Flow matching training is better with it so...
   decay: 0.9995
-  start_step: 5000 # standard don't touch
+  start_step: 5000
 
 train_data:
   train_dataset:
@@ -100,7 +96,7 @@ diffusion:
   noise_mean: 0.0   # Set noise_mean=0.0 and noise_std=1.0 to recover a unit Gaussian prior.
   noise_std: 1.0
   noise_sampling: dimension # {"dimension", "linear", "uniform"}; choose the draw distribution
-  base_dimension: 4096 # from RAE paper, to determine noise schedule depending on effective latent dimension
+  base_dimension: 8192 #4096 # from RAE paper, to determine noise schedule depending on effective latent dimension
   effective_latent_dimension: 196608 # 768*16*16
 
 world_model: # ~400M parameters
