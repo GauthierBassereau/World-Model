@@ -53,7 +53,7 @@ class WorldModelTrainer:
         self._ema_param_pairs: List[Tuple[torch.nn.Parameter, torch.nn.Parameter]] = []
         self._ema_buffer_pairs: List[Tuple[torch.Tensor, torch.Tensor]] = []
         self._ema_checkpoint_state: Optional[Dict[str, torch.Tensor]] = None
-        self._cached_overfit_batch: Optional[WorldModelBatch] = None
+
         self._sampler_epoch = 0
         self._dataloader_iter = None
         self._checkpoint_dir: Optional[Path] = None
@@ -171,8 +171,7 @@ class WorldModelTrainer:
             self._init_ema_model()
         self.logger.init_wandb(asdict(self.config))
         self._checkpoint_dir = self._resolve_checkpoint_dir()
-        if self.config.trainer.single_batch_overfit:
-            self.logger.info("Single-batch overfit enabled; reusing the first batch for all updates.")
+
 
 
     def _init_lr_schedule(self) -> None:
@@ -190,14 +189,14 @@ class WorldModelTrainer:
         final_lr = optimizer_cfg.lr_final
         if final_lr is not None:
             self._final_lrs = [final_lr for _ in self.optimizer.param_groups]
-            final_step = optimizer_cfg.lr_final_step or trainer_cfg.max_steps
-            self._lr_final_step = final_step
+            final_step = optimizer_cfg.lr_schedule_final_step or trainer_cfg.max_steps
+            self._lr_schedule_final_step = final_step
         else:
             self._final_lrs = None
-            self._lr_final_step = None
+            self._lr_schedule_final_step = None
 
         self._lr_schedule_enabled = self._warmup_enabled or (
-            self._final_lrs is not None and self._lr_final_step is not None
+            self._final_lrs is not None and self._lr_schedule_final_step is not None
         )
 
     def _init_ema_model(self) -> None:
@@ -221,17 +220,12 @@ class WorldModelTrainer:
         if not self.ema_model:
             return
         
-        # Ramp up decay from 0.0 to target over 'warmup' steps
-        # This prevents the EMA from holding onto the random initialization 
         step = self.global_step
-        target_decay = self.ema_cfg.decay
-        
-        # Example: effective decay is min(target, (1 + step) / (10 + step))
-        # This is used in original DDPM / various World Model implementations
-        cur_decay = min(target_decay, (1 + step) / (self.ema_cfg.warmup_steps + step))
-
-        if cur_decay >= 1.0:
+        if step < self.ema_cfg.start_step:
             return
+
+        cur_decay = self.ema_cfg.decay
+
         with torch.no_grad():
             for ema_param, param in self._ema_param_pairs:
                 source = param.data
@@ -247,7 +241,10 @@ class WorldModelTrainer:
     def _apply_lr_schedule(self, step: int) -> None:
         if not self._lr_schedule_enabled:
             return
-        current_step = max(step, 1)
+        
+        start_step = self.config.optimizer.lr_schedule_start_step
+        current_step = max(step - start_step, 1)
+        
         for idx, group in enumerate(self.optimizer.param_groups):
             base_lr = self._base_lrs[idx]
             target_lr = base_lr
@@ -255,8 +252,9 @@ class WorldModelTrainer:
                 start_lr = self._warmup_start_lrs[idx]
                 progress = current_step / max(1, self._warmup_steps)
                 target_lr = start_lr + (base_lr - start_lr) * progress
-            elif self._final_lrs is not None and self._lr_final_step is not None:
-                duration = max(1, self._lr_final_step - self._warmup_steps)
+            elif self._final_lrs is not None and self._lr_schedule_final_step is not None:
+                relative_final_step = max(self._lr_schedule_final_step - start_step, 0)
+                duration = max(1, relative_final_step - self._warmup_steps)
                 warmup_offset = max(current_step - self._warmup_steps, 0)
                 progress = min(warmup_offset, duration) / duration
                 final_lr = self._final_lrs[idx]
@@ -280,7 +278,7 @@ class WorldModelTrainer:
             self.device,
             self.global_step,
         )
-        self._dataloader_iter = None
+
 
         for step in range(self.global_step + 1, total_steps + 1):
             self._apply_lr_schedule(step)
@@ -298,13 +296,15 @@ class WorldModelTrainer:
                 for key, value in metrics.items():
                     accum_metrics[key] = accum_metrics.get(key, 0.0) + value
 
+            grad_metrics = self.logger.log_grad_norm(model=self.model, key="grad_norm_before_clip")
+
             if self.config.optimizer.grad_clip_norm is not None:
                 torch.nn.utils.clip_grad_norm_(
                     self.model.parameters(),
                     self.config.optimizer.grad_clip_norm,
                 )
 
-            grad_metrics = self.logger.log_grad_norm(model=self.model)
+            grad_metrics.update(self.logger.log_grad_norm(model=self.model, key="grad_norm_after_clip"))
             
             self.optimizer.step()
 
@@ -394,7 +394,7 @@ class WorldModelTrainer:
         scaled_loss.backward()
 
         return {
-            "loss": float(scaled_loss)
+            "loss": float(loss) # because it is later divided by grad_accum_steps for logging
         }
 
     @torch.no_grad()
@@ -406,13 +406,6 @@ class WorldModelTrainer:
         return latents.view(batch, steps, tokens, dim)
 
     def _next_batch(self) -> WorldModelBatch:
-        if self.config.trainer.single_batch_overfit:
-            if self._cached_overfit_batch is None:
-                self._cached_overfit_batch = self._fetch_batch()
-            return self._cached_overfit_batch
-        return self._fetch_batch()
-
-    def _fetch_batch(self) -> WorldModelBatch:
         if self._dataloader_iter is None:
             self._dataloader_iter = self._create_data_iter()
         try:
@@ -516,14 +509,27 @@ class WorldModelTrainer:
         return None
 
     def _maybe_load_checkpoint(self) -> None:
-        checkpoint_path = self.config.trainer.resume_checkpoint
+        checkpoint_path = self.config.trainer.load_checkpoint
         if not checkpoint_path:
             return
+        
+        self.logger.info("Loading checkpoint from %s...", checkpoint_path)
         ckpt = torch.load(checkpoint_path, map_location=self.device)
         self.model.load_state_dict(ckpt["model"])
-        self.optimizer.load_state_dict(ckpt["optimizer"])
-        self.global_step = int(ckpt.get("step", 0))
-        if "ema_model" in ckpt:
-            self._ema_checkpoint_state = ckpt["ema_model"]
-        elif self.ema_cfg.enabled:
+
+        if self.config.trainer.resume:
+            self.optimizer.load_state_dict(ckpt["optimizer"])
+            self.global_step = int(ckpt.get("step", 0))
+            self.logger.info("Resuming training from step %d", self.global_step)
+            for param_group in self.optimizer.param_groups:
+                self.logger.info("Learning rate: %f", param_group["lr"])
+
+            self.logger.info("Be sure to use a different seed to avoid seeing same data")
+
+            if "ema_model" in ckpt:
+                self._ema_checkpoint_state = ckpt["ema_model"]
+            elif self.ema_cfg.enabled:
+                self._ema_checkpoint_state = None
+        else:
+            self.logger.info("Loaded model weights for finetuning/initialization. Starting from step 0.")
             self._ema_checkpoint_state = None

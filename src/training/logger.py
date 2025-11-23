@@ -141,7 +141,7 @@ class WorldModelLogger:
             if self.wandb_run is not None:
                 payload: Dict[str, float] = {}
                 for key, value in metrics.items():
-                    if key in {"grad_norm", "learning_rate"}:
+                    if key == "learning_rate" or key.startswith("grad_norm"):
                         payload[f"debug/{key}"] = value
                     else:
                         payload[f"train/{key}"] = value
@@ -154,6 +154,7 @@ class WorldModelLogger:
         self,
         *,
         model: nn.Module,
+        key: str = "grad_norm",
     ) -> Dict[str, float]:
         params_with_grad = [param for param in model.parameters() if param.grad is not None]
         if not params_with_grad:
@@ -167,7 +168,7 @@ class WorldModelLogger:
             grad_norm = float(total_norm.detach().cpu().item())
         else:
             grad_norm = float(total_norm)
-        return {"grad_norm": grad_norm}
+        return {key: grad_norm}
 
     def log_distr_noise(
         self,

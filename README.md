@@ -19,7 +19,7 @@
 
 ## 4. Data
 
--  Learning diverse world dynamics, interactions between objects -> Kinetics 700 (~700Gb) ---(?)--> OpenVid1M, HowTo100M, Ego4D, Something-Something V2, EPIC-KITCHENS
+-  Learning diverse world dynamics, interactions between objects -> Kinetics 700 (~700Gb) ---(?)--> OpenVid1M, HowTo100M, Ego4D, Something-Something V2, EPIC-KITCHENS, EgoDex
 -  Learning robot interactions + action conditioning with world -> DROID (~400Gb) ---(?)--> SOAR, agibot_alpha
 
 Note: most of these datasets have language instructions for each video -> I wonder how fast the WM can learn to condition its generation on text instead of action ?
@@ -27,8 +27,8 @@ Note: most of these datasets have language instructions for each video -> I wond
 ---
 
 Todos:
-  - [In progress] split droid dataset ? somehow without burning all hpc credits
-  - Fix eval dataset for eval, converting index of entire dataset to the subset one ?
+  - Fix bug eval dataset for eval, converting index of entire dataset to the subset one
+  - Look for better handling of ODE solver and sampling on edges 0 and 1, look at RAE, for Euler but also maybe Heun
   - Implement the opetion to have x-loss with reweigthing just like Dreamerv4
   - Shortcut forcing
   - (Maybe to try someday) Add a DH head to backbone following RAE paper -> I am really not sure this is useful because I think RAE paper uses v-space prediction, and so that's why DH head is so effective as explained in the JIT paper

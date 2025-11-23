@@ -9,12 +9,12 @@ logging:
 
 trainer:
   grad_accum_steps: 8
-  seed: 3
+  seed: 5
   precision: bf16
-  device: cuda
   evaluation_interval: 500
-  resume_checkpoint: null
-  single_batch_overfit: false
+  resume: true # takes the checkpoint step and optimizer state
+  load_checkpoint: /gpfs/helios/home/gauthierbernarda/git/World-Model/checkpoints/lucky-violet-162/world_model_step_005000.pt
+
 
 evaluator:
   max_batches: 1
@@ -25,19 +25,20 @@ evaluator:
 
 optimizer:
   lr: 1.0e-4
+  lr_warmup_steps: 0
+  lr_warmup_lr: 1.0e-6
+  lr_final: 2.0e-5
+  lr_schedule_start_step: 5000
+  lr_schedule_final_step: 7000
   betas: [0.9, 0.95]
   weight_decay: 0.0
   eps: 1.0e-08
   grad_clip_norm: 1.0
-  lr_warmup_steps: 500
-  lr_warmup_lr: 1.0e-6
-  lr_final: null
-  lr_final_step: null
 
 ema:
   enabled: false # Not sure Dreamerv4 uses it, but usually Flow matching training is better with it so...
   decay: 0.9995
-  warmup_steps: 10 # standard don't touch
+  start_step: 5000 # standard don't touch
 
 train_data:
   train_dataset:
@@ -65,7 +66,7 @@ train_data:
   train_dataloader:
     batch_size: 256 # global batch size
     shuffle: true
-    num_workers: 2
+    num_workers: 4
     pin_memory: true
 
 eval_data:

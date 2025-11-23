@@ -17,7 +17,8 @@ class OptimizerConfig:
     lr_warmup_steps: int = 0
     lr_warmup_lr: Optional[float] = None
     lr_final: Optional[float] = None
-    lr_final_step: Optional[int] = None
+    lr_schedule_start_step: int = 0
+    lr_schedule_final_step: Optional[int] = None
 
 
 @dataclass
@@ -28,8 +29,9 @@ class TrainerLoopConfig:
     seed: int = 1234
     device: Optional[str] = None
     evaluation_interval: int = 1000
-    resume_checkpoint: Optional[str] = None
-    single_batch_overfit: bool = False
+    load_checkpoint: Optional[str] = None
+    resume: bool = False
+
 
 
 @dataclass
@@ -47,7 +49,7 @@ class LoggingConfig:
 class EMAConfig:
     enabled: bool = False
     decay: float = 0.999
-    warmup_steps: int = 10
+    start_step: int = 0
 
     def __post_init__(self) -> None:
         if not 0.0 <= self.decay < 1.0:

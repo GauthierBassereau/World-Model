@@ -26,13 +26,13 @@
 # Split LeRobot Dataset
 # =================
 
-from pathlib import Path
-from lerobot.datasets.lerobot_dataset import LeRobotDataset
-from lerobot.datasets.dataset_tools import split_dataset
+# from pathlib import Path
+# from lerobot.datasets.lerobot_dataset import LeRobotDataset
+# from lerobot.datasets.dataset_tools import split_dataset
 
-base = LeRobotDataset("aractingi/droid_1.0.1")
-splits = {"train": 0.95, "val": 0.05}
-split_ds = split_dataset(base, splits, output_dir=Path("/gpfs/helios/home/gauthierbernarda/data/droid"))
+# base = LeRobotDataset("aractingi/droid_1.0.1")
+# splits = {"train": 0.95, "val": 0.05}
+# split_ds = split_dataset(base, splits, output_dir=Path("/gpfs/helios/home/gauthierbernarda/data/droid"))
 
 # train_root = Path("/gpfs/helios/home/gauthierbernarda/data/droid_splits/train")
 # val_root = Path("/gpfs/helios/home/gauthierbernarda/data/droid_splits/val")
@@ -57,3 +57,31 @@ split_ds = split_dataset(base, splits, output_dir=Path("/gpfs/helios/home/gauthi
 #     download=False,
 # )
 # print("Index built. Clips:", len(ds))
+
+
+# =================
+# Download ImageNet Dataset with Kaggle
+# =================
+
+import os
+from kaggle.api.kaggle_api_extended import KaggleApi
+
+DOWNLOAD_PATH = "/gpfs/helios/home/gauthierbernarda/data/imagenet" 
+
+if not os.path.exists(DOWNLOAD_PATH):
+    os.makedirs(DOWNLOAD_PATH)
+    print(f"Created directory: {DOWNLOAD_PATH}")
+
+print(f"🚀 Starting download to: {DOWNLOAD_PATH}")
+
+api = KaggleApi()
+api.authenticate()
+
+api.competition_download_files(
+    competition='imagenet-object-localization-challenge',
+    path=DOWNLOAD_PATH,
+    quiet=False
+)
+
+print("✅ Download complete!")
+print(f"File is located at: {DOWNLOAD_PATH}/imagenet-object-localization-challenge.zip")
