@@ -36,34 +36,45 @@ ema:
   decay: 0.9995
   start_step: 5000
 
-train_data:
-  train_dataset:
-    repo_id: aractingi/droid_1.0.1
-    episodes: null # null means all episodes
-    cameras:
-      - observation.images.exterior_1_left
-      - observation.images.exterior_2_left
-      - observation.images.wrist_left
-    action_keys:
-      - observation.state
-    action_representation: position # position or delta
-    action_normalization: mean_std # min_max or mean_std
-    action_normalization_params:
-      mean: [0.01428347627459065, 0.23987777195473095, -0.014661363646208965, -2.027954954645529, -0.035476306435143545, 2.3233678805030076, 0.08326671319745274, 0.36085284714413735]
-      std: [0.3244343844169754, 0.5158281965633522, 0.2901322476548548, 0.5021871776809874, 0.5331921797732538, 0.46856794632856424, 0.7446577730524244, 0.40315882970033534]
-    sequence_length_distribution: # Dreamerv4 doesn't specify the proportion but I'll guess 0.8 short batches at the begginning and towards the end go to full long batches probably. For now let's keep small batches, will implement the evolution of this distribution later.
-      "7": 0.8
-      "11": 0.2
-    frame_delta_seconds: 5.0 / 15.0
-    independent_frames_probability: 0.3 # from Dreamerv4
-    drop_action_probability: 0.75 # from Dreamerv4
-    decoder_retry_attempts: 10
+train_dataset:
+  weights:
+    droid: 0.3
+    kinetics: 0.4
+    imagenet: 0.3
+  datasets:
+    droid:
+      repo_id: aractingi/droid_1.0.1
+      episodes: null # null means all episodes
+      cameras:
+        - observation.images.exterior_1_left
+        - observation.images.exterior_2_left
+        - observation.images.wrist_left
+      action_keys:
+        - observation.state
+      action_representation: position # position or delta
+      action_normalization: mean_std # min_max or mean_std
+      action_normalization_params:
+        mean: [0.01428347627459065, 0.23987777195473095, -0.014661363646208965, -2.027954954645529, -0.035476306435143545, 2.3233678805030076, 0.08326671319745274, 0.36085284714413735]
+        std: [0.3244343844169754, 0.5158281965633522, 0.2901322476548548, 0.5021871776809874, 0.5331921797732538, 0.46856794632856424, 0.7446577730524244, 0.40315882970033534]
+      sequence_length_distribution: # Dreamerv4 doesn't specify the proportion but I'll guess 0.8 short batches at the begginning and towards the end go to full long batches probably. For now let's keep small batches, will implement the evolution of this distribution later.
+        "7": 0.8
+        "11": 0.2
+      frame_delta_seconds: 5.0 / 15.0
+      independent_frames_probability: 0.3 # from Dreamerv4
+      drop_action_probability: 0.75 # from Dreamerv4
+      decoder_retry_attempts: 10
+    kinetics:
+      root: /gpfs/helios/home/gauthierbernarda/data/kinetics # Verify this path
+      frames_per_clip: 16
+      step_between_clips: 1
+    imagenet:
+      root: /gpfs/helios/home/gauthierbernarda/data/imagenet
 
-  train_dataloader:
-    batch_size: 256 # global batch size
-    shuffle: true
-    num_workers: 4
-    pin_memory: true
+train_dataloader:
+  batch_size: 256 # global batch size
+  shuffle: true
+  num_workers: 4
+  pin_memory: true
 
 eval_data:
   eval_dataset:
@@ -86,11 +97,11 @@ eval_data:
     drop_action_probability: 0.0
     decoder_retry_attempts: 10
 
-  eval_dataloader:
-    batch_size: 8
-    shuffle: false
-    num_workers: 0
-    pin_memory: false
+eval_dataloader:
+  batch_size: 8
+  shuffle: false
+  num_workers: 0
+  pin_memory: false
 
 diffusion:
   noise_mean: 0.0   # Set noise_mean=0.0 and noise_std=1.0 to recover a unit Gaussian prior.

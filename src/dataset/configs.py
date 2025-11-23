@@ -11,7 +11,7 @@ class DataloaderConfig:
 
 
 @dataclass
-class DatasetConfig:
+class LeRobotDatasetConfig:
     repo_id: str = "aractingi/droid_1.0.1"
     decoder_retry_attempts: int = 5
     cameras: Tuple[str, ...] = (
@@ -40,7 +40,7 @@ class DatasetConfig:
         self.frame_delta_seconds = _coerce_frame_delta(self.frame_delta_seconds)
         if not self.sequence_length_distribution:
             raise ValueError(
-                "DatasetConfig.sequence_length_distribution must contain at least one entry."
+                "LeRobotDatasetConfig.sequence_length_distribution must contain at least one entry."
             )
         self.sequence_length_distribution = {
             int(length): float(weight)
@@ -52,16 +52,16 @@ class DatasetConfig:
         else:
             keys = tuple(self.action_keys)
         if not keys:
-            raise ValueError("DatasetConfig.action_keys must contain at least one key.")
+            raise ValueError("LeRobotDatasetConfig.action_keys must contain at least one key.")
         self.action_keys = keys
         if self.action_representation not in {"delta", "position"}:
             raise ValueError(
-                "DatasetConfig.action_representation must be either 'delta' or 'position'."
+                "LeRobotDatasetConfig.action_representation must be either 'delta' or 'position'."
             )
 
         if self.action_normalization not in {None, "min_max", "mean_std"}:
             raise ValueError(
-                "DatasetConfig.action_normalization must be one of None, 'min_max', or 'mean_std'."
+                "LeRobotDatasetConfig.action_normalization must be one of None, 'min_max', or 'mean_std'."
             )
         if self.action_normalization is None:
             if self.action_normalization_params is not None:
@@ -110,3 +110,31 @@ class DatasetConfig:
             return None
         normalized = [int(idx) for idx in indices]
         return normalized or None
+
+
+@dataclass
+class KineticsDatasetConfig:
+    root: str
+    frames_per_clip: int = 16
+    step_between_clips: int = 1
+    transform: Optional[str] = None  # Placeholder for now, could be more complex
+
+
+@dataclass
+class ImageNetDatasetConfig:
+    root: str
+
+
+@dataclass
+class WorldModelDatasetConfig:
+    datasets: Dict[str, Union[LeRobotDatasetConfig, KineticsDatasetConfig, ImageNetDatasetConfig]]
+    weights: Dict[str, float]
+
+    def __post_init__(self) -> None:
+        if not self.datasets:
+            raise ValueError("WorldModelDatasetConfig must contain at least one dataset.")
+        if set(self.datasets.keys()) != set(self.weights.keys()):
+            raise ValueError("Keys in datasets and weights must match.")
+        if any(w < 0 for w in self.weights.values()):
+            raise ValueError("Weights must be non-negative.")
+
