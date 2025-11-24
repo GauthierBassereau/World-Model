@@ -5,13 +5,13 @@ from tqdm import tqdm
 
 # ================= CONFIGURATION =================
 # Path to your filtered CSV
-CSV_PATH = "/gpfs/helios/home/gauthierbernarda/data/kinetics/annotations/train.csv"
+CSV_PATH = "/gpfs/helios/home/gauthierbernarda/data/kinetics/annotations/train_no_cut_5s_t30.csv"
 
 # Path to the directory containing the video folders
 VIDEO_ROOT = "/gpfs/helios/home/gauthierbernarda/data/kinetics/train"
 
 # SET THIS TO FALSE ONLY WHEN YOU ARE SURE YOU WANT TO DELETE
-DRY_RUN = True 
+DRY_RUN = False 
 # =================================================
 
 def get_allowed_ids(csv_path):
