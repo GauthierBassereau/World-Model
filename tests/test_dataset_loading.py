@@ -1,9 +1,9 @@
 import unittest
 from unittest.mock import MagicMock, patch
 import torch
-from src.dataset.configs import WorldDatasetConfig, LeRobotDatasetConfig, KineticsDatasetConfig, ImageNetDatasetConfig
+from src.dataset.configs import WorldDatasetConfig, LeRobotDatasetConfig, KineticsDatasetConfig, OpenImagesDatasetConfig
 from src.dataset.world_dataset import WorldDataset
-from src.dataset.wrappers import LeRobotDatasetWrapper, KineticsDatasetWrapper, ImageNetDatasetWrapper
+from src.dataset.wrappers import LeRobotDatasetWrapper, KineticsDatasetWrapper, OpenImagesDatasetWrapper
 from src.dataset.batch import WorldBatch
 
 class TestWorldDataset(unittest.TestCase):
@@ -14,15 +14,15 @@ class TestWorldDataset(unittest.TestCase):
             sequence_length_distribution={10: 1.0}
         )
         self.kinetics_cfg = KineticsDatasetConfig(root="mock/kinetics")
-        self.imagenet_cfg = ImageNetDatasetConfig(root="mock/imagenet")
+        self.openimages_cfg = OpenImagesDatasetConfig(root="mock/openimages", split="train")
         
-        self.weights = {"droid": 0.5, "kinetics": 0.3, "imagenet": 0.2}
+        self.weights = {"droid": 0.5, "kinetics": 0.3, "openimages": 0.2}
         
         self.dataset_cfg = WorldDatasetConfig(
             datasets={
                 "droid": self.droid_cfg,
                 "kinetics": self.kinetics_cfg,
-                "imagenet": self.imagenet_cfg
+                "openimages": self.openimages_cfg
             },
             weights=self.weights
         )
@@ -31,13 +31,12 @@ class TestWorldDataset(unittest.TestCase):
     @patch("src.dataset.world_dataset._ensure_delta_timestamps")
     @patch("src.dataset.world_dataset.LeRobotDataset")
     @patch("src.dataset.world_dataset.Kinetics")
-    @patch("src.dataset.world_dataset.ImageFolder")
     @patch("src.dataset.world_dataset.LeRobotDatasetWrapper")
     @patch("src.dataset.world_dataset.KineticsDatasetWrapper")
-    @patch("src.dataset.world_dataset.ImageNetDatasetWrapper")
+    @patch("src.dataset.world_dataset.OpenImagesDatasetWrapper")
     def test_dataset_creation_and_sampling(self, 
-                                           mock_imagenet_wrapper, mock_kinetics_wrapper, mock_lerobot_wrapper,
-                                           mock_image_folder, mock_kinetics, mock_lerobot_dataset,
+                                           mock_openimages_wrapper, mock_kinetics_wrapper, mock_lerobot_wrapper,
+                                           mock_kinetics, mock_lerobot_dataset,
                                            mock_ensure_timestamps, mock_metadata):
         # Mock datasets
         droid_ds = MagicMock()
@@ -64,9 +63,9 @@ class TestWorldDataset(unittest.TestCase):
         )
         mock_kinetics_wrapper.return_value = kinetics_ds
         
-        imagenet_ds = MagicMock()
-        imagenet_ds.__len__.return_value = 200
-        imagenet_ds.__getitem__.return_value = WorldBatch(
+        openimages_ds = MagicMock()
+        openimages_ds.__len__.return_value = 200
+        openimages_ds.__getitem__.return_value = WorldBatch(
             sequence_frames=torch.randn(16, 3, 64, 64),
             sequence_actions=torch.zeros(16, 1),
             independent_frames_mask=torch.tensor(True),
@@ -74,7 +73,7 @@ class TestWorldDataset(unittest.TestCase):
             frames_valid_mask=torch.ones(16, dtype=torch.bool),
             dataset_indices=torch.tensor(-1)
         )
-        mock_imagenet_wrapper.return_value = imagenet_ds
+        mock_openimages_wrapper.return_value = openimages_ds
 
         # Instantiate WorldDataset with config
         wm_dataset = WorldDataset(self.dataset_cfg)
@@ -83,12 +82,12 @@ class TestWorldDataset(unittest.TestCase):
         # Max required: 
         # droid: 100 / 0.5 = 200
         # kinetics: 50 / 0.3 = 166.6
-        # imagenet: 200 / 0.2 = 1000
+        # openimages: 200 / 0.2 = 1000
         # So total length should be around 1000
         self.assertAlmostEqual(len(wm_dataset), 1000, delta=5)
         
         # Check sampling distribution
-        counts = {"droid": 0, "kinetics": 0, "imagenet": 0}
+        counts = {"droid": 0, "kinetics": 0, "openimages": 0}
         for i in range(len(wm_dataset)):
             batch = wm_dataset[i]
             idx = batch.dataset_indices.item()
@@ -99,7 +98,7 @@ class TestWorldDataset(unittest.TestCase):
         print(f"Counts: {counts}")
         self.assertAlmostEqual(counts["droid"] / total, 0.5, delta=0.05)
         self.assertAlmostEqual(counts["kinetics"] / total, 0.3, delta=0.05)
-        self.assertAlmostEqual(counts["imagenet"] / total, 0.2, delta=0.05)
+        self.assertAlmostEqual(counts["openimages"] / total, 0.2, delta=0.05)
 
 if __name__ == "__main__":
     unittest.main()

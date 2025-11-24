@@ -41,7 +41,7 @@ train_dataset:
   weights:
     droid: 0.3
     kinetics: 0.4
-    imagenet: 0.3
+    openimages: 0.3
   datasets:
     droid:
       repo_id: aractingi/droid_1.0.1
@@ -68,8 +68,9 @@ train_dataset:
       root: /gpfs/helios/home/gauthierbernarda/data/kinetics # Verify this path
       frames_per_clip: 16
       step_between_clips: 1
-    imagenet:
-      root: /gpfs/helios/home/gauthierbernarda/data/imagenet
+    openimages:
+      root: /gpfs/helios/home/gauthierbernarda/data/open_images_v7
+      split: train
 
 train_dataloader:
   batch_size: 256 # global batch size

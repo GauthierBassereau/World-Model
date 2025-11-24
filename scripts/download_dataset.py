@@ -11,34 +11,6 @@
 # }
 # dataset = LeRobotDataset(repo_id, episodes=episodes, delta_timestamps=delta_timestamps)
 # print(f"Dataset length: {len(dataset)}")
-# dataloader = torch.utils.data.DataLoader(
-#     dataset,
-#     batch_size=1,
-#     shuffle=False,
-# )
-# print(f"length of dataloader: {len(dataloader)}")
-# for i, data in enumerate(dataloader):
-#     print(f"Batch {i}:")
-#     print(data.keys())
-#     print(data["observation.images.wrist_left_is_pad"])
-    
-# =================
-# Split LeRobot Dataset
-# =================
-
-# from pathlib import Path
-# from lerobot.datasets.lerobot_dataset import LeRobotDataset
-# from lerobot.datasets.dataset_tools import split_dataset
-
-# base = LeRobotDataset("aractingi/droid_1.0.1")
-# splits = {"train": 0.95, "val": 0.05}
-# split_ds = split_dataset(base, splits, output_dir=Path("/gpfs/helios/home/gauthierbernarda/data/droid"))
-
-# train_root = Path("/gpfs/helios/home/gauthierbernarda/data/droid_splits/train")
-# val_root = Path("/gpfs/helios/home/gauthierbernarda/data/droid_splits/val")
-
-# train_ds = LeRobotDataset("droid-train", root=train_root)
-# val_ds   = LeRobotDataset("droid-val", root=val_root)
 
 # =================
 # Download Kinetics Dataset with Torchvision
@@ -63,25 +35,33 @@
 # Download ImageNet Dataset with Kaggle
 # =================
 
-import os
-from kaggle.api.kaggle_api_extended import KaggleApi
+import fiftyone.zoo as foz
 
-DOWNLOAD_PATH = "/gpfs/helios/home/gauthierbernarda/data/imagenet" 
-
-if not os.path.exists(DOWNLOAD_PATH):
-    os.makedirs(DOWNLOAD_PATH)
-    print(f"Created directory: {DOWNLOAD_PATH}")
-
-print(f"🚀 Starting download to: {DOWNLOAD_PATH}")
-
-api = KaggleApi()
-api.authenticate()
-
-api.competition_download_files(
-    competition='imagenet-object-localization-challenge',
-    path=DOWNLOAD_PATH,
-    quiet=False
+# Defines the download. 
+# Full training set is ~513 GB. 
+dataset = foz.load_zoo_dataset(
+    "open-images-v7",
+    split="train",
+    label_types=[],
+    dataset_dir="/gpfs/helios/home/gauthierbernarda/data/open_images_v7",
 )
 
-print("✅ Download complete!")
-print(f"File is located at: {DOWNLOAD_PATH}/imagenet-object-localization-challenge.zip")
+print("Download complete. Location: /gpfs/helios/home/gauthierbernarda/data/open_images_v7")
+
+# =================
+# Split LeRobot Dataset, don't why it needs huge RAM for days, don't have the budget for it...
+# =================
+
+# from pathlib import Path
+# from lerobot.datasets.lerobot_dataset import LeRobotDataset
+# from lerobot.datasets.dataset_tools import split_dataset
+
+# base = LeRobotDataset("aractingi/droid_1.0.1")
+# splits = {"train": 0.95, "val": 0.05}
+# split_ds = split_dataset(base, splits, output_dir=Path("/gpfs/helios/home/gauthierbernarda/data/droid"))
+
+# train_root = Path("/gpfs/helios/home/gauthierbernarda/data/droid_splits/train")
+# val_root = Path("/gpfs/helios/home/gauthierbernarda/data/droid_splits/val")
+
+# train_ds = LeRobotDataset("droid-train", root=train_root)
+# val_ds   = LeRobotDataset("droid-val", root=val_root)

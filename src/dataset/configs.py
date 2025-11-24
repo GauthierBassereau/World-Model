@@ -3,7 +3,7 @@ from typing import Dict, Union
 
 from .droid_dataset import DroidDatasetConfig
 from .kinetics_dataset import KineticsDatasetConfig
-from .imagenet_dataset import ImageNetDatasetConfig
+from .openimages_dataset import OpenImagesDatasetConfig
 
 
 @dataclass
@@ -16,7 +16,7 @@ class DataloaderConfig:
 
 @dataclass
 class WorldDatasetConfig:
-    datasets: Dict[str, Union[DroidDatasetConfig, KineticsDatasetConfig, ImageNetDatasetConfig]]
+    datasets: Dict[str, Union[DroidDatasetConfig, KineticsDatasetConfig, OpenImagesDatasetConfig]]
     weights: Dict[str, float]
     action_dim: int = 8
 

@@ -223,11 +223,8 @@ class TransformerBlock(nn.Module):
         self.mlp = SwiGLUMlp(dim, hidden_dim)
 
     def _build_update_mask(self, x: torch.Tensor) -> torch.Tensor:
-        # [B, T, Tokens, D]
         tokens = x.shape[2]
         mask = torch.ones(tokens, dtype=x.dtype, device=x.device)
-        
-        # Only freeze the specific token
         mask[self.frozen_token_index] = 0.0
         
         return mask.view(1, 1, tokens, 1)
@@ -243,7 +240,7 @@ class TransformerBlock(nn.Module):
         spatial_cos, spatial_sin = spatial_rope
         update_mask = self._build_update_mask(x)
         bsz, time_steps, tokens, dim = x.shape
-        # 1. Spatial Attention (Full Context)
+        
         spatial_input = self.spatial_norm(x).reshape(bsz * time_steps, tokens, dim)
         spatial_bias = _build_attention_bias(
             spatial_mask,
@@ -258,18 +255,14 @@ class TransformerBlock(nn.Module):
         )
         spatial_out = spatial_out.view(bsz, time_steps, tokens, dim) * update_mask
         x = x + spatial_out
-
-        # 2. Temporal Attention (Optimization: Skip Frozen Token)
-        # Only run temporal attention on tokens that are actually allowed to update
         
-        # Creating a boolean mask of tokens to process (all except frozen_token_index)
+
         active_indices = torch.cat([
             torch.arange(0, self.frozen_token_index, device=x.device),
             torch.arange(self.frozen_token_index + 1, tokens, device=x.device)
         ])
 
         if self.use_temporal:
-            # Extract only active tokens for temporal processing
             x_active = x.index_select(2, active_indices) # [B, T, Active_Tokens, D]
             active_tokens_count = x_active.shape[2]
             
@@ -278,7 +271,6 @@ class TransformerBlock(nn.Module):
             
             temporal_bias = None
             if temporal_mask is not None:
-                # temporal_mask is [B, 1, T, T]
                 expanded_mask = temporal_mask.view(bsz, 1, time_steps, time_steps)
                 expanded_mask = expanded_mask.expand(bsz, active_tokens_count, time_steps, time_steps)
                 expanded_mask = expanded_mask.reshape(bsz * active_tokens_count, time_steps, time_steps)
@@ -297,7 +289,6 @@ class TransformerBlock(nn.Module):
             
             temporal_out = temporal_out.view(bsz, active_tokens_count, time_steps, dim).permute(0, 2, 1, 3)
             
-            # Scatter back to full size variable (initialized as zero so frozen stays zero)
             full_temporal_out = torch.zeros_like(x, dtype=temporal_out.dtype)
             full_temporal_out.index_copy_(2, active_indices, temporal_out)
             

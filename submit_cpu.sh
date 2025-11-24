@@ -35,9 +35,6 @@ sbatch \
     echo
     wm
 
-    cd /gpfs/helios/home/gauthierbernarda/data/imagenet
-    wget "https://image-net.org/data/ILSVRC/2012/ILSVRC2012_img_train.tar?username=gauthier.bernard.anselme.bassereau@ut.ee&accesskey=ea86353bdbf9399faa8b1ea103f56eace45ca33a"
-
     cd \"$REPO\"
     python -m \"$mod\"$args
   '"

@@ -4,14 +4,14 @@ import math
 import logging
 import torch
 from torch.utils.data import Dataset
-from torchvision.datasets import Kinetics, ImageFolder
+from torchvision.datasets import Kinetics
 from lerobot.datasets.lerobot_dataset import LeRobotDataset as RawLeRobotDataset, LeRobotDatasetMetadata
 
 from .batch import WorldBatch
 from .configs import WorldDatasetConfig
 from .droid_dataset import DroidDataset, DroidDatasetConfig, _ensure_delta_timestamps
 from .kinetics_dataset import KineticsDataset, KineticsDatasetConfig
-from .imagenet_dataset import ImageNetDataset, ImageNetDatasetConfig
+from .openimages_dataset import OpenImagesDataset, OpenImagesDatasetConfig
 from .utils import IMAGE_RESIZE_CROP_TRANSFORM_224
 
 logger = logging.getLogger(__name__)
@@ -56,10 +56,8 @@ class WorldDataset(Dataset):
                     action_dim=self.action_dim,
                 )
                 
-            elif isinstance(ds_cfg, ImageNetDatasetConfig):
-                dataset = ImageFolder(root=ds_cfg.root)
-                self.datasets[name] = ImageNetDataset(
-                    dataset, 
+            elif isinstance(ds_cfg, OpenImagesDatasetConfig):
+                self.datasets[name] = OpenImagesDataset(
                     ds_cfg, 
                     action_dim=self.action_dim,
                 )
