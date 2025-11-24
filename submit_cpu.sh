@@ -20,7 +20,7 @@ done
 sbatch \
   --job-name="$name" \
   --output="logs/%x.out" \
-  --nodes=1 --ntasks-per-node=1 --cpus-per-task=8 \
+  --nodes=1 --ntasks-per-node=1 --cpus-per-task=16 \
   --mem=16G --time=8-00:00:00 \
   --export=ALL \
   --wrap "bash -lc '
@@ -34,9 +34,6 @@ sbatch \
     echo '============================='
     echo
     wm
-
-    cd /gpfs/helios/home/gauthierbernarda/data/imagenet
-    wget --continue "https://image-net.org/data/ILSVRC/2012/ILSVRC2012_img_train.tar?username=gauthier.bernard.anselme.bassereau@ut.ee&accesskey=ea86353bdbf9399faa8b1ea103f56eace45ca33a"
 
     cd \"$REPO\"
     python -m \"$mod\"$args

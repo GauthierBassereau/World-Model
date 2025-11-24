@@ -97,44 +97,28 @@ def main():
             print(f"No data found for {metric_name}.")
             continue
 
-        # Plotting
-        fig, ax = plt.subplots(figsize=(12, 8))
-        
+        # Plotting - Separate plot for each scenario
         sorted_steps = sorted(list(all_steps))
         sorted_scenarios = sorted(list(scenarios))
         
         # Color map for steps (Hue)
-        # Use a colormap that has distinct colors across the range
         step_cmap = plt.get_cmap('turbo') 
         step_norm = plt.Normalize(vmin=min(sorted_steps), vmax=max(sorted_steps))
 
         from matplotlib.lines import Line2D
-        legend_elements = []
-        
-        # Add scenario legend entries (using a neutral gray to show lightness difference)
-        for i, scenario in enumerate(sorted_scenarios):
-            # Calculate lightness factor
-            # We want to vary lightness for scenarios. 
-            # If 2 scenarios: 1.0 (normal), 0.6 (darker) or 1.3 (lighter).
-            # Let's say we map scenario index to lightness multiplier [0.7, 1.3]
-            if len(sorted_scenarios) > 1:
-                # Map i from 0..N-1 to 1.3..0.7
-                lightness = 1.3 - 0.6 * (i / (len(sorted_scenarios) - 1))
-            else:
-                lightness = 1.0
-            
-            # Create a proxy artist for legend
-            # We use a neutral color to demonstrate the lightness, or just black modified
-            base_gray = (0.5, 0.5, 0.5)
-            c = adjust_lightness(base_gray, lightness)
-            legend_elements.append(Line2D([0], [0], color=c, lw=2, label=f"Scenario: {scenario}"))
 
-        # Plot curves
-        for step in sorted_steps:
-            base_color = step_cmap(step_norm(step))
+        for scenario in sorted_scenarios:
+            print(f"Plotting scenario: {scenario}")
+            fig, ax = plt.subplots(figsize=(12, 8))
             
-            for i, scenario in enumerate(sorted_scenarios):
-                curves = all_curves[scenario]
+            curves = all_curves[scenario]
+            if not curves:
+                print(f"No data for scenario {scenario} in metric {metric_name}")
+                plt.close(fig)
+                continue
+
+            # Plot curves for this scenario
+            for step in sorted_steps:
                 if step not in curves:
                     continue
                 
@@ -145,37 +129,29 @@ def main():
                 horizons = sorted(data.keys())
                 values = [data[h] for h in horizons]
                 
-                # Apply lightness adjustment
-                if len(sorted_scenarios) > 1:
-                    lightness = 1.3 - 0.6 * (i / (len(sorted_scenarios) - 1))
-                else:
-                    lightness = 1.0
-                
-                final_color = adjust_lightness(base_color, lightness)
-                
-                ax.plot(horizons, values, color=final_color, alpha=0.8)
+                base_color = step_cmap(step_norm(step))
+                ax.plot(horizons, values, color=base_color, alpha=0.8)
 
-        ax.set_xlabel("Rollout Horizon (t+k)")
-        ax.set_ylabel(metric_name)
-        ax.set_title(f"{metric_name} Evolution - All Scenarios")
-        ax.grid(True, alpha=0.3)
-        
-        # Add colorbar for steps
-        sm = plt.cm.ScalarMappable(cmap=step_cmap, norm=step_norm)
-        sm.set_array([])
-        cbar = fig.colorbar(sm, ax=ax)
-        cbar.set_label("Training Step")
-        
-        # Add legend for scenarios
-        ax.legend(handles=legend_elements, loc='upper left')
-        
-        filename_suffix = "loss" if metric_name == "L1 Loss" else "variance"
-        output_path = os.path.join(args.output_dir, f"{run.id}_combined_{filename_suffix}.png")
-        fig.savefig(output_path)
-        plt.close(fig)
-        print(f"Saved plot to {output_path}")
-        
-        images_to_log[f"combined_{filename_suffix}"] = output_path
+            ax.set_xlabel("Rollout Horizon (t+k)")
+            ax.set_ylabel(metric_name)
+            ax.set_title(f"{metric_name} Evolution - {scenario}")
+            ax.grid(True, alpha=0.3)
+            
+            # Add colorbar for steps
+            sm = plt.cm.ScalarMappable(cmap=step_cmap, norm=step_norm)
+            sm.set_array([])
+            cbar = fig.colorbar(sm, ax=ax)
+            cbar.set_label("Training Step")
+            
+            filename_suffix = "loss" if metric_name == "L1 Loss" else "variance"
+            # Sanitize scenario name for filename
+            safe_scenario = scenario.replace("/", "_").replace(" ", "_")
+            output_path = os.path.join(args.output_dir, f"{run.id}_{safe_scenario}_{filename_suffix}.png")
+            fig.savefig(output_path)
+            plt.close(fig)
+            print(f"Saved plot to {output_path}")
+            
+            images_to_log[f"{scenario}_{filename_suffix}"] = output_path
 
     if images_to_log:
         try:
@@ -184,8 +160,12 @@ def main():
             # Note: resume="allow" allows us to log to an existing run
             with wandb.init(id=run.id, project=run.project, entity=run.entity, resume="allow") as wrun:
                 log_payload = {}
-                for scenario, image_path in images_to_log.items():
-                    log_payload[f"evaluation/loss_evolution/{scenario}"] = wandb.Image(image_path)
+                for key, image_path in images_to_log.items():
+                    # key is like "{scenario}_{suffix}"
+                    # We want to log it under evaluation/loss_evolution/{scenario}_{suffix}
+                    # But wait, the user might want them grouped by scenario or by metric?
+                    # Let's use evaluation/loss_evolution/{key} which includes scenario and metric type
+                    log_payload[f"evaluation/loss_evolution/{key}"] = wandb.Image(image_path)
                 wrun.log(log_payload)
             print("Logging complete.")
         except Exception as e:

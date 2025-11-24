@@ -12,8 +12,8 @@ trainer:
   seed: 3
   precision: bf16
   evaluation_interval: 500
-  resume: false # takes the checkpoint step and optimizer state
-  load_checkpoint: null
+  resume: true # takes the checkpoint step and optimizer state
+  load_checkpoint: /gpfs/helios/home/gauthierbernarda/git/World-Model/checkpoints/bumbling-breeze-178/world_model_step_004000.pt
 
 
 evaluator:
@@ -27,7 +27,6 @@ optimizer:
   lr:
     "0": 1.0e-6
     "500": 1.0e-4
-  weight_decay: 0.0
   eps: 1.0e-08
   grad_clip_norm: 1.0
 
