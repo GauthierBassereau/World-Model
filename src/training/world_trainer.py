@@ -16,8 +16,8 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
 
 from src.rae_dino.rae import RAE
-from src.dataset.collator import WorldModelBatch
-from src.dataset.loader import build_world_model_dataloader
+from src.dataset.batch import WorldBatch
+from src.dataset.loader import build_world_dataloader
 from src.training.world_evaluator import WorldModelEvaluator
 from src.world_model.diffusion import (
     NoiseScheduler,
@@ -90,7 +90,7 @@ class WorldModelTrainer:
 
         self.logger.log_config(asdict(config))
 
-        self.dataloader = build_world_model_dataloader(
+        self.dataloader = build_world_dataloader(
             dataset_cfg=config.train_data.train_dataset,
             dataloader_cfg=config.train_data.train_dataloader,
             grad_accum_steps=config.trainer.grad_accum_steps,
@@ -339,7 +339,7 @@ class WorldModelTrainer:
 
     def _train_micro_step(
         self,
-        batch: WorldModelBatch,
+        batch: WorldBatch,
     ) -> Dict[str, float]:
         frames_cpu = batch.sequence_frames
 
@@ -402,13 +402,14 @@ class WorldModelTrainer:
 
     @torch.no_grad()
     def _encode_frames(self, frames: torch.Tensor) -> torch.Tensor:
-        batch, steps, channels, height, width = frames.shape
+        batch, steps, channels, height, width = frames.shapeÏ
         flat = frames.view(batch * steps, channels, height, width)
         latents = self.autoencoder.encode(flat).detach().clone() # Detach and clone needed because compile mess with autograd graph
         tokens, dim = latents.shape[1], latents.shape[2]
         return latents.view(batch, steps, tokens, dim)
 
-    def _next_batch(self) -> WorldModelBatch:
+    def _next_batch(self) -> WorldBatch:
+
         if self._dataloader_iter is None:
             self._dataloader_iter = self._create_data_iter()
         try:

@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from typing import Optional, Tuple, Union, Dict
 
-from src.dataset.configs import DataloaderConfig, LeRobotDatasetConfig, WorldModelDatasetConfig
+from src.dataset.configs import DataloaderConfig, DroidDatasetConfig, WorldDatasetConfig
 from src.training.world_evaluator import EvaluationConfig
 from src.world_model.diffusion import DiffusionConfig, EulerSolverConfig
 from src.world_model.backbone import WorldModelConfig
@@ -53,14 +53,14 @@ class EMAConfig:
 
 @dataclass
 class TrainDataConfig:
-    train_dataset: WorldModelDatasetConfig = field(default_factory=lambda: WorldModelDatasetConfig(datasets={}, weights={}))
+    train_dataset: WorldDatasetConfig = field(default_factory=lambda: WorldDatasetConfig(datasets={}, weights={}))
     train_dataloader: DataloaderConfig = field(default_factory=DataloaderConfig)
 
 
 @dataclass
 class EvalDataConfig:
-    eval_dataset: LeRobotDatasetConfig = field(
-        default_factory=lambda: LeRobotDatasetConfig(episode_midpoint_only=True)
+    eval_dataset: DroidDatasetConfig = field(
+        default_factory=lambda: DroidDatasetConfig(episode_midpoint_only=True)
     )
     eval_dataloader: DataloaderConfig = field(default_factory=DataloaderConfig)
 

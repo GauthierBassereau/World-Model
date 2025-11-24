@@ -1,17 +1,12 @@
 from typing import List
 import torch
-from .batch import WorldModelBatch
-
-# Re-export WorldModelBatch for compatibility if needed, 
-# though consumers should ideally import from .batch
-__all__ = ["StackCollator", "WorldModelBatch"]
+from .batch import WorldBatch
 
 class StackCollator:
     def __init__(self, shuffle: bool = True):
         self.shuffle = shuffle
 
-    def __call__(self, batch: List[WorldModelBatch]) -> WorldModelBatch:
-        # Stack all fields
+    def __call__(self, batch: List[WorldBatch]) -> WorldBatch:
         sequence_frames = torch.stack([b.sequence_frames for b in batch])
         sequence_actions = torch.stack([b.sequence_actions for b in batch])
         independent_frames_mask = torch.stack([b.independent_frames_mask for b in batch])
@@ -30,7 +25,7 @@ class StackCollator:
             frames_valid_mask = frames_valid_mask[perm]
             dataset_indices = dataset_indices[perm]
 
-        return WorldModelBatch(
+        return WorldBatch(
             sequence_frames=sequence_frames,
             sequence_actions=sequence_actions,
             independent_frames_mask=independent_frames_mask,

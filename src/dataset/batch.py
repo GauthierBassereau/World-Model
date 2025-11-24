@@ -2,7 +2,7 @@ from dataclasses import dataclass
 import torch
 
 @dataclass
-class WorldModelBatch:
+class WorldBatch:
     sequence_frames: torch.Tensor
     sequence_actions: torch.Tensor
     independent_frames_mask: torch.Tensor

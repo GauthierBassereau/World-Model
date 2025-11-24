@@ -6,8 +6,8 @@ import torch
 import torch.distributed as dist
 import torch.nn as nn
 
-from src.dataset.configs import DataloaderConfig, DatasetConfig
-from src.dataset.collator import WorldModelBatch
+from src.dataset.configs import DataloaderConfig, DroidDatasetConfig
+from src.dataset.collator import WorldBatch
 from src.dataset.loader import build_world_model_dataloader
 from src.world_model.diffusion import (
     DiffusionConfig,
@@ -106,7 +106,7 @@ class WorldModelEvaluator:
     def __init__(
         self,
         config: EvaluationConfig,
-        dataset_cfg: DatasetConfig,
+        dataset_cfg: DroidDatasetConfig,
         dataloader_cfg: DataloaderConfig,
         diffusion_cfg: DiffusionConfig,
         autoencoder: nn.Module,
@@ -234,7 +234,7 @@ class WorldModelEvaluator:
     def _evaluate_batch(
         self,
         model: nn.Module,
-        batch: WorldModelBatch,
+        batch: WorldBatch,
         dataset_indices: Optional[List[int]],
         dataset_episode_ids: Optional[List[int]],
     ) -> Tuple[

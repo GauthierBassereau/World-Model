@@ -37,6 +37,7 @@ ema:
   start_step: 5000
 
 train_dataset:
+  action_dim: 8
   weights:
     droid: 0.3
     kinetics: 0.4
