@@ -13,19 +13,18 @@ from src.world_model.components import (
 
 @dataclass
 class WorldModelConfig:
-    latent_dim: int = 1024
+    latent_dim: int = 2048
     input_dim: int = 768
     action_dim: int = 8
     num_registers: int = 4
-    depth: int = 24
-    num_heads: int = 16
+    depth: int = 32
+    num_heads: int = 32
     mlp_multiplier: float = 4.0
     temporal_attention_interval: int = 4
     temporal_context_length: int = 9
     rope_base: float = 10000.0
     qk_norm_eps: float = 1e-6
     attn_logit_softcapping: Optional[float] = 50.0
-
 
 class WorldModelBackbone(nn.Module):
     def __init__(self, config: WorldModelConfig) -> None:
@@ -204,10 +203,3 @@ class WorldModelBackbone(nn.Module):
         pred_clean_latents = self.output_proj(latents)
 
         return {"pred_clean_latents": pred_clean_latents}
-
-
-if __name__ == "__main__":
-    config = WorldModelConfig()
-    model = WorldModelBackbone(config)
-    total_parameters = sum(param.numel() for param in model.parameters() if param.requires_grad)
-    print(f"Trainable parameters with default config: {total_parameters:,}")

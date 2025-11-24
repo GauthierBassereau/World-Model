@@ -1,25 +1,22 @@
-from typing import Optional
+from typing import Optional, Dict, Any
 import torch
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import DataLoader, Dataset
 from torch.utils.data.distributed import DistributedSampler
-from lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata
+from .configs import (
+    WorldDatasetConfig, 
+    DataloaderConfig, 
+)
+from .world_dataset import WorldDataset
+from .collator import StackCollator
 
-from .configs import DatasetConfig, DataloaderConfig
-from .resilient_dataset import ResilientLeRobotDataset
-from .utils import _compute_episode_midpoints, _ensure_delta_timestamps, _DROID_RESIZE_CROP_TRANSFORM
-from .collator import LeRobotSequenceCollator
-
-def build_world_model_dataloader(
-    dataset_cfg: DatasetConfig,
+def build_world_dataloader(
+    dataset_cfg: WorldDatasetConfig,
     dataloader_cfg: DataloaderConfig,
     grad_accum_steps: int = 1,
     rank: Optional[int] = None,
     world_size: Optional[int] = None,
     seed: Optional[int] = None,
 ) -> DataLoader:
-    metadata = LeRobotDatasetMetadata(dataset_cfg.repo_id)
-    delta_timestamps = _ensure_delta_timestamps(dataset_cfg, metadata)
-
     effective_world_size = world_size or 1
     distributed = effective_world_size > 1
 
@@ -33,34 +30,19 @@ def build_world_model_dataloader(
     )
     dataloader_batch_size = micro_batch_size
 
+    if rank is None or rank == 0:
+        print("[ ] Building datasets...")
+
+    # Create combined dataset
+    world_dataset = WorldDataset(dataset_cfg)
+    
+    if rank is None or rank == 0:
+        print(f"[x] WorldDataset created with {len(world_dataset.datasets)} sub-datasets. Total virtual length: {len(world_dataset)}")
+
     sampler: Optional[DistributedSampler] = None
-
-    if rank is None or rank == 0:
-        print("[ ] Building dataset and dataloader...")
-    dataset = ResilientLeRobotDataset(
-        dataset_cfg.repo_id,
-        episodes=dataset_cfg.episodes,
-        delta_timestamps=delta_timestamps,
-        tolerance_s=0.01,
-        max_decode_failures=dataset_cfg.decoder_retry_attempts,
-        image_transforms=_DROID_RESIZE_CROP_TRANSFORM,
-    )
-    if rank is None or rank == 0:
-        print(f"[x] Dataset created with {len(dataset_cfg.episodes) if dataset_cfg.episodes else 'all'} episodes, with length {len(dataset)}.")
-
-    if dataset_cfg.episode_midpoint_only:
-        midpoint_indices, episode_ids_used = _compute_episode_midpoints(dataset, dataset_cfg.episodes)
-        dataset = Subset(dataset, midpoint_indices)
-        # Carry episode ids alongside subset order for downstream consumers (e.g., video logging)
-        setattr(dataset, "episode_ids", episode_ids_used)
-        if rank is None or rank == 0:
-            print(
-                f"[x] Using midpoint-only sampling; {len(midpoint_indices)} episodes mapped to {len(dataset)} samples."
-            )
-
     if distributed:
         sampler = DistributedSampler(
-            dataset,
+            world_dataset,
             num_replicas=world_size,
             rank=rank or 0,
             shuffle=dataloader_cfg.shuffle,
@@ -68,10 +50,10 @@ def build_world_model_dataloader(
             seed=seed or 0,
         )
 
-    collate = LeRobotSequenceCollator(dataset_cfg)
+    collate = StackCollator(shuffle=True)
 
     dataloader = DataLoader(
-        dataset,
+        world_dataset,
         batch_size=dataloader_batch_size,
         shuffle=dataloader_cfg.shuffle if sampler is None else False,
         sampler=sampler,
@@ -79,6 +61,8 @@ def build_world_model_dataloader(
         pin_memory=dataloader_cfg.pin_memory,
         collate_fn=collate,
     )
+    
     if rank is None or rank == 0:
-        print(f"[x] Dataloader built with {len(dataset_cfg.episodes) if dataset_cfg.episodes else 'all'} episodes, with length {len(dataloader)}.")
+        print(f"[x] Dataloader built. Batch size: {dataloader_batch_size} (local), {dataloader_cfg.batch_size} (global).")
+        
     return dataloader

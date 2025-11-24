@@ -10,6 +10,7 @@ import contextlib
 # ================= CONFIGURATION =================
 INPUT_CSV = '/gpfs/helios/home/gauthierbernarda/data/kinetics/annotations/train.csv'
 OUTPUT_CSV = '/gpfs/helios/home/gauthierbernarda/data/kinetics/annotations/train_no_cut_5s_t30.csv'
+OUTPUT_CSV = '/gpfs/helios/home/gauthierbernarda/data/kinetics/annotations/train_no_cut_5s_t30.csv'
 VIDEO_ROOT = '/gpfs/helios/home/gauthierbernarda/data/kinetics/train' 
 
 CONTENT_THRESHOLD = 30.0
