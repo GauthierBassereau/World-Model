@@ -6,9 +6,9 @@ import torch
 import torch.distributed as dist
 import torch.nn as nn
 
-from src.dataset.configs import DataloaderConfig, DroidDatasetConfig
+from src.dataset.world_dataset import WorldDatasetConfig
 from src.dataset.collator import WorldBatch
-from src.dataset.loader import build_world_model_dataloader
+from src.dataset.loader import build_world_dataloader, DataloaderConfig
 from src.world_model.diffusion import (
     DiffusionConfig,
     EulerSolver,
@@ -106,7 +106,7 @@ class WorldModelEvaluator:
     def __init__(
         self,
         config: EvaluationConfig,
-        dataset_cfg: DroidDatasetConfig,
+        dataset_cfg: WorldDatasetConfig,
         dataloader_cfg: DataloaderConfig,
         diffusion_cfg: DiffusionConfig,
         autoencoder: nn.Module,
@@ -146,7 +146,7 @@ class WorldModelEvaluator:
         self.context_limit = max(1, base_context)
         self.max_future_steps = max(1, self.max_sequence_length - self.context_limit)
         try:
-            self.dataloader = build_world_model_dataloader(
+            self.dataloader = build_world_dataloader(
                 dataset_cfg=dataset_cfg,
                 dataloader_cfg=dataloader_cfg,
                 grad_accum_steps=1,

@@ -1,36 +1,19 @@
 import random
+import bisect
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Sequence, Tuple, Union, Any
+from typing import Dict, List, Optional, Sequence, Tuple, Any
 
 import torch
 from torch.utils.data import Dataset
 
-from .batch import WorldBatch
-from .resilient_dataset import ResilientLeRobotDataset
-from lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata
+from .common import WorldBatch
+from lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata, LeRobotDataset
+from .common import RESIZE_CROP_TRANSFORM_224
 
-def _coerce_frame_delta(value: Union[float, str]) -> float:
-    if isinstance(value, (int, float)):
-        result = float(value)
-    elif isinstance(value, str):
-        text = value.strip()
-        if "/" in text:
-            numerator, denominator = text.split("/", 1)
-            result = float(numerator) / float(denominator)
-        else:
-            result = float(text)
-    else:
-        raise TypeError(
-            f"frame_delta_seconds must be a float or string, received {type(value).__name__}."
-        )
-    if result <= 0:
-        raise ValueError("frame_delta_seconds must be strictly positive.")
-    return result
 
 @dataclass
 class DroidDatasetConfig:
     repo_id: str = "aractingi/droid_1.0.1"
-    decoder_retry_attempts: int = 5
     cameras: Tuple[str, ...] = (
         "observation.images.exterior_1_left",
         "observation.images.exterior_2_left",
@@ -40,29 +23,25 @@ class DroidDatasetConfig:
     action_keys: Tuple[str, ...] = (
         "observation.state",
     )
-    action_representation: str = "delta"
-    action_normalization: Optional[str] = None
-    action_normalization_params: Optional[Dict[str, List[float]]] = None
-
+    action_representation: str = "position"
+    action_normalization: Optional[str] = "mean_std"
+    action_normalization_params: Optional[Dict[str, List[float]]] = field(default_factory=lambda: {
+        "mean": [0.01428347627459065, 0.23987777195473095, -0.014661363646208965, -2.027954954645529, -0.035476306435143545, 2.3233678805030076, 0.08326671319745274, 0.36085284714413735],
+        "std": [0.3244343844169754, 0.5158281965633522, 0.2901322476548548, 0.5021871776809874, 0.5331921797732538, 0.46856794632856424, 0.7446577730524244, 0.40315882970033534],
+    })
     episodes: Optional[List[int]] = None
+    excluded_episodes: Optional[List[int]] = None
     episode_midpoint_only: bool = False
-    sequence_length_distribution: Dict[int, float] = field(default_factory=lambda: {4: 1.0})
-    frame_delta_seconds: Union[float, str] = 5.0 / 15.0
+    sequence_length: int = 15
+    fps: float = 3.0
     independent_frames_probability: float = 0.0
     drop_action_probability: float = 0.0
 
     def __post_init__(self) -> None:
-        if self.decoder_retry_attempts < 1:
-            raise ValueError("decoder_retry_attempts must be >= 1.")
-        self.frame_delta_seconds = _coerce_frame_delta(self.frame_delta_seconds)
-        if not self.sequence_length_distribution:
-            raise ValueError(
-                "DroidDatasetConfig.sequence_length_distribution must contain at least one entry."
-            )
-        self.sequence_length_distribution = {
-            int(length): float(weight)
-            for length, weight in self.sequence_length_distribution.items()
-        }
+        if self.fps <= 0:
+            raise ValueError("fps must be positive.")
+        if self.sequence_length < 1:
+            raise ValueError("sequence_length must be >= 1.")
         keys: Sequence[str]
         if isinstance(self.action_keys, str):
             keys = (self.action_keys,)
@@ -120,6 +99,7 @@ class DroidDatasetConfig:
                         "All action_normalization_params sequences must have the same length."
                     )
         self.episodes = self._normalize_episode_indices(self.episodes)
+        self.excluded_episodes = self._normalize_episode_indices(self.excluded_episodes)
 
     @staticmethod
     def _normalize_episode_indices(indices: Optional[Sequence[int]]) -> Optional[List[int]]:
@@ -130,7 +110,7 @@ class DroidDatasetConfig:
 
 
 def _compute_episode_midpoints(
-    dataset: ResilientLeRobotDataset,
+    dataset: Any,
     episodes: Optional[List[int]],
 ) -> Tuple[List[int], List[int]]:
     """
@@ -174,17 +154,16 @@ def _compute_episode_midpoints(
     return midpoint_indices, target_episode_ids
 
 
-def _ensure_delta_timestamps(
+def _create_delta_timestamps(
     dataset_cfg: "DroidDatasetConfig",
-    metadata: LeRobotDatasetMetadata,
+    sequence_length: int = None,
 ) -> Dict[str, Sequence[float]]:
     """Ensure delta timestamps are provided for all cameras and action key."""
-    max_length = max(int(length) for length in dataset_cfg.sequence_length_distribution.keys())
-    step = dataset_cfg.frame_delta_seconds
-    if step <= 0:
-        step = 1.0 / metadata.fps
+    max_length = sequence_length if sequence_length is not None else dataset_cfg.sequence_length
+    # Compute frame_delta_seconds from fps
+    frame_delta_seconds = 1.0 / dataset_cfg.fps
     # Generate offsets symmetric around 0
-    offsets = [step * (i - (max_length - 1) / 2) for i in range(max_length)]
+    offsets = [frame_delta_seconds * (i - (max_length - 1) / 2) for i in range(max_length)]
     delta = {camera: list(offsets) for camera in dataset_cfg.cameras}
 
     for key in dataset_cfg.action_keys:
@@ -193,8 +172,7 @@ def _ensure_delta_timestamps(
 
 
 class DroidDataset(Dataset):
-    def __init__(self, dataset: Any, cfg: DroidDatasetConfig):
-        self.dataset = dataset
+    def __init__(self, cfg: DroidDatasetConfig):
         self.cfg = cfg
         
         if not self.cfg.cameras:
@@ -202,9 +180,54 @@ class DroidDataset(Dataset):
         if not self.cfg.action_keys:
             raise ValueError("DroidDatasetConfig.action_keys must contain at least one key.")
         
-        self.max_sequence_length = max(
-            int(length) for length in self.cfg.sequence_length_distribution.keys()
+        self.sequence_length = cfg.sequence_length
+        delta_timestamps = _create_delta_timestamps(cfg, self.sequence_length)
+        
+        episodes = cfg.episodes
+        if episodes is not None and cfg.excluded_episodes is not None:
+            excluded_set = set(cfg.excluded_episodes)
+            episodes = [e for e in episodes if e not in excluded_set]
+
+        self.dataset = LeRobotDataset(
+            cfg.repo_id,
+            episodes=episodes,
+            delta_timestamps=delta_timestamps,
+            image_transforms=RESIZE_CROP_TRANSFORM_224,
+            tolerance_s=0.001,
         )
+
+        self.custom_index_map = False
+        if cfg.episodes is None and cfg.excluded_episodes is not None:
+            self.custom_index_map = True
+            self.valid_ranges = []
+            self.cumulative_lengths = [0]
+
+            all_episodes = self.dataset.meta.episodes
+            excluded_set = set(cfg.excluded_episodes)
+
+            current_cum_len = 0
+            for ep in all_episodes:
+                ep_idx = ep["episode_index"]
+                if isinstance(ep_idx, list):
+                    ep_idx = ep_idx[0]
+
+                if ep_idx in excluded_set:
+                    continue
+
+                start = ep["dataset_from_index"]
+                end = ep["dataset_to_index"]
+                if isinstance(start, list):
+                    start = start[0]
+                if isinstance(end, list):
+                    end = end[0]
+
+                length = end - start
+                if length > 0:
+                    self.valid_ranges.append((start, end))
+                    current_cum_len += length
+                    self.cumulative_lengths.append(current_cum_len)
+        
+        self.max_sequence_length = self.sequence_length
         
         if self.cfg.camera_probabilities:
             weights = [
@@ -220,19 +243,28 @@ class DroidDataset(Dataset):
         total = sum(weights)
         self.camera_weights = [weight / total for weight in weights]
         self.camera_keys = list(self.cfg.cameras)
-        self.sequence_length_choices, self.sequence_length_probs = (
-            self._build_sequence_length_distribution()
-        )
         self._normalization_dim: Optional[int] = None
         self._normalization_params: Optional[Dict[str, torch.Tensor]] = None
 
     def __len__(self) -> int:
+        if self.custom_index_map:
+            return self.cumulative_lengths[-1]
         return len(self.dataset)
 
     def __getitem__(self, index: int) -> WorldBatch:
-        sample = self.dataset[index]
+        if self.custom_index_map:
+            if index < 0 or index >= self.cumulative_lengths[-1]:
+                raise IndexError(f"Index {index} out of range")
+            k = bisect.bisect_right(self.cumulative_lengths, index) - 1
+            offset = index - self.cumulative_lengths[k]
+            real_start = self.valid_ranges[k][0]
+            real_index = real_start + offset
+            sample = self.dataset[real_index]
+        else:
+            sample = self.dataset[index]
         
-        target_length = self._sample_sequence_length()
+        # Always return max length sequences - collator will crop them
+        target_length = self.max_sequence_length
         camera_key = random.choices(self.camera_keys, weights=self.camera_weights, k=1)[0]
         
         frames = self._prepare_frames(sample, camera_key, target_length)
@@ -334,15 +366,4 @@ class DroidDataset(Dataset):
         self._normalization_dim = feature_dim
         self._normalization_params = {"offset": offset, "scale": scale}
 
-    def _build_sequence_length_distribution(self) -> Tuple[List[int], List[float]]:
-        choices: List[int] = []
-        weights: List[float] = []
-        for length, weight in self.cfg.sequence_length_distribution.items():
-            choices.append(int(length))
-            weights.append(float(weight))
-        total = sum(weights)
-        normalized = [weight / total for weight in weights]
-        return choices, normalized
 
-    def _sample_sequence_length(self) -> int:
-        return random.choices(self.sequence_length_choices, weights=self.sequence_length_probs, k=1)[0]

@@ -1,13 +1,17 @@
 from typing import Optional, Dict, Any
+from dataclasses import dataclass
 import torch
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.data.distributed import DistributedSampler
-from .configs import (
-    WorldDatasetConfig, 
-    DataloaderConfig, 
-)
-from .world_dataset import WorldDataset
+from .world_dataset import WorldDataset, WorldDatasetConfig
 from .collator import StackCollator
+
+@dataclass
+class DataloaderConfig:
+    batch_size: int = 2
+    shuffle: bool = False
+    num_workers: int = 0
+    pin_memory: bool = True
 
 def build_world_dataloader(
     dataset_cfg: WorldDatasetConfig,
@@ -31,13 +35,12 @@ def build_world_dataloader(
     dataloader_batch_size = micro_batch_size
 
     if rank is None or rank == 0:
-        print("[ ] Building datasets...")
+        print("[ ] Building world dataset...")
 
-    # Create combined dataset
     world_dataset = WorldDataset(dataset_cfg)
     
     if rank is None or rank == 0:
-        print(f"[x] WorldDataset created with {len(world_dataset.datasets)} sub-datasets. Total virtual length: {len(world_dataset)}")
+        print(f"[x] World dataset created with {len(world_dataset.datasets)} sub-datasets. Total virtual length: {len(world_dataset)}")
 
     sampler: Optional[DistributedSampler] = None
     if distributed:
@@ -50,7 +53,10 @@ def build_world_dataloader(
             seed=seed or 0,
         )
 
-    collate = StackCollator(shuffle=True)
+    collate = StackCollator(
+        shuffle=True,
+        sequence_length_distribution=dataset_cfg.sequence_length_distribution
+    )
 
     dataloader = DataLoader(
         world_dataset,

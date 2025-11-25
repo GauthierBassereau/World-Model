@@ -1,20 +1,46 @@
 from typing import Dict, List, Tuple, Union, Any, Optional
+from dataclasses import dataclass, field
 import random
 import math
 import logging
 import torch
 from torch.utils.data import Dataset
-from torchvision.datasets import Kinetics
-from lerobot.datasets.lerobot_dataset import LeRobotDataset as RawLeRobotDataset, LeRobotDatasetMetadata
 
-from .batch import WorldBatch
-from .configs import WorldDatasetConfig
-from .droid_dataset import DroidDataset, DroidDatasetConfig, _ensure_delta_timestamps
+from .droid_dataset import DroidDataset, DroidDatasetConfig
 from .kinetics_dataset import KineticsDataset, KineticsDatasetConfig
 from .openimages_dataset import OpenImagesDataset, OpenImagesDatasetConfig
-from .utils import IMAGE_RESIZE_CROP_TRANSFORM_224
+from .common import RESIZE_CROP_TRANSFORM_224
 
 logger = logging.getLogger(__name__)
+
+from .common import WorldBatch
+
+@dataclass
+class WorldDatasetConfig:
+    datasets: Dict[str, Union[DroidDatasetConfig, KineticsDatasetConfig, OpenImagesDatasetConfig]]
+    weights: Dict[str, float]
+    action_dim: int = 8
+    sequence_length_distribution: Dict[int, float] = field(default_factory=lambda: {15: 1.0})
+    fps: float = 3.0
+
+    def __post_init__(self) -> None:
+        if set(self.datasets.keys()) != set(self.weights.keys()):
+            raise ValueError("Keys in datasets and weights must match.")
+        if any(w < 0 for w in self.weights.values()):
+            raise ValueError("Weights must be non-negative.")
+        
+        # Validate and normalize sequence_length_distribution
+        if not self.sequence_length_distribution:
+            raise ValueError("WorldDatasetConfig.sequence_length_distribution must contain at least one entry.")
+        self.sequence_length_distribution = {
+            int(length): float(weight)
+            for length, weight in self.sequence_length_distribution.items()
+        }
+        if any(w < 0 for w in self.sequence_length_distribution.values()):
+            raise ValueError("sequence_length_distribution weights must be non-negative.")
+        
+        if self.fps <= 0:
+            raise ValueError("fps must be positive if specified.")
 
 class WorldDataset(Dataset):
     def __init__(
@@ -26,48 +52,35 @@ class WorldDataset(Dataset):
         self.weights = cfg.weights
         self.tolerance = tolerance
         self.action_dim = cfg.action_dim
+
+        if not self.cfg.datasets:
+            raise ValueError("WorldDatasetConfig.datasets must contain at least one dataset.")
         
         self.datasets: Dict[str, Dataset] = {}
         
-        # Initialize datasets
+        max_sequence_length = max(self.cfg.sequence_length_distribution.keys())
+        
         for name, ds_cfg in self.cfg.datasets.items():
+            if hasattr(ds_cfg, 'sequence_length'):
+                ds_cfg.sequence_length = max_sequence_length
+            if hasattr(ds_cfg, 'fps'):
+                ds_cfg.fps = self.cfg.fps
+            
             if isinstance(ds_cfg, DroidDatasetConfig):
-                metadata = LeRobotDatasetMetadata(ds_cfg.repo_id)
-                delta_timestamps = _ensure_delta_timestamps(ds_cfg, metadata)
-                
-                dataset = RawLeRobotDataset(
-                    ds_cfg.repo_id,
-                    episodes=ds_cfg.episodes,
-                    delta_timestamps=delta_timestamps,
-                    image_transforms=IMAGE_RESIZE_CROP_TRANSFORM_224,
-                )
-                
-                self.datasets[name] = DroidDataset(dataset, ds_cfg)
-                
+                logger.info(f"Loading Droid dataset")
+                self.datasets[name] = DroidDataset(ds_cfg)
             elif isinstance(ds_cfg, KineticsDatasetConfig):
-                dataset = Kinetics(
-                    root=ds_cfg.root,
-                    frames_per_clip=ds_cfg.frames_per_clip,
-                    step_between_clips=ds_cfg.step_between_clips,
-                )
-                self.datasets[name] = KineticsDataset(
-                    dataset, 
-                    ds_cfg, 
-                    action_dim=self.action_dim,
-                )
-                
+                logger.info(f"Loading Kinetics dataset")
+                self.datasets[name] = KineticsDataset(ds_cfg, action_dim=self.action_dim)
             elif isinstance(ds_cfg, OpenImagesDatasetConfig):
-                self.datasets[name] = OpenImagesDataset(
-                    ds_cfg, 
-                    action_dim=self.action_dim,
-                )
+                logger.info(f"Loading OpenImages dataset")
+                self.datasets[name] = OpenImagesDataset(ds_cfg, action_dim=self.action_dim)
 
         self.dataset_names = sorted(list(self.datasets.keys()))
         self.dataset_to_idx = {name: i for i, name in enumerate(self.dataset_names)}
         
         dataset_lengths = {name: len(ds) for name, ds in self.datasets.items()}
         
-        # Normalize weights
         total_weight = sum(self.weights.values())
         self.normalized_weights = {k: v / total_weight for k, v in self.weights.items()}
         
@@ -82,7 +95,7 @@ class WorldDataset(Dataset):
                 req = length / w
                 if req > max_required_total:
                     max_required_total = req
-        
+        logger.info(f"[x] Virtual epoch length: {max_required_total}, defined by dataset {name}")
         self.total_length = int(max_required_total)
         
         # 2. Allocate Samples per Dataset

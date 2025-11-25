@@ -11,8 +11,8 @@ import torch
 
 import pyrallis
 from src.dataset.configs import DataloaderConfig, DatasetConfig
-from src.dataset.loader import build_world_model_dataloader
-from src.training.configs import WorldModelTrainingConfig
+from src.dataset.loader import build_world_dataloader
+from src.training.world_trainer import WorldModelTrainingConfig
 
 
 def parse_args() -> argparse.Namespace:

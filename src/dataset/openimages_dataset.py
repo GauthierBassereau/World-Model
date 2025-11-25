@@ -5,93 +5,81 @@ from typing import List
 import torch
 from torch.utils.data import Dataset
 from PIL import Image
+import numpy as np
 
-from .batch import WorldBatch
-from .utils import IMAGE_RESIZE_CROP_TRANSFORM_224
+from .common import WorldBatch
+from .common import RESIZE_CROP_TRANSFORM_224
 
 @dataclass
 class OpenImagesDatasetConfig:
-    root: str  # Path to the OpenImages v7 dataset directory
-    split: str = "train"  # train, validation, or test
+    root: str
+    sequence_length: int = 15
 
 class OpenImagesDataset(Dataset):
-    """
-    Dataset wrapper for OpenImages v7 downloaded via FiftyOne.
-    
-    OpenImages is better suited for world modeling than ImageNet because:
-    - More diverse, real-world images (9M images vs 1.2M)
-    - Images from Flickr with natural scene diversity
-    - Better representation of everyday objects and scenarios
-    - More suitable for learning general visual representations
-    """
-    
     def __init__(
         self,
         cfg: OpenImagesDatasetConfig,
         action_dim: int,
-        sequence_length: int = 16,
     ):
         self.cfg = cfg
         self.action_dim = action_dim
-        self.sequence_length = sequence_length
         
-        # Build list of image paths
-        # FiftyOne downloads images to: {root}/data/{image_id}.jpg
-        data_dir = Path(cfg.root) / "data"
+        self.sequence_length = cfg.sequence_length
+        self.max_sequence_length = self.sequence_length
         
-        if not data_dir.exists():
-            raise ValueError(
-                f"OpenImages data directory not found at {data_dir}. "
-                f"Make sure the dataset has been downloaded via FiftyOne."
-            )
+        root_path = Path(cfg.root)
+        cache_file = root_path / ".image_list.txt"
         
-        # Collect all image paths
-        self.image_paths: List[Path] = sorted(list(data_dir.glob("*.jpg")))
-        
-        if len(self.image_paths) == 0:
-            raise ValueError(
-                f"No images found in {data_dir}. "
-                f"The download might still be in progress or failed."
-            )
-        
-        print(f"Loaded OpenImages {cfg.split} split with {len(self.image_paths)} images")
+        if cache_file.exists():
+            with open(cache_file, 'r') as f:
+                self.image_paths = [root_path / line.strip() for line in f if line.strip()]
+        else:
+            print(f"Scanning directory for images: {root_path}")
+            print("This may take a while for the first time...")
+            
+            self.image_paths = []
+            for ext in ['*.jpg', '*.jpeg', '*.png', '*.JPG', '*.JPEG', '*.PNG']:
+                self.image_paths.extend(root_path.rglob(ext))
+            
+            self.image_paths = sorted(self.image_paths)
+            
+            if len(self.image_paths) == 0:
+                raise ValueError(
+                    f"No images found in {root_path}. "
+                    f"Make sure the images have been downloaded."
+                )
+            
+            print(f"Saving {len(self.image_paths)} image paths to cache: {cache_file}")
+            with open(cache_file, 'w') as f:
+                for img_path in self.image_paths:
+                    rel_path = img_path.relative_to(root_path)
+                    f.write(f"{rel_path}\n")
 
     def __len__(self) -> int:
         return len(self.image_paths)
 
     def __getitem__(self, index: int) -> WorldBatch:
-        # Sample T images
         images = []
         
-        # First image from index
         img_path = self.image_paths[index]
-        img = Image.open(img_path).convert("RGB")
+        img = self._load_image(img_path)
         images.append(img)
         
-        # Sample T-1 other images randomly
-        for _ in range(self.sequence_length - 1):
+        for _ in range(self.max_sequence_length - 1):
             rand_idx = random.randint(0, len(self.image_paths) - 1)
             img_path = self.image_paths[rand_idx]
-            img = Image.open(img_path).convert("RGB")
+            img = self._load_image(img_path)
             images.append(img)
-            
-        # Stack images
-        processed_images = []
-        for img in images:
-            # Apply standard transform (resize and crop to 224x224)
-            img = IMAGE_RESIZE_CROP_TRANSFORM_224(img)
-            processed_images.append(img)
 
-        frames = torch.stack(processed_images, dim=0)  # [T, C, H, W]
+        frames = torch.stack(images, dim=0)
         
-        T = self.sequence_length
-        # Zero actions since this is an image-only dataset
+        if frames.dtype == torch.uint8:
+            frames = frames.float() / 255.0
+        
+        T = self.max_sequence_length
         actions = torch.zeros((T, self.action_dim), dtype=torch.float32)
-        # Mark frames as independent (not from a video sequence)
         independent_frames_mask = torch.tensor(True, dtype=torch.bool)
-        # No action supervision
         actions_mask = torch.zeros((T,), dtype=torch.bool)
-        # All frames are valid
         frames_valid_mask = torch.ones((T,), dtype=torch.bool)
 
         return WorldBatch(
@@ -102,3 +90,9 @@ class OpenImagesDataset(Dataset):
             frames_valid_mask=frames_valid_mask,
             dataset_indices=torch.tensor(-1, dtype=torch.long)
         )
+
+    def _load_image(self, path: Path) -> torch.Tensor:
+        img = Image.open(path).convert("RGB")
+        img = torch.from_numpy(np.array(img)).permute(2, 0, 1)
+        img = RESIZE_CROP_TRANSFORM_224(img)
+        return img
