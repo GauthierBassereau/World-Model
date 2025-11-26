@@ -392,21 +392,12 @@ class WorldModelTrainer:
         self,
         batch: WorldBatch,
     ) -> Dict[str, float]:
-        frames_cpu = batch.sequence_frames
-
-        frames = frames_cpu.to(self.device, non_blocking=True)
+        frames = batch.sequence_frames.to(self.device, non_blocking=True)
         actions = batch.sequence_actions.to(self.device, non_blocking=True)
-        independent_frames_mask = (
-            batch.independent_frames_mask.to(self.device, non_blocking=True)
-            if batch.independent_frames_mask is not None
-            else None
-        )
-        actions_mask = (
-            batch.actions_mask.to(self.device, non_blocking=True)
-            if batch.actions_mask is not None
-            else None
-        )
+        independent_frames_mask = batch.independent_frames_mask.to(self.device, non_blocking=True)
+        actions_mask = batch.actions_mask.to(self.device, non_blocking=True)
         frames_valid_mask = batch.frames_valid_mask.to(self.device, non_blocking=True)
+        dataset_indices = batch.dataset_indices.to(self.device, non_blocking=True)
 
         latents = self._encode_frames(frames)
 
@@ -438,18 +429,100 @@ class WorldModelTrainer:
             loss_unreduced = F.mse_loss(v_pred, v_true, reduction="none")
 
             # Apply valid frame mask, some sequences may have padding frames which should not contribute to loss
-            frame_mask = frames_valid_mask.to(device=loss_unreduced.device, dtype=loss_unreduced.dtype)
+            frames_valid_mask = frames_valid_mask.to(dtype=loss_unreduced.dtype)
             frame_loss = loss_unreduced.mean(dim=(-1, -2))
-            masked_loss = frame_loss * frame_mask
-            denom = frame_mask.sum().clamp_min(1.0)
-            loss = masked_loss.sum() / denom
+            valid_frame_loss = frame_loss * frames_valid_mask
+            denom = frames_valid_mask.sum().clamp_min(1.0)
+            loss = valid_frame_loss.sum() / denom
             scaled_loss = loss / self.config.trainer.grad_accum_steps
+            
+            metrics = {
+                "l2_loss": float(loss),
+            }
+
+            if self.global_step % 10 == 0:
+                metrics.update(self._compute_loss_breakdown(
+                    valid_frame_loss,
+                    frames_valid_mask,
+                    independent_frames_mask,
+                    dataset_indices,
+                    batch.dataset_names,
+                ))
 
         scaled_loss.backward()
 
-        return {
-            "loss": float(loss) # because it is later divided by grad_accum_steps for logging
-        }
+        return metrics
+
+    def _compute_loss_breakdown(
+        self,
+        valid_frame_loss: torch.Tensor,
+        frames_valid_mask: torch.Tensor,
+        independent_frames_mask: torch.Tensor,
+        dataset_indices: torch.Tensor,
+        dataset_names: Dict[int, str],
+    ) -> Dict[str, float]:
+        metrics: Dict[str, float] = {}
+        
+        indep_mask_bool = independent_frames_mask.to(dtype=torch.bool).unsqueeze(-1)
+        mask_indep = frames_valid_mask * indep_mask_bool.to(dtype=frames_valid_mask.dtype)
+        mask_dept = frames_valid_mask * (~indep_mask_bool).to(dtype=frames_valid_mask.dtype)
+
+        denom_indep = mask_indep.sum()
+        if denom_indep > 0:
+            loss_indep = (valid_frame_loss * mask_indep).sum() / denom_indep
+            metrics["l2_loss/independent_frames"] = float(loss_indep)
+        
+        denom_dept = mask_dept.sum()
+        if denom_dept > 0:
+            loss_dept = (valid_frame_loss * mask_dept).sum() / denom_dept
+            metrics["l2_loss/dependent_frames"] = float(loss_dept)
+
+        num_datasets = max(dataset_names.keys()) + 1
+        
+        # Sum over time dimension [B, T] -> [B]
+        loss_sum_b = valid_frame_loss.sum(dim=1)
+        denom_sum_b = frames_valid_mask.sum(dim=1)
+        
+        loss_indep_b = (valid_frame_loss * mask_indep).sum(dim=1)
+        denom_indep_b = mask_indep.sum(dim=1)
+        
+        loss_dept_b = (valid_frame_loss * mask_dept).sum(dim=1)
+        denom_dept_b = mask_dept.sum(dim=1)
+        
+        # Prepare storage [num_datasets]
+        ds_loss_total = torch.zeros(num_datasets, device=valid_frame_loss.device, dtype=valid_frame_loss.dtype)
+        ds_denom_total = torch.zeros(num_datasets, device=valid_frame_loss.device, dtype=valid_frame_loss.dtype)
+        
+        ds_loss_indep = torch.zeros(num_datasets, device=valid_frame_loss.device, dtype=valid_frame_loss.dtype)
+        ds_denom_indep = torch.zeros(num_datasets, device=valid_frame_loss.device, dtype=valid_frame_loss.dtype)
+        
+        ds_loss_dept = torch.zeros(num_datasets, device=valid_frame_loss.device, dtype=valid_frame_loss.dtype)
+        ds_denom_dept = torch.zeros(num_datasets, device=valid_frame_loss.device, dtype=valid_frame_loss.dtype)
+        
+        # Scatter add
+        ds_loss_total.scatter_add_(0, dataset_indices, loss_sum_b)
+        ds_denom_total.scatter_add_(0, dataset_indices, denom_sum_b)
+        
+        ds_loss_indep.scatter_add_(0, dataset_indices, loss_indep_b)
+        ds_denom_indep.scatter_add_(0, dataset_indices, denom_indep_b)
+        
+        ds_loss_dept.scatter_add_(0, dataset_indices, loss_dept_b)
+        ds_denom_dept.scatter_add_(0, dataset_indices, denom_dept_b)
+        
+        for idx, name in dataset_names.items():
+            d_total = ds_denom_total[idx]
+            if d_total > 0:
+                metrics[f"l2_loss/{name}"] = float(ds_loss_total[idx] / d_total)
+                
+            d_indep = ds_denom_indep[idx]
+            if d_indep > 0:
+                metrics[f"l2_loss/{name}/independent"] = float(ds_loss_indep[idx] / d_indep)
+                
+            d_dept = ds_denom_dept[idx]
+            if d_dept > 0:
+                metrics[f"l2_loss/{name}/dependent"] = float(ds_loss_dept[idx] / d_dept)
+                    
+        return metrics
 
     @torch.no_grad()
     def _encode_frames(self, frames: torch.Tensor) -> torch.Tensor:

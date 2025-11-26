@@ -17,15 +17,26 @@ from .common import WorldBatch
 
 @dataclass
 class WorldDatasetConfig:
-    datasets: Dict[str, Union[DroidDatasetConfig, KineticsDatasetConfig, OpenImagesDatasetConfig]]
     weights: Dict[str, float]
     action_dim: int = 8
     sequence_length_distribution: Dict[int, float] = field(default_factory=lambda: {15: 1.0})
     fps: float = 3.0
+    
+    droid: Optional[DroidDatasetConfig] = None
+    kinetics: Optional[KineticsDatasetConfig] = None
+    openimages: Optional[OpenImagesDatasetConfig] = None
 
     def __post_init__(self) -> None:
+        self.datasets = {}
+        if self.droid:
+            self.datasets["droid"] = self.droid
+        if self.kinetics:
+            self.datasets["kinetics"] = self.kinetics
+        if self.openimages:
+            self.datasets["openimages"] = self.openimages
+
         if set(self.datasets.keys()) != set(self.weights.keys()):
-            raise ValueError("Keys in datasets and weights must match.")
+            raise ValueError(f"Keys in datasets {list(self.datasets.keys())} and weights {list(self.weights.keys())} must match.")
         if any(w < 0 for w in self.weights.values()):
             raise ValueError("Weights must be non-negative.")
         
@@ -61,23 +72,22 @@ class WorldDataset(Dataset):
         max_sequence_length = max(self.cfg.sequence_length_distribution.keys())
         
         for name, ds_cfg in self.cfg.datasets.items():
-            if hasattr(ds_cfg, 'sequence_length'):
-                ds_cfg.sequence_length = max_sequence_length
-            if hasattr(ds_cfg, 'fps'):
-                ds_cfg.fps = self.cfg.fps
+            ds_cfg.sequence_length = max_sequence_length
+            ds_cfg.fps = self.cfg.fps
             
-            if isinstance(ds_cfg, DroidDatasetConfig):
+            if name == "droid":
                 logger.info(f"Loading Droid dataset")
                 self.datasets[name] = DroidDataset(ds_cfg)
-            elif isinstance(ds_cfg, KineticsDatasetConfig):
+            elif name == "kinetics":
                 logger.info(f"Loading Kinetics dataset")
                 self.datasets[name] = KineticsDataset(ds_cfg, action_dim=self.action_dim)
-            elif isinstance(ds_cfg, OpenImagesDatasetConfig):
+            elif name == "openimages":
                 logger.info(f"Loading OpenImages dataset")
                 self.datasets[name] = OpenImagesDataset(ds_cfg, action_dim=self.action_dim)
 
         self.dataset_names = sorted(list(self.datasets.keys()))
         self.dataset_to_idx = {name: i for i, name in enumerate(self.dataset_names)}
+        self.idx_to_dataset = {i: name for name, i in self.dataset_to_idx.items()}
         
         dataset_lengths = {name: len(ds) for name, ds in self.datasets.items()}
         
@@ -150,6 +160,7 @@ class WorldDataset(Dataset):
             try:
                 batch = dataset[inner_index]
                 batch.dataset_indices = torch.tensor(dataset_idx, dtype=torch.long)
+                batch.dataset_names = self.idx_to_dataset
                 return batch
             except Exception as e:
                 logger.warning(f"Failed to load sample from {dataset_name} at index {inner_index} (attempt {attempt+1}/{self.tolerance}): {e}")

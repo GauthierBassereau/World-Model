@@ -197,7 +197,15 @@ class DroidDataset(Dataset):
         )
 
         self.custom_index_map = False
-        if cfg.episodes is None and cfg.excluded_episodes is not None:
+        self.midpoint_indices = None
+        self.midpoint_episode_ids = None
+
+        if cfg.episode_midpoint_only:
+            self.custom_index_map = True
+            self.midpoint_indices, self.midpoint_episode_ids = _compute_episode_midpoints(
+                self.dataset, cfg.episodes
+            )
+        elif cfg.episodes is None and cfg.excluded_episodes is not None:
             self.custom_index_map = True
             self.valid_ranges = []
             self.cumulative_lengths = [0]
@@ -248,18 +256,29 @@ class DroidDataset(Dataset):
 
     def __len__(self) -> int:
         if self.custom_index_map:
+            if self.cfg.episode_midpoint_only:
+                return len(self.midpoint_indices)
             return self.cumulative_lengths[-1]
         return len(self.dataset)
 
     def __getitem__(self, index: int) -> WorldBatch:
+        episode_id = -1
         if self.custom_index_map:
-            if index < 0 or index >= self.cumulative_lengths[-1]:
-                raise IndexError(f"Index {index} out of range")
-            k = bisect.bisect_right(self.cumulative_lengths, index) - 1
-            offset = index - self.cumulative_lengths[k]
-            real_start = self.valid_ranges[k][0]
-            real_index = real_start + offset
-            sample = self.dataset[real_index]
+            if self.cfg.episode_midpoint_only:
+                real_index = self.midpoint_indices[index]
+                episode_id = self.midpoint_episode_ids[index]
+                sample = self.dataset[real_index]
+            else:
+                if index < 0 or index >= self.cumulative_lengths[-1]:
+                    raise IndexError(f"Index {index} out of range")
+                k = bisect.bisect_right(self.cumulative_lengths, index) - 1
+                offset = index - self.cumulative_lengths[k]
+                real_start = self.valid_ranges[k][0]
+                real_index = real_start + offset
+                sample = self.dataset[real_index]
+                # Try to infer episode_id if possible, though not strictly required for non-midpoint
+                # But for consistency, we might want to leave it as -1 or try to find it.
+                # For now, leaving as -1 for non-midpoint to avoid expensive lookups unless needed.
         else:
             sample = self.dataset[index]
         
@@ -293,7 +312,9 @@ class DroidDataset(Dataset):
             independent_frames_mask=independent_frames_mask,
             actions_mask=actions_mask,
             frames_valid_mask=validity_mask,
-            dataset_indices=torch.tensor(-1, dtype=torch.long) 
+            dataset_indices=torch.tensor(-1, dtype=torch.long),
+            dataset_names=torch.tensor(-1, dtype=torch.long),
+            episode_ids=torch.tensor(episode_id, dtype=torch.long),
         )
 
     def _prepare_frames(self, sample: Dict[str, torch.Tensor], camera_key: str, target_length: int) -> torch.Tensor:

@@ -88,7 +88,9 @@ class OpenImagesDataset(Dataset):
             independent_frames_mask=independent_frames_mask,
             actions_mask=actions_mask,
             frames_valid_mask=frames_valid_mask,
-            dataset_indices=torch.tensor(-1, dtype=torch.long)
+            dataset_indices=torch.tensor(-1, dtype=torch.long),
+            dataset_names=torch.tensor(-1, dtype=torch.long),
+            episode_ids=torch.tensor(-1, dtype=torch.long),
         )
 
     def _load_image(self, path: Path) -> torch.Tensor:

@@ -1,3 +1,4 @@
+from typing import Dict
 from dataclasses import dataclass
 import torch
 from torchvision.transforms import InterpolationMode
@@ -11,6 +12,8 @@ class WorldBatch:
     actions_mask: torch.Tensor
     frames_valid_mask: torch.Tensor
     dataset_indices: torch.Tensor
+    dataset_names: Dict[int, str]
+    episode_ids: torch.Tensor
 
 
 RESIZE_CROP_TRANSFORM_224 = transforms_v2.Compose(
@@ -20,6 +23,6 @@ RESIZE_CROP_TRANSFORM_224 = transforms_v2.Compose(
             interpolation=InterpolationMode.BILINEAR,
             antialias=True,
         ),
-        transforms_v2.CenterCrop((224, 224)),
+        transforms_v2.CenterCrop(224),
     ]
 )

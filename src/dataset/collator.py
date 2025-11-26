@@ -70,6 +70,8 @@ class StackCollator:
                 actions_mask=b.actions_mask[start_idx:end_idx],
                 frames_valid_mask=b.frames_valid_mask[start_idx:end_idx],
                 dataset_indices=b.dataset_indices,
+                dataset_names=b.dataset_names,
+                episode_ids=b.episode_ids,
             ))
         
         return cropped_batch
@@ -84,7 +86,9 @@ class StackCollator:
         independent_frames_mask = torch.stack([b.independent_frames_mask for b in batch])
         actions_mask = torch.stack([b.actions_mask for b in batch])
         frames_valid_mask = torch.stack([b.frames_valid_mask for b in batch])
+        frames_valid_mask = torch.stack([b.frames_valid_mask for b in batch])
         dataset_indices = torch.stack([b.dataset_indices for b in batch])
+        episode_ids = torch.stack([b.episode_ids for b in batch])
 
         if self.shuffle:
             B = sequence_frames.shape[0]
@@ -95,7 +99,9 @@ class StackCollator:
             independent_frames_mask = independent_frames_mask[perm]
             actions_mask = actions_mask[perm]
             frames_valid_mask = frames_valid_mask[perm]
+            frames_valid_mask = frames_valid_mask[perm]
             dataset_indices = dataset_indices[perm]
+            episode_ids = episode_ids[perm]
 
         return WorldBatch(
             sequence_frames=sequence_frames,
@@ -104,5 +110,7 @@ class StackCollator:
             actions_mask=actions_mask,
             frames_valid_mask=frames_valid_mask,
             dataset_indices=dataset_indices,
+            dataset_names=batch[0].dataset_names,
+            episode_ids=episode_ids,
         )
 

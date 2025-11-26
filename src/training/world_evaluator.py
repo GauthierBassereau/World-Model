@@ -160,14 +160,8 @@ class WorldModelEvaluator:
             if self.cfg.max_batches is not None:
                 self.cfg.max_batches = min(self.cfg.max_batches, len(self.dataloader))
                 print(f"Limiting evaluation to {self.cfg.max_batches} batches based on dataloader length.")
-            self._sampled_dataset_indices = self._materialize_sampler_indices(self.dataloader)
-            self._sampled_episode_ids = self._dataset_indices_to_episode_ids(
-                getattr(self.dataloader, "dataset", None), self._sampled_dataset_indices
-            )
         except ValueError:
             self.dataloader = None
-            self._sampled_dataset_indices = None
-            self._sampled_episode_ids = None
         self.scenarios: List[Tuple[str, bool]] = [("actions", True), ("no_actions", False)]
 
     def evaluate(self, model: nn.Module) -> Optional[EvaluationSummary]:
@@ -186,21 +180,8 @@ class WorldModelEvaluator:
         with torch.no_grad():
             for batch_idx, batch in enumerate(self.dataloader):
                 print(f"[rank {self.rank if self.rank is not None else 0}] Evaluating batch {batch_idx + 1}/{self.cfg.max_batches if self.cfg.max_batches is not None else len(self.dataloader)}...")
-                batch_size = batch.sequence_frames.shape[0]
-                dataset_indices = None
-                dataset_episode_ids = None
-                if self._sampled_dataset_indices is not None:
-                    end = sample_offset + batch_size
-                    dataset_indices = self._sampled_dataset_indices[sample_offset:end]
-                    if self._sampled_episode_ids is not None:
-                        dataset_episode_ids = self._sampled_episode_ids[sample_offset:end]
-                    sample_offset = end
-                batch_stats, sample_payloads = self._evaluate_batch(
-                    model,
-                    batch,
-                    dataset_indices,
-                    dataset_episode_ids,
-                )
+                
+                batch_stats, sample_payloads = self._evaluate_batch(model, batch)
                 for scenario, value in batch_stats.items():
                     prediction, target, valid_mask = value
                     stats[scenario].update(prediction, target, valid_mask)
@@ -235,8 +216,6 @@ class WorldModelEvaluator:
         self,
         model: nn.Module,
         batch: WorldBatch,
-        dataset_indices: Optional[List[int]],
-        dataset_episode_ids: Optional[List[int]],
     ) -> Tuple[
         Dict[str, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
         List[Dict[str, torch.Tensor]],
@@ -288,9 +267,7 @@ class WorldModelEvaluator:
                 batch_metrics[scenario] = (predicted_stack, target_future, future_mask)
                 scenario_sequences[scenario] = full_sequence
 
-            video_samples = self._prepare_video_samples(
-                frames, scenario_sequences, dataset_indices, dataset_episode_ids
-            )
+            video_samples = self._prepare_video_samples(frames, scenario_sequences, batch)
             return batch_metrics, video_samples
 
     def _reduce_stats(self, stats: Dict[str, SequenceErrorStats]) -> None:
@@ -339,8 +316,7 @@ class WorldModelEvaluator:
         self,
         frames: torch.Tensor,
         scenario_predictions: Dict[str, torch.Tensor],
-        dataset_indices: Optional[List[int]],
-        dataset_episode_ids: Optional[List[int]],
+        batch: WorldBatch,
     ) -> List[Dict[str, Union[torch.Tensor, int]]]:
         target_indices = self.cfg.video_sample_indices
         if not target_indices:
@@ -349,14 +325,19 @@ class WorldModelEvaluator:
         samples: List[Dict[str, Union[torch.Tensor, int]]] = []
         batch_size = frames.shape[0]
         
+        # Extract metadata from batch
+        dataset_indices = batch.dataset_indices.detach().cpu().tolist()
+        dataset_episode_ids = None
+        if hasattr(batch, "episode_ids"):
+             dataset_episode_ids = batch.episode_ids.detach().cpu().tolist()
+
         for batch_idx in range(batch_size):
-            if dataset_indices is None or batch_idx >= len(dataset_indices):
-                continue
             current_idx = dataset_indices[batch_idx]
             episode_id = None
-            if dataset_episode_ids is not None and batch_idx < len(dataset_episode_ids):
+            if dataset_episode_ids is not None:
                 episode_id = dataset_episode_ids[batch_idx]
-            match_key = episode_id if episode_id is not None else current_idx
+            
+            match_key = episode_id if (episode_id is not None and episode_id != -1) else current_idx
             if match_key not in target_indices:
                 continue
                 
@@ -386,43 +367,4 @@ class WorldModelEvaluator:
         channels, height, width = frames.shape[1:]
         return frames.view(batch, steps, channels, height, width)
 
-    def _dataset_indices_to_episode_ids(
-        self,
-        dataset: Optional[torch.utils.data.Dataset],
-        indices: Optional[List[int]],
-    ) -> Optional[List[int]]:
-        if dataset is None or indices is None:
-            return None
 
-        # Primary path: datasets used for eval midpoints carry an episode_ids list aligned to dataset length.
-        if hasattr(dataset, "episode_ids"):
-            ep_ids = getattr(dataset, "episode_ids")
-            try:
-                return [int(ep_ids[i]) for i in indices if i < len(ep_ids)]
-            except Exception:
-                pass
-
-        # Fallback: use hf_dataset episode_index column if present.
-        if hasattr(dataset, "hf_dataset"):
-            try:
-                ep_col = dataset.hf_dataset["episode_index"]
-                result: List[int] = []
-                for i in indices:
-                    if i < len(ep_col):
-                        val = ep_col[i]
-                        result.append(int(val.item()) if hasattr(val, "item") else int(val))
-                return result or None
-            except Exception:
-                return None
-
-        return None
-
-    def _materialize_sampler_indices(self, dataloader: torch.utils.data.DataLoader) -> Optional[List[int]]:
-        sampler = getattr(dataloader, "sampler", None)
-        if sampler is None:
-            return None
-        try:
-            indices = list(iter(sampler))
-        except Exception:
-            return None
-        return indices

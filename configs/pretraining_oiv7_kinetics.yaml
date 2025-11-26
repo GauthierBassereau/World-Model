@@ -1,7 +1,7 @@
 logging:
   project: world_model
   entity: null
-  run_name: oiv7
+  run_name: oiv7_kinetics
   output_dir: checkpoints
   log_interval: 1
   tau_log_limit: 100
@@ -9,11 +9,11 @@ logging:
 
 trainer:
   grad_accum_steps: 8
-  seed: 3
+  seed: 5
   precision: bf16
   evaluation_interval: 500
-  resume: false # takes the checkpoint step and optimizer state
-  load_checkpoint: null
+  resume: true # takes the checkpoint step and optimizer state
+  load_checkpoint: /gpfs/helios/home/gauthierbernarda/git/World-Model/checkpoints/oiv7_kinetics/world_model_step_000500.pt
 
 evaluator:
   max_batches: 1
@@ -41,7 +41,13 @@ train_dataset:
   fps: 3.0
   action_dim: 8
   weights:
-    droid: 1.0
+    droid: 0.3
+    kinetics: 0.4
+    openimages: 0.3
+  kinetics:
+    root: /gpfs/helios/home/gauthierbernarda/data/kinetics
+  openimages:
+    root: /gpfs/helios/home/gauthierbernarda/data/open_images_v7
   droid:
     repo_id: aractingi/droid_1.0.1
     episodes: null # null means all episodes
@@ -57,8 +63,8 @@ train_dataset:
     action_normalization_params:
       mean: [0.01428347627459065, 0.23987777195473095, -0.014661363646208965, -2.027954954645529, -0.035476306435143545, 2.3233678805030076, 0.08326671319745274, 0.36085284714413735]
       std: [0.3244343844169754, 0.5158281965633522, 0.2901322476548548, 0.5021871776809874, 0.5331921797732538, 0.46856794632856424, 0.7446577730524244, 0.40315882970033534]
-    independent_frames_probability: 0.3 # from Dreamerv4
-    drop_action_probability: 0.7 # from Dreamerv4
+    independent_frames_probability: 0.0 # from Dreamerv4
+    drop_action_probability: 0.0 # from Dreamerv4
 
 train_dataloader:
   batch_size: 256 # global batch size
