@@ -1,7 +1,7 @@
 logging:
   project: world_model
   entity: null
-  run_name: droid
+  run_name: oiv7_kinetics_cxt13_noWM_WD
   output_dir: checkpoints
   log_interval: 1
   tau_log_limit: 100
@@ -9,7 +9,7 @@ logging:
 
 trainer:
   grad_accum_steps: 8
-  seed: 3
+  seed: 5
   precision: bf16
   evaluation_interval: 500
   resume: false # takes the checkpoint step and optimizer state
@@ -24,11 +24,10 @@ evaluator:
 
 optimizer:
   lr:
-    "0": 1.0e-6
-    "1000": 1.0e-4
+    "0": 1.0e-4
   eps: 1.0e-08
   grad_clip_norm: 1.0
-  weight_decay: 0.0
+  weight_decay: 0.1
 
 ema:
   enabled: false # Not sure Dreamerv4 uses it, but usually Flow matching training is better with it so...
@@ -41,7 +40,13 @@ train_dataset:
   fps: 3.0
   action_dim: 8
   weights:
-    droid: 1.0
+    droid: 0.3
+    kinetics: 0.4
+    openimages: 0.3
+  kinetics:
+    root: /gpfs/helios/home/gauthierbernarda/data/kinetics
+  openimages:
+    root: /gpfs/helios/home/gauthierbernarda/data/open_images_v7
   droid:
     repo_id: aractingi/droid_1.0.1
     episodes: null # null means all episodes
@@ -57,8 +62,8 @@ train_dataset:
     action_normalization_params:
       mean: [0.01428347627459065, 0.23987777195473095, -0.014661363646208965, -2.027954954645529, -0.035476306435143545, 2.3233678805030076, 0.08326671319745274, 0.36085284714413735]
       std: [0.3244343844169754, 0.5158281965633522, 0.2901322476548548, 0.5021871776809874, 0.5331921797732538, 0.46856794632856424, 0.7446577730524244, 0.40315882970033534]
-    independent_frames_probability: 0.3 # from Dreamerv4
-    drop_action_probability: 0.65 # from Dreamerv4
+    independent_frames_probability: 0.0 # from Dreamerv4
+    drop_action_probability: 0.0 # from Dreamerv4
 
 train_dataloader:
   batch_size: 256 # global batch size
@@ -99,9 +104,9 @@ eval_dataloader:
 diffusion:
   noise_mean: 0.0   # Set noise_mean=0.0 and noise_std=1.0 to recover a unit Gaussian prior.
   noise_std: 1.0
-  noise_sampling: dimension # {"dimension", "linear", "uniform"}; choose the draw distribution
-  base_dimension: 8192 #4096 # from RAE paper, to determine noise schedule depending on effective latent dimension
-  effective_latent_dimension: 196608 # 768*16*16
+  noise_sampling: linear # {"dimension", "linear", "uniform"}; choose the draw distribution
+  linear_weight_slope: 0.9
+  linear_weight_intercept: 0.1
 
 world_model: # ~400M parameters
   input_dim: 768

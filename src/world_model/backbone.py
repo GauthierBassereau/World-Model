@@ -82,9 +82,6 @@ class WorldModelBackbone(nn.Module):
         nn.init.normal_(self.base_action_embed, std=0.02)
         nn.init.normal_(self.register_tokens, std=0.02)
         
-        nn.init.zeros_(self.noise_embed[-1].weight)
-        nn.init.zeros_(self.noise_embed[-1].bias)
-        
         with torch.no_grad():
             self.action_proj.weight.mul_(0.1) 
         nn.init.zeros_(self.action_proj.bias)
@@ -161,7 +158,7 @@ class WorldModelBackbone(nn.Module):
             mask = actions_mask.to(dtype=torch.bool, device=device).unsqueeze(-1).unsqueeze(-1)
             action_tokens = torch.where(mask, action_tokens, actions_embed)
         
-        noise_tokens = self.noise_embed(noise_levels.unsqueeze(-1)).unsqueeze(2)
+        noise_tokens = self.noise_embed(noise_levels.flatten()).view(batch_size, time_steps, -1).unsqueeze(2)
         
         register_tokens = self.register_tokens.unsqueeze(0).unsqueeze(0).expand(batch_size, time_steps, -1, -1)
 
