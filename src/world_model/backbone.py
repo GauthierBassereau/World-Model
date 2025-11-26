@@ -8,6 +8,7 @@ from src.world_model.components import (
     TransformerBlock,
     RMSNorm,
     _rope_cache,
+    TimestepEmbedder,
 )
 
 
@@ -37,12 +38,7 @@ class WorldModelBackbone(nn.Module):
             else nn.Identity()
         )
 
-        # For now it is a simple SiLU MLP, like used in other diffusion models, but need to check I think there are more options, see in RAE and Lightning DiT they talk about GaussianFourierEmbedding
-        self.noise_embed = nn.Sequential(
-            nn.Linear(1, self.config.latent_dim),
-            nn.SiLU(),
-            nn.Linear(self.config.latent_dim, self.config.latent_dim),
-        )
+        self.noise_embed = TimestepEmbedder(self.config.latent_dim)
 
         # The default base action token is a learned embedding, and each action is simply added to it after projection
         self.base_action_embed = nn.Parameter(torch.empty(self.config.latent_dim))
@@ -64,7 +60,7 @@ class WorldModelBackbone(nn.Module):
                     use_temporal=use_temporal,
                     num_registers=self.config.num_registers,
                     frozen_token_index=0, # Noise token
-                    attn_logit_softcapping=config.attn_logit_softcapping,
+                    attn_logit_softcapping=self.config.attn_logit_softcapping,
                 )
             )
         self.layers = nn.ModuleList(blocks)
@@ -146,10 +142,10 @@ class WorldModelBackbone(nn.Module):
     def forward(
         self,
         noisy_latents: torch.Tensor, # [Batch, Sequence, Tokens, Dimension]
-        noise_levels: torch.Tensor, # [B, S, 1]
+        noise_levels: torch.Tensor, # [B, S]
         actions: Optional[torch.Tensor] = None, # [B, S, D]
-        independent_frames_mask: Optional[torch.Tensor] = None, # [B, 1]
-        actions_mask: Optional[torch.Tensor] = None, # [B, 1]
+        independent_frames_mask: Optional[torch.Tensor] = None, # [B]
+        actions_mask: Optional[torch.Tensor] = None, # [B]
     ) -> Dict[str, torch.Tensor]:
         batch_size, time_steps, latent_tokens, _ = noisy_latents.shape
         device = noisy_latents.device

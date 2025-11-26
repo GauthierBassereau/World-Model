@@ -27,7 +27,8 @@ Note: most of these datasets have language instructions for each video -> I wond
 ---
 
 Todos:
-  - Fix bug eval dataset for eval, converting index of entire dataset to the subset one
+  - Timestep embedding with frequency
+  - Benchmark impact of EMA and weigth_decay
   - Look for better handling of ODE solver and sampling on edges 0 and 1, look at RAE, for Euler but also maybe Heun
   - Implement the opetion to have x-loss with reweigthing just like Dreamerv4
   - Shortcut forcing
