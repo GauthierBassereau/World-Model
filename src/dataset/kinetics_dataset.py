@@ -78,7 +78,7 @@ class KineticsDataset(Dataset):
 
         vframes = vr.get_batch(indices) # Returns (T, H, W, C)
         
-        vframes = vframes.permute(0, 3, 1, 2).float() / 255.0
+        vframes = vframes.permute(0, 3, 1, 2).to(torch.uint8)
         
         vframes = RESIZE_CROP_TRANSFORM_224(vframes)
 

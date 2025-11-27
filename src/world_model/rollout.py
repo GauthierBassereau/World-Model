@@ -31,7 +31,6 @@ def rollout_latents(
     flow_cfg: DiffusionConfig,
     context_len: int,
     future_len: int,
-    clean_signal_level: float,
     rollout_signal_level: float,
     use_actions: bool,
     actions: Optional[torch.Tensor] = None,
@@ -66,17 +65,29 @@ def rollout_latents(
             flow_cfg,
         )
 
-        seq_latents_parts = [observed_latents]
+        # Noise the context and past generated frames
+        # We use the same noise logic for both: signal * clean + (1 - signal) * noise
+        
+        # 1. Context
+        context_noise = sample_base_noise(observed_latents, flow_cfg)
+        noised_context = rollout_signal_level * observed_latents + (1 - rollout_signal_level) * context_noise
+        
+        seq_latents_parts = [noised_context]
         signal_parts = [
             torch.full(
                 (batch_size, context_len),
-                clean_signal_level,
+                rollout_signal_level,
                 dtype=latents.dtype,
                 device=latents.device,
             )
         ]
+
+        # 2. Past generated
         if past_generated is not None:
-            seq_latents_parts.append(past_generated)
+            past_gen_noise = sample_base_noise(past_generated, flow_cfg)
+            noised_past_gen = rollout_signal_level * past_generated + (1 - rollout_signal_level) * past_gen_noise
+            
+            seq_latents_parts.append(noised_past_gen)
             signal_parts.append(
                 torch.full(
                     (batch_size, past_generated.shape[1]),
@@ -85,6 +96,7 @@ def rollout_latents(
                     device=latents.device,
                 )
             )
+
         seq_latents_parts.append(noise_frame)
         signal_parts.append(
             torch.zeros(

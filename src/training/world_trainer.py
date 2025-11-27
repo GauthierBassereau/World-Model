@@ -127,7 +127,7 @@ class WorldModelTrainer:
             param.requires_grad_(False)
         
         self.model = torch.compile(self.model)
-        self.autoencoder = torch.compile(self.autoencoder)
+        # self.autoencoder = torch.compile(self.autoencoder)
 
         seed = set_seed(config.trainer.seed, self.world_size, self.rank)
 
@@ -393,6 +393,7 @@ class WorldModelTrainer:
         batch: WorldBatch,
     ) -> Dict[str, float]:
         frames = batch.sequence_frames.to(self.device, non_blocking=True)
+        frames = frames.float() / 255.0
         actions = batch.sequence_actions.to(self.device, non_blocking=True)
         independent_frames_mask = batch.independent_frames_mask.to(self.device, non_blocking=True)
         actions_mask = batch.actions_mask.to(self.device, non_blocking=True)
@@ -476,7 +477,7 @@ class WorldModelTrainer:
         if denom_dept > 0:
             loss_dept = (valid_frame_loss * mask_dept).sum() / denom_dept
             metrics["l2_loss/dependent_frames"] = float(loss_dept)
-
+        
         num_datasets = max(dataset_names.keys()) + 1
         
         # Sum over time dimension [B, T] -> [B]
@@ -515,7 +516,7 @@ class WorldModelTrainer:
                 metrics[f"l2_loss/{name}"] = float(ds_loss_total[idx] / d_total)
                 
             d_indep = ds_denom_indep[idx]
-            if d_indep > 0:
+        if d_indep > 0:
                 metrics[f"l2_loss/{name}/independent"] = float(ds_loss_indep[idx] / d_indep)
                 
             d_dept = ds_denom_dept[idx]

@@ -24,7 +24,6 @@ class EvaluationConfig:
     batch_size: Optional[int] = None
     rollout_start_frame: int = 6
     rollout_signal_level: float = 0.9
-    clean_signal_level: float = 1.0
     precision: str = "bf16"
 
 
@@ -125,10 +124,6 @@ class WorldModelEvaluator:
             raise ValueError("evaluation.rollout_start_frame must be >= 1.")
         if not (0.0 < self.cfg.rollout_signal_level <= 1.0):
             raise ValueError("evaluation.rollout_signal_level must be in (0, 1].")
-        if not (0.0 < self.cfg.clean_signal_level <= 1.0):
-            raise ValueError("evaluation.clean_signal_level must be in (0, 1].")
-        if self.cfg.clean_signal_level < self.cfg.rollout_signal_level:
-            raise ValueError("clean_signal_level should be >= rollout_signal_level.")
         self.device = device
         self.rank = rank
         self.world_size = world_size or 1
@@ -257,7 +252,6 @@ class WorldModelEvaluator:
                     flow_cfg=self.flow_cfg,
                     context_len=context_len,
                     future_len=future_len,
-                    clean_signal_level=self.cfg.clean_signal_level,
                     rollout_signal_level=self.cfg.rollout_signal_level,
                     use_actions=use_actions,
                     actions=actions,

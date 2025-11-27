@@ -320,10 +320,7 @@ class DroidDataset(Dataset):
     def _prepare_frames(self, sample: Dict[str, torch.Tensor], camera_key: str, target_length: int) -> torch.Tensor:
         frames = sample[camera_key]
         # Frames are already [T, C, H, W] from LeRobotDataset
-        frames = frames.to(torch.float32)
-        if frames.max() > 1.5:
-            frames = frames / 255.0
-        frames = frames.clamp(0.0, 1.0)
+        frames = frames.to(torch.uint8)
         return frames[:target_length].contiguous()
 
     def _prepare_valid_mask(self, sample: Dict[str, torch.Tensor], camera_key: str, target_length: int) -> torch.Tensor:

@@ -4,6 +4,9 @@ import torch
 from .common import WorldBatch
 
 class StackCollator:
+    """
+    The collator is just here to manipulate the length of the sequence per step of the training. Following Dreamerv4, having training with mixed sequence length.
+    """
     def __init__(
         self, 
         sequence_length_distribution: Dict[int, float],
@@ -86,7 +89,6 @@ class StackCollator:
         independent_frames_mask = torch.stack([b.independent_frames_mask for b in batch])
         actions_mask = torch.stack([b.actions_mask for b in batch])
         frames_valid_mask = torch.stack([b.frames_valid_mask for b in batch])
-        frames_valid_mask = torch.stack([b.frames_valid_mask for b in batch])
         dataset_indices = torch.stack([b.dataset_indices for b in batch])
         episode_ids = torch.stack([b.episode_ids for b in batch])
 
@@ -98,7 +100,6 @@ class StackCollator:
             sequence_actions = sequence_actions[perm]
             independent_frames_mask = independent_frames_mask[perm]
             actions_mask = actions_mask[perm]
-            frames_valid_mask = frames_valid_mask[perm]
             frames_valid_mask = frames_valid_mask[perm]
             dataset_indices = dataset_indices[perm]
             episode_ids = episode_ids[perm]

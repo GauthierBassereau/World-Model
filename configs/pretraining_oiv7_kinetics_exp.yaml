@@ -20,7 +20,6 @@ evaluator:
   video_sample_indices: [0] # the episode to log the video for
   rollout_start_frame: 1
   rollout_signal_level: 0.9
-  clean_signal_level: 1.0
 
 optimizer:
   lr:

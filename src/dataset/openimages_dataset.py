@@ -73,8 +73,7 @@ class OpenImagesDataset(Dataset):
 
         frames = torch.stack(images, dim=0)
         
-        if frames.dtype == torch.uint8:
-            frames = frames.float() / 255.0
+
         
         T = self.max_sequence_length
         actions = torch.zeros((T, self.action_dim), dtype=torch.float32)
@@ -97,4 +96,4 @@ class OpenImagesDataset(Dataset):
         img = Image.open(path).convert("RGB")
         img = torch.from_numpy(np.array(img)).permute(2, 0, 1)
         img = RESIZE_CROP_TRANSFORM_224(img)
-        return img
+        return img.to(torch.uint8)
