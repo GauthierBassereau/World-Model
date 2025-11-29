@@ -1,24 +1,28 @@
 logging:
   project: world_model
   entity: null
-  run_name: oiv7_kinetics_cxt13_noWM_WD
+  run_name: testing
   output_dir: checkpoints
   log_interval: 1
   tau_log_limit: 100
   checkpoint_interval: 500
 
 trainer:
+  loss_type: position
+  loss_weighting: linear
+  loss_weighting_intercept: 0.1
+  loss_weighting_slope: 0.9
+  evaluation_interval: 12
   grad_accum_steps: 8
-  seed: 5
   precision: bf16
-  evaluation_interval: 500
-  resume: false # takes the checkpoint step and optimizer state
+  seed: 3
+  resume: false
   load_checkpoint: null
 
 evaluator:
   max_batches: 1
   video_sample_indices: [0] # the episode to log the video for
-  rollout_start_frame: 1
+  rollout_start_frame: 3
   rollout_signal_level: 0.9
 
 optimizer:
@@ -29,7 +33,7 @@ optimizer:
   weight_decay: 0.1
 
 ema:
-  enabled: false # Not sure Dreamerv4 uses it, but usually Flow matching training is better with it so...
+  enabled: false
   decay: 0.9995
   start_step: 5000
 
@@ -42,27 +46,33 @@ train_dataset:
     droid: 0.3
     kinetics: 0.4
     openimages: 0.3
-  kinetics:
-    root: /gpfs/helios/home/gauthierbernarda/data/kinetics
-  openimages:
-    root: /gpfs/helios/home/gauthierbernarda/data/open_images_v7
-  droid:
-    repo_id: aractingi/droid_1.0.1
-    episodes: null # null means all episodes
-    excluded_episodes: [0, 1, 2, 3, 4, 5, 6, 7]
-    cameras:
-      - observation.images.exterior_1_left
-      - observation.images.exterior_2_left
-      - observation.images.wrist_left
-    action_keys:
-      - observation.state
-    action_representation: position # position or delta
-    action_normalization: mean_std # min_max or mean_std
-    action_normalization_params:
-      mean: [0.01428347627459065, 0.23987777195473095, -0.014661363646208965, -2.027954954645529, -0.035476306435143545, 2.3233678805030076, 0.08326671319745274, 0.36085284714413735]
-      std: [0.3244343844169754, 0.5158281965633522, 0.2901322476548548, 0.5021871776809874, 0.5331921797732538, 0.46856794632856424, 0.7446577730524244, 0.40315882970033534]
-    independent_frames_probability: 0.0 # from Dreamerv4
-    drop_action_probability: 0.0 # from Dreamerv4
+  reference_dataset: kinetics
+  datasets:
+    kinetics:
+      type: video
+      root: /gpfs/helios/home/gauthierbernarda/data/kinetics
+      fps_error_threshold: 0.3
+    openimages:
+      type: image
+      root: /gpfs/helios/home/gauthierbernarda/data/open_images_v7
+    droid:
+      type: lerobot
+      repo_id: aractingi/droid_1.0.1
+      episodes: null # null means all episodes
+      excluded_episodes: [0, 1, 2, 3, 4, 5, 6, 7]
+      cameras:
+        - observation.images.exterior_1_left
+        - observation.images.exterior_2_left
+        - observation.images.wrist_left
+      action_keys:
+        - observation.state
+      action_representation: position # position or delta
+      action_normalization: mean_std # min_max or mean_std
+      action_normalization_params:
+        mean: [0.01428347627459065, 0.23987777195473095, -0.014661363646208965, -2.027954954645529, -0.035476306435143545, 2.3233678805030076, 0.08326671319745274, 0.36085284714413735]
+        std: [0.3244343844169754, 0.5158281965633522, 0.2901322476548548, 0.5021871776809874, 0.5331921797732538, 0.46856794632856424, 0.7446577730524244, 0.40315882970033534]
+      independent_frames_probability: 0.0 # from Dreamerv4
+      drop_action_probability: 0.0 # from Dreamerv4
 
 train_dataloader:
   batch_size: 256 # global batch size
@@ -77,22 +87,25 @@ eval_dataset:
   action_dim: 8
   weights:
     droid: 1.0
-  droid:
-    repo_id: aractingi/droid_1.0.1
-    episodes: [0, 1, 2, 3, 4, 5, 6, 7]
-    episode_midpoint_only: true
-    cameras:
-      - observation.images.exterior_1_left
-    action_keys:
-      - observation.state
-    action_representation: position
-    action_normalization: mean_std
-    action_normalization_params:
-      mean: [0.01428347627459065, 0.23987777195473095, -0.014661363646208965, -2.027954954645529, -0.035476306435143545, 2.3233678805030076, 0.08326671319745274, 0.36085284714413735]
-      std: [0.3244343844169754, 0.5158281965633522, 0.2901322476548548, 0.5021871776809874, 0.5331921797732538, 0.46856794632856424, 0.7446577730524244, 0.40315882970033534]
-    fps: 3.0
-    independent_frames_probability: 0.0
-    drop_action_probability: 0.0
+  reference_dataset: droid
+  datasets:
+    droid:
+      type: lerobot
+      repo_id: aractingi/droid_1.0.1
+      episodes: [0, 1, 2, 3, 4, 5, 6, 7]
+      episode_midpoint_only: true
+      cameras:
+        - observation.images.exterior_1_left
+      action_keys:
+        - observation.state
+      action_representation: position
+      action_normalization: mean_std
+      action_normalization_params:
+        mean: [0.01428347627459065, 0.23987777195473095, -0.014661363646208965, -2.027954954645529, -0.035476306435143545, 2.3233678805030076, 0.08326671319745274, 0.36085284714413735]
+        std: [0.3244343844169754, 0.5158281965633522, 0.2901322476548548, 0.5021871776809874, 0.5331921797732538, 0.46856794632856424, 0.7446577730524244, 0.40315882970033534]
+      fps: 3.0
+      independent_frames_probability: 0.0
+      drop_action_probability: 0.0
 
 eval_dataloader:
   batch_size: 8
@@ -100,12 +113,14 @@ eval_dataloader:
   num_workers: 0
   pin_memory: false
 
-diffusion:
-  noise_mean: 0.0   # Set noise_mean=0.0 and noise_std=1.0 to recover a unit Gaussian prior.
-  noise_std: 1.0
-  noise_sampling: linear # {"dimension", "linear", "uniform"}; choose the draw distribution
-  linear_weight_slope: 0.9
-  linear_weight_intercept: 0.1
+signal_scheduler:
+  mode: "uniform"  # {"resolution_shift", "linear_shift", "uniform"}
+  min_value: 0.0
+  max_value: 1.0
+
+euler_solver:
+  number_steps: 100
+  min_denom: 0.05
 
 world_model: # ~400M parameters
   input_dim: 768
@@ -120,8 +135,3 @@ world_model: # ~400M parameters
   rope_base: 10000.0
   qk_norm_eps: 1.0e-06 # Put None for no QK norm, RAE doesn't use, Dreamerv4 does, but I think it is better to use for this kind of world model rollouts, safer.
   attn_logit_softcapping: 50.0 # None for no softcapping -> able to use fused_attention
-
-ode_solver: # this is for evaluation
-  step_size: 0.01
-  min_signal: 0.0
-  max_signal: 1.0

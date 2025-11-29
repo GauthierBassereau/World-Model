@@ -5,64 +5,56 @@ import math
 import logging
 import torch
 from torch.utils.data import Dataset
+import dacite
 
-from .droid_dataset import DroidDataset, DroidDatasetConfig
-from .kinetics_dataset import KineticsDataset, KineticsDatasetConfig
-from .openimages_dataset import OpenImagesDataset, OpenImagesDatasetConfig
-from .common import RESIZE_CROP_TRANSFORM_224
+from .lerobot_dataset import LeRobotDataset, LeRobotDatasetConfig
+from .video_dataset import VideoDataset, VideoDatasetConfig
+from .image_dataset import ImageDataset, ImageDatasetConfig
 
-logger = logging.getLogger(__name__)
-
+from src.training.logger import WorldModelLogger
 from .common import WorldBatch
+
 
 @dataclass
 class WorldDatasetConfig:
     weights: Dict[str, float]
+    datasets: Dict[str, Any]
+    reference_dataset: Optional[str] = None
     action_dim: int = 8
     sequence_length_distribution: Dict[int, float] = field(default_factory=lambda: {15: 1.0})
     fps: float = 3.0
-    
-    droid: Optional[DroidDatasetConfig] = None
-    kinetics: Optional[KineticsDatasetConfig] = None
-    openimages: Optional[OpenImagesDatasetConfig] = None
 
     def __post_init__(self) -> None:
-        self.datasets = {}
-        if self.droid:
-            self.datasets["droid"] = self.droid
-        if self.kinetics:
-            self.datasets["kinetics"] = self.kinetics
-        if self.openimages:
-            self.datasets["openimages"] = self.openimages
-
         if set(self.datasets.keys()) != set(self.weights.keys()):
             raise ValueError(f"Keys in datasets {list(self.datasets.keys())} and weights {list(self.weights.keys())} must match.")
-        if any(w < 0 for w in self.weights.values()):
-            raise ValueError("Weights must be non-negative.")
         
-        # Validate and normalize sequence_length_distribution
         if not self.sequence_length_distribution:
             raise ValueError("WorldDatasetConfig.sequence_length_distribution must contain at least one entry.")
+
         self.sequence_length_distribution = {
             int(length): float(weight)
             for length, weight in self.sequence_length_distribution.items()
         }
-        if any(w < 0 for w in self.sequence_length_distribution.values()):
-            raise ValueError("sequence_length_distribution weights must be non-negative.")
         
-        if self.fps <= 0:
-            raise ValueError("fps must be positive if specified.")
+        if self.reference_dataset is None and self.weights:
+            # Default to the first dataset in weights if not provided
+            self.reference_dataset = list(self.weights.keys())[0]
+        
+        if self.reference_dataset and self.reference_dataset not in self.datasets:
+             raise ValueError(f"Reference dataset {self.reference_dataset} not found in datasets.")
 
 class WorldDataset(Dataset):
     def __init__(
         self,
         cfg: WorldDatasetConfig,
+        logger: WorldModelLogger,
         tolerance: int = 10
     ):
         self.cfg = cfg
         self.weights = cfg.weights
         self.tolerance = tolerance
         self.action_dim = cfg.action_dim
+        self.logger = logger
 
         if not self.cfg.datasets:
             raise ValueError("WorldDatasetConfig.datasets must contain at least one dataset.")
@@ -71,19 +63,32 @@ class WorldDataset(Dataset):
         
         max_sequence_length = max(self.cfg.sequence_length_distribution.keys())
         
-        for name, ds_cfg in self.cfg.datasets.items():
-            ds_cfg.sequence_length = max_sequence_length
-            ds_cfg.fps = self.cfg.fps
+        for name, ds_conf_dict in self.cfg.datasets.items():
+            ds_type = ds_conf_dict.get("type")
+            if not ds_type:
+                raise ValueError(f"Dataset {name} missing 'type' field.")
             
-            if name == "droid":
-                logger.info(f"Loading Droid dataset")
-                self.datasets[name] = DroidDataset(ds_cfg)
-            elif name == "kinetics":
-                logger.info(f"Loading Kinetics dataset")
-                self.datasets[name] = KineticsDataset(ds_cfg, action_dim=self.action_dim)
-            elif name == "openimages":
-                logger.info(f"Loading OpenImages dataset")
-                self.datasets[name] = OpenImagesDataset(ds_cfg, action_dim=self.action_dim)
+            # Prepare config dict: remove 'type' and inject global settings
+            ds_conf_dict = ds_conf_dict.copy()
+            del ds_conf_dict["type"]
+            
+            # Inject global settings if not present (or override? User said "pass the rest of the config")
+            # Usually we want the global config to enforce these, but individual configs might need them.
+            # The previous code overrode them.
+            ds_conf_dict["sequence_length"] = max_sequence_length
+            ds_conf_dict["fps"] = self.cfg.fps
+            
+            if ds_type == "lerobot":
+                ds_cfg = dacite.from_dict(data_class=LeRobotDatasetConfig, data=ds_conf_dict)
+                self.datasets[name] = LeRobotDataset(ds_cfg)
+            elif ds_type == "video":
+                ds_cfg = dacite.from_dict(data_class=VideoDatasetConfig, data=ds_conf_dict)
+                self.datasets[name] = VideoDataset(ds_cfg, action_dim=self.action_dim)
+            elif ds_type == "image":
+                ds_cfg = dacite.from_dict(data_class=ImageDatasetConfig, data=ds_conf_dict)
+                self.datasets[name] = ImageDataset(ds_cfg, action_dim=self.action_dim)
+            else:
+                raise ValueError(f"Unknown dataset type: {ds_type}")
 
         self.dataset_names = sorted(list(self.datasets.keys()))
         self.dataset_to_idx = {name: i for i, name in enumerate(self.dataset_names)}
@@ -93,57 +98,38 @@ class WorldDataset(Dataset):
         
         total_weight = sum(self.weights.values())
         self.normalized_weights = {k: v / total_weight for k, v in self.weights.items()}
-        
-        # 1. Determine Virtual Epoch Length
-        # We calculate the total length of the virtual epoch such that every dataset is visited 
-        # at least once on average, respecting the specified weights.
-        # N = max(|D_i| / w_i)
-        max_required_total = 0
-        for name, length in dataset_lengths.items():
-            w = self.normalized_weights[name]
-            if w > 0:
-                req = length / w
-                if req > max_required_total:
-                    max_required_total = req
-        logger.info(f"[x] Virtual epoch length: {max_required_total}, defined by dataset {name}")
-        self.total_length = int(max_required_total)
-        
-        # 2. Allocate Samples per Dataset
-        # Calculate how many samples each dataset contributes to the virtual epoch based on weights.
-        self.samples_per_dataset = {
-            name: int(self.total_length * w) for name, w in self.normalized_weights.items()
-        }
-        
-        # Adjust to match total_length exactly by adding remainder to the first dataset
-        current_total = sum(self.samples_per_dataset.values())
-        diff = self.total_length - current_total
-        if diff != 0 and self.dataset_names:
-             self.samples_per_dataset[self.dataset_names[0]] += diff
 
-        # 3. Build Virtual Map (Global Index -> Dataset Index)
-        # Create a mapping where each index in the virtual epoch points to a specific dataset.
-        # We create blocks of indices for each dataset. The DataLoader's shuffling will mix these.
+        ref_len = dataset_lengths[self.cfg.reference_dataset]
+        ref_weight = self.normalized_weights[self.cfg.reference_dataset]
+        theoretical_total_length = int(ref_len / ref_weight)
+        
+        self.samples_per_dataset = {
+            name: int(theoretical_total_length * w) for name, w in self.normalized_weights.items()
+        }
+        self.total_length = sum(self.samples_per_dataset.values())
+
+        # virtual_map: maps virtual_index -> dataset_index
+        # indices_map: maps virtual_index -> inner_dataset_index
         self.virtual_map = []
+        self.indices_map = []
+        
         for name in self.dataset_names:
             count = self.samples_per_dataset[name]
-            idx = self.dataset_to_idx[name]
-            self.virtual_map.extend([idx] * count)
-        
-        # 4. Build Indices Map (Global Index -> Inner Dataset Index)
-        # Assign specific indices from the underlying datasets to the virtual slots.
-        # We iterate sequentially (modulo dataset length) to ensure full coverage of each dataset.
-        self.indices_map = [0] * self.total_length
-        
-        cursor = 0
-        for name in self.dataset_names:
-            count = self.samples_per_dataset[name]
+            dataset_idx = self.dataset_to_idx[name]
             ds_len = dataset_lengths[name]
-            # Generate indices: 0, 1, ... ds_len-1, 0, 1...
-            indices = [k % ds_len for k in range(count)]
-            # Assign to the corresponding slots in the map
-            for k in range(count):
-                self.indices_map[cursor + k] = indices[k]
-            cursor += count
+            # Generate indices for this dataset
+            # If count > ds_len, we repeat the dataset (shuffled) multiple times
+            # If count < ds_len, we take a random subset
+            indices = []
+            while len(indices) < count:
+                indices.extend(torch.randperm(ds_len).tolist())
+            indices = indices[:count]
+            
+            self.virtual_map.extend([dataset_idx] * count)
+            self.indices_map.extend(indices)
+
+    def __repr__(self) -> str:
+        return f"[WorldDataset] total_length={self.total_length}, samples_per_dataset={self.samples_per_dataset})"
 
     def __len__(self) -> int:
         return self.total_length
@@ -155,7 +141,7 @@ class WorldDataset(Dataset):
         
         dataset = self.datasets[dataset_name]
         
-        # Resilience loop, sometimes some images are corrupted in droid...
+        # Resilience loop, sometimes some videos are corrupted in droid...
         for attempt in range(self.tolerance):
             try:
                 batch = dataset[inner_index]
@@ -163,8 +149,7 @@ class WorldDataset(Dataset):
                 batch.dataset_names = self.idx_to_dataset
                 return batch
             except Exception as e:
-                logger.warning(f"Failed to load sample from {dataset_name} at index {inner_index} (attempt {attempt+1}/{self.tolerance}): {e}")
-                # Pick a random index from the same dataset
-                inner_index = random.randint(0, len(dataset) - 1)
+                self.logger.warning(f"Failed to load sample from {dataset_name} at index {inner_index} (attempt {attempt+1}/{self.tolerance}): {e}")
+                inner_index = random.randint(0, len(dataset) - 1) # just picking a random index from the same dataset
         
         raise RuntimeError(f"Failed to load sample from {dataset_name} after {self.tolerance} attempts.")

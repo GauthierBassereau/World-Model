@@ -3,6 +3,7 @@ set -euo pipefail
 
 # Usage: 
 #   ./submit_multi_gpu.sh [-s SUFFIX] NUM_GPUS GPU_TYPE path/to/script.py [args...]
+# watch sinfo -p gpu -N   -O "NodeHost:15,StateShort:10,Gres:30,GresUsed:30"
 
 # --- 1. Parse Optional Suffix Flag ---
 SUFFIX=""

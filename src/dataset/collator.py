@@ -10,10 +10,7 @@ class StackCollator:
     def __init__(
         self, 
         sequence_length_distribution: Dict[int, float],
-        shuffle: bool = True,
     ):
-        self.shuffle = shuffle
-        
         self.sequence_length_choices: List[int] = []
         self.sequence_length_probs: List[float] = []
         
@@ -92,17 +89,16 @@ class StackCollator:
         dataset_indices = torch.stack([b.dataset_indices for b in batch])
         episode_ids = torch.stack([b.episode_ids for b in batch])
 
-        if self.shuffle:
-            B = sequence_frames.shape[0]
-            perm = torch.randperm(B)
-            
-            sequence_frames = sequence_frames[perm]
-            sequence_actions = sequence_actions[perm]
-            independent_frames_mask = independent_frames_mask[perm]
-            actions_mask = actions_mask[perm]
-            frames_valid_mask = frames_valid_mask[perm]
-            dataset_indices = dataset_indices[perm]
-            episode_ids = episode_ids[perm]
+        B = sequence_frames.shape[0]
+        perm = torch.randperm(B)
+        
+        sequence_frames = sequence_frames[perm]
+        sequence_actions = sequence_actions[perm]
+        independent_frames_mask = independent_frames_mask[perm]
+        actions_mask = actions_mask[perm]
+        frames_valid_mask = frames_valid_mask[perm]
+        dataset_indices = dataset_indices[perm]
+        episode_ids = episode_ids[perm]
 
         return WorldBatch(
             sequence_frames=sequence_frames,

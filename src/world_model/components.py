@@ -150,7 +150,8 @@ class Attention(nn.Module):
         x: torch.Tensor,
         rope: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         attn_mask: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
+        kv_cache: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+    ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
         batch_size, seq_len, _ = x.shape
         qkv = self.qkv(x)
         qkv = qkv.view(batch_size, seq_len, 3, self.num_heads, self.head_dim)
@@ -169,6 +170,13 @@ class Attention(nn.Module):
         q = q.permute(0, 2, 1, 3)  # [B, H, L, D]
         k = k.permute(0, 2, 1, 3)
         v = v.permute(0, 2, 1, 3)
+
+        if kv_cache is not None:
+            k_cache, v_cache = kv_cache
+            k = torch.cat([k_cache, k], dim=2)
+            v = torch.cat([v_cache, v], dim=2)
+        
+        new_kv_cache = (k, v)
 
         attn_mask_formatted: Optional[torch.Tensor] = None
         if attn_mask is not None:
@@ -204,7 +212,7 @@ class Attention(nn.Module):
         attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size, seq_len, -1)
         attn_output = self.out_proj(attn_output)
         attn_output = self.proj_drop(attn_output)
-        return attn_output
+        return attn_output, new_kv_cache
 
 
 
@@ -267,7 +275,8 @@ class TransformerBlock(nn.Module):
         temporal_rope: Tuple[torch.Tensor, torch.Tensor],
         spatial_mask: torch.Tensor, 
         temporal_mask: Optional[torch.Tensor],
-    ) -> torch.Tensor:
+        kv_cache: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+    ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
         spatial_cos, spatial_sin = spatial_rope
         update_mask = self._build_update_mask(x)
         bsz, time_steps, tokens, dim = x.shape
@@ -279,7 +288,7 @@ class TransformerBlock(nn.Module):
             dtype=spatial_input.dtype,
             device=spatial_input.device,
         )
-        spatial_out = self.spatial_attn(
+        spatial_out, _ = self.spatial_attn(
             spatial_input,
             rope=(spatial_cos, spatial_sin),
             attn_mask=spatial_bias,
@@ -312,10 +321,11 @@ class TransformerBlock(nn.Module):
                     device=temporal_input.device,
                 )
                 
-            temporal_out = self.temporal_attn(
+            temporal_out, new_kv_cache = self.temporal_attn(
                 temporal_input,
                 rope=(temporal_cos, temporal_sin),
                 attn_mask=temporal_bias,
+                kv_cache=kv_cache,
             )
             
             temporal_out = temporal_out.view(bsz, active_tokens_count, time_steps, dim).permute(0, 2, 1, 3)
@@ -333,4 +343,4 @@ class TransformerBlock(nn.Module):
             
         x = x + full_mlp_out
         
-        return x
+        return x, new_kv_cache if self.use_temporal else None

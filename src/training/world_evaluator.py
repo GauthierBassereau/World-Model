@@ -6,14 +6,12 @@ import torch
 import torch.distributed as dist
 import torch.nn as nn
 
-from src.dataset.world_dataset import WorldDatasetConfig
-from src.dataset.collator import WorldBatch
+from src.training.logger import WorldModelLogger
+
+from src.dataset.world_dataset import WorldDatasetConfig, WorldBatch
 from src.dataset.loader import build_world_dataloader, DataloaderConfig
-from src.world_model.diffusion import (
-    DiffusionConfig,
-    EulerSolver,
-    EulerSolverConfig,
-)
+from src.diffusion.signal_scheduler import SignalSchedulerConfig
+from src.diffusion.euler_solver import EulerSolver, EulerSolverConfig
 from src.world_model.rollout import rollout_latents
 
 
@@ -107,62 +105,54 @@ class WorldModelEvaluator:
         config: EvaluationConfig,
         dataset_cfg: WorldDatasetConfig,
         dataloader_cfg: DataloaderConfig,
-        diffusion_cfg: DiffusionConfig,
+        signal_scheduler_cfg: SignalSchedulerConfig,
+        euler_solver_cfg: EulerSolverConfig,
         autoencoder: nn.Module,
+        logger: WorldModelLogger,
         device: torch.device,
-        *,
-        seed: int = 0,
-        solver_cfg: Optional[EulerSolverConfig] = None,
+        seed: int,
         rank: Optional[int] = None,
         world_size: Optional[int] = None,
         is_main_process: bool = True,
     ) -> None:
-        self.cfg = config
-        if self.cfg.max_batches is not None and self.cfg.max_batches < 1:
-            self.cfg.max_batches = 1
-        if self.cfg.rollout_start_frame < 1:
+        self.config = config
+        self.logger = logger
+        if self.config.rollout_start_frame < 1:
             raise ValueError("evaluation.rollout_start_frame must be >= 1.")
-        if not (0.0 < self.cfg.rollout_signal_level <= 1.0):
-            raise ValueError("evaluation.rollout_signal_level must be in (0, 1].")
+        if not (0.0 < self.config.rollout_signal_level <= 1.0):
+            raise ValueError("evaluation.rollout_signal_level must be in (0, 1], diffusion forcing has 0.9 by default")
         self.device = device
         self.rank = rank
         self.world_size = world_size or 1
         self.is_main_process = is_main_process
         self.autoencoder = autoencoder
         self.autoencoder.eval()
-        self.flow_cfg = diffusion_cfg
-        self.solver = EulerSolver(solver_cfg or EulerSolverConfig())
-        self.max_sequence_length = max(
-            int(key) for key in dataset_cfg.sequence_length_distribution.keys()
-        )
+        self.signal_scheduler_cfg = signal_scheduler_cfg
+        self.euler_solver = EulerSolver(euler_solver_cfg)
+        self.max_sequence_length = max(int(key) for key in dataset_cfg.sequence_length_distribution.keys())
         if self.max_sequence_length < 2:
             raise ValueError("Evaluation sequence length must be >= 2.")
-        base_context = min(self.cfg.rollout_start_frame, self.max_sequence_length - 1)
-        self.context_limit = max(1, base_context)
-        self.max_future_steps = max(1, self.max_sequence_length - self.context_limit)
-        try:
-            self.dataloader = build_world_dataloader(
-                dataset_cfg=dataset_cfg,
-                dataloader_cfg=dataloader_cfg,
-                grad_accum_steps=1,
-                rank=self.rank if self.world_size > 1 else None,
-                world_size=self.world_size if self.world_size > 1 else None,
-                seed=seed,
-            )
-            print(
-                f"Length of evaluation dataloader (rank {self.rank if self.rank is not None else 0}): {len(self.dataloader)}"
-            )
-            if self.cfg.max_batches is not None:
-                self.cfg.max_batches = min(self.cfg.max_batches, len(self.dataloader))
-                print(f"Limiting evaluation to {self.cfg.max_batches} batches based on dataloader length.")
-        except ValueError:
-            self.dataloader = None
+        self.max_future_steps = max(1, self.max_sequence_length - self.config.rollout_start_frame)
+        dataset = WorldDataset(dataset_cfg)
+        if self.is_main_process:
+            self.logger.info(dataset)
+        self.dataloader = build_world_dataloader(
+            dataset=dataset,
+            dataloader_cfg=dataloader_cfg,
+            grad_accum_steps=1,
+            rank=self.rank if self.world_size > 1 else None,
+            world_size=self.world_size if self.world_size > 1 else None,
+            seed=seed,
+        )
+        if self.is_main_process:
+            self.logger.info(f"Evaluation dataloader has length: {len(self.dataloader)}")
+            if self.config.max_batches is not None:
+                self.config.max_batches = min(self.config.max_batches, len(self.dataloader))
+                self.logger.info(f"Limiting evaluation to {self.config.max_batches} batches based on dataloader length.")
         self.scenarios: List[Tuple[str, bool]] = [("actions", True), ("no_actions", False)]
 
+    @torch.no_grad()
     def evaluate(self, model: nn.Module) -> Optional[EvaluationSummary]:
-        if self.dataloader is None:
-            return None
-
         stats: Dict[str, SequenceErrorStats] = {
             scenario: SequenceErrorStats(self.max_future_steps) for scenario, _ in self.scenarios
         }
@@ -172,21 +162,20 @@ class WorldModelEvaluator:
         model.eval()
 
         sample_offset = 0
-        with torch.no_grad():
-            for batch_idx, batch in enumerate(self.dataloader):
-                print(f"[rank {self.rank if self.rank is not None else 0}] Evaluating batch {batch_idx + 1}/{self.cfg.max_batches if self.cfg.max_batches is not None else len(self.dataloader)}...")
-                
-                batch_stats, sample_payloads = self._evaluate_batch(model, batch)
-                for scenario, value in batch_stats.items():
-                    prediction, target, valid_mask = value
-                    stats[scenario].update(prediction, target, valid_mask)
-                
-                if sample_payloads:
-                    video_samples.extend(sample_payloads)
-                print(f"[rank {self.rank if self.rank is not None else 0}] Completed evaluation for batch {batch_idx + 1}.")
+        for batch_idx, batch in enumerate(self.dataloader):
+            self.logger.info(f"Evaluating batch {batch_idx + 1}/{self.config.max_batches if self.config.max_batches is not None else len(self.dataloader)}...")
+            
+            batch_stats, sample_payloads = self._evaluate_batch(model, batch)
+            for scenario, value in batch_stats.items():
+                prediction, target, valid_mask = value
+                stats[scenario].update(prediction, target, valid_mask)
+            
+            if sample_payloads:
+                video_samples.extend(sample_payloads)
+            self.logger.info(f"[rank {self.rank if self.rank is not None else 0}] Completed evaluation for batch {batch_idx + 1}.")
 
-                if self.cfg.max_batches is not None and (batch_idx + 1) >= self.cfg.max_batches:
-                    break
+            if self.config.max_batches is not None and (batch_idx + 1) >= self.config.max_batches:
+                break
 
         if was_training:
             model.train()
@@ -205,7 +194,7 @@ class WorldModelEvaluator:
             for key, frames in payload.items():
                 videos[f"evaluation/video_samples/sample_{idx}/{key}"] = frames
 
-        return EvaluationSummary(metrics=metrics, videos=videos)
+        self.logger.log_evaluation(EvaluationSummary(metrics=metrics, videos=videos))
 
     def _evaluate_batch(
         self,
@@ -215,8 +204,8 @@ class WorldModelEvaluator:
         Dict[str, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
         List[Dict[str, torch.Tensor]],
     ]:
-        dtype = torch.bfloat16 if self.cfg.precision == "bf16" else torch.float32
-        is_autocast = self.cfg.precision == "bf16"
+        dtype = torch.bfloat16 if self.config.precision == "bf16" else torch.float32
+        is_autocast = self.config.precision == "bf16"
         
         with torch.autocast(device_type=self.device.type, dtype=dtype, enabled=is_autocast):
             frames = batch.sequence_frames.to(self.device, non_blocking=True)
@@ -227,7 +216,7 @@ class WorldModelEvaluator:
 
             latents = self._encode_frames(frames)
             seq_len = latents.shape[1]
-            context_len = min(self.cfg.rollout_start_frame, max(seq_len - 1, 1))
+            context_len = min(self.config.rollout_start_frame, max(seq_len - 1, 1))
             future_len = max(seq_len - context_len, 0)
 
             observed_latents = latents[:, :context_len, ...].detach()
@@ -247,15 +236,13 @@ class WorldModelEvaluator:
 
                 predicted_stack, full_sequence = rollout_latents(
                     model,
-                    self.solver,
+                    self.euler_solver,
                     latents,
-                    flow_cfg=self.flow_cfg,
-                    context_len=context_len,
-                    future_len=future_len,
-                    rollout_signal_level=self.cfg.rollout_signal_level,
-                    use_actions=use_actions,
-                    actions=actions,
-                    actions_mask=actions_mask,
+                    context_len,
+                    future_len,
+                    self.config.rollout_signal_level,
+                    actions=actions if use_actions else None,
+                    actions_mask=actions_mask if use_actions else None,
                     independent_mask=independent_mask,
                 )
                 batch_metrics[scenario] = (predicted_stack, target_future, future_mask)
@@ -312,7 +299,7 @@ class WorldModelEvaluator:
         scenario_predictions: Dict[str, torch.Tensor],
         batch: WorldBatch,
     ) -> List[Dict[str, Union[torch.Tensor, int]]]:
-        target_indices = self.cfg.video_sample_indices
+        target_indices = self.config.video_sample_indices
         if not target_indices:
             return []
         
@@ -347,6 +334,7 @@ class WorldModelEvaluator:
 
     @torch.no_grad()
     def _encode_frames(self, frames: torch.Tensor) -> torch.Tensor:
+        frames = frames.float() / 255.0
         batch, steps, channels, height, width = frames.shape
         flat = frames.view(batch * steps, channels, height, width)
         latents = self.autoencoder.encode(flat)

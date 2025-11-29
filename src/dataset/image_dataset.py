@@ -11,14 +11,14 @@ from .common import WorldBatch
 from .common import RESIZE_CROP_TRANSFORM_224
 
 @dataclass
-class OpenImagesDatasetConfig:
+class ImageDatasetConfig:
     root: str
     sequence_length: int = 15
 
-class OpenImagesDataset(Dataset):
+class ImageDataset(Dataset):
     def __init__(
         self,
-        cfg: OpenImagesDatasetConfig,
+        cfg: ImageDatasetConfig,
         action_dim: int,
     ):
         self.cfg = cfg
@@ -28,7 +28,7 @@ class OpenImagesDataset(Dataset):
         self.max_sequence_length = self.sequence_length
         
         root_path = Path(cfg.root)
-        cache_file = root_path / ".image_list.txt"
+        cache_file = root_path / "image_paths.txt"
         
         if cache_file.exists():
             with open(cache_file, 'r') as f:

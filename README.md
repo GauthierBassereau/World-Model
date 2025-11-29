@@ -27,13 +27,8 @@ Note: most of these datasets have language instructions for each video -> I wond
 ---
 
 Todos:
-  - For inference need to add noise to past at 0.1, not just the noise level token has it !!!
-  - Create a script to visualize the distribution of latents compared to normal distribution
-  - Implement the option to have x-loss with reweighting just like Dreamerv4
-  - Feature to get only valid sequences in droid, no padded frames, more efficient training...
-  - Right now if fps is not correct in kinetics it raises an error and so worlddataset try another random item, but this also skips the other datasets times... need to have the try and except in each dataset I think to prevent this. Also the worlddataset should probably have a reference dataset so the epoch is defined by its length and not the biggest dataset (which is probably the open images v7)
+  - refactor scripts, create a script to visualize the distribution of latents compared to normal distribution, launch an eval from a checkpoint with special eval config
   - Weigth_decay with no warmup ?
   - EMA impact ?
-  - Look for better handling of ODE solver and sampling on edges 0 and 1, look at RAE, for Euler but also maybe Heun
   - Shortcut forcing
   - (Maybe to try someday) Add a DH head to backbone following RAE paper -> I am really not sure this is useful because I think RAE paper uses v-space prediction, and so that's why DH head is so effective as explained in the JIT paper

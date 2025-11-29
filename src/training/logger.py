@@ -1,14 +1,7 @@
-"""
-Structured logging utilities for the world model trainer.
-
-The ``WorldModelLogger`` centralises local logging, WandB integration, and
-auxiliary visualisations so that the trainer can remain focused on the
-optimization loop.
-"""
-
 import time
 import logging
 import math
+from dataclasses import dataclass
 from typing import Any, Dict, Iterable, Optional, TYPE_CHECKING, List
 
 import numpy as np
@@ -17,13 +10,20 @@ import torch.nn as nn
 from torch.optim import Optimizer
 import yaml
 
-from src.world_model.diffusion import EulerSolverConfig
-
 if TYPE_CHECKING:
-    from src.training.world_trainer import LoggingConfig
     import wandb
     from src.training.world_evaluator import EvaluationSummary
     
+@dataclass
+class LoggingConfig:
+    project: str = "world_model"
+    entity: Optional[str] = None
+    run_name: Optional[str] = None
+    log_interval: int = 10
+    checkpoint_interval: int = 1_000
+    output_dir: str = "checkpoints"
+    tau_log_limit: int = 200
+
 
 def _create_local_logger() -> logging.Logger:
     logger = logging.getLogger("world_model_trainer")
@@ -43,26 +43,21 @@ class WorldModelLogger:
     def __init__(
         self,
         logging_cfg: "LoggingConfig",
-        euler_cfg: EulerSolverConfig,
-        sample_fps: Optional[float] = None,
         is_main_process: bool = True,
     ) -> None:
         self.cfg = logging_cfg
         self.local = _create_local_logger()
         self.is_main_process = is_main_process
-        self.noise_log_limit = logging_cfg.tau_log_limit if logging_cfg.tau_log_limit > 0 else None
-        self.noise_log_count = 0
+        self.signal_log_limit = logging_cfg.tau_log_limit if logging_cfg.tau_log_limit > 0 else None
+        self.signal_log_count = 0
         self.current_step = 0
         self.current_micro_step = 0
         self.wandb_run: Optional["wandb.sdk.wandb_run.Run"] = None
         self._wandb = None
-        if not (euler_cfg.min_signal == 0.0 and euler_cfg.max_signal == 1.0):
-            raise ValueError("Euler solver bounds must be [0.0, 1.0].")
-        self._sample_fps = sample_fps
         self._wandb_eval_defined = False
-        self._tau_values: List[torch.Tensor] = []
-        self._tau_bins: Optional[int] = None
-        self._tau_hist_logged = False
+        self._signal_values: List[torch.Tensor] = []
+        self._signal_bins: Optional[int] = None
+        self._signal_hist_logged = False
         self._last_step_time: Optional[float] = None
         self._step_duration: Optional[float] = None
 
@@ -112,8 +107,8 @@ class WorldModelLogger:
 
     def close(self) -> None:
         if self.is_main_process:
-            if self.noise_log_limit is not None:
-                self._flush_tau_histograms(force=True)
+            if self.signal_log_limit is not None:
+                self._flush_signal_histograms(force=True)
             if self.wandb_run:
                 self.wandb_run.finish()
         self.wandb_run = None
@@ -170,56 +165,56 @@ class WorldModelLogger:
             grad_norm = float(total_norm)
         return {key: grad_norm}
 
-    def log_distr_noise(
+    def log_distr_signal(
         self,
-        tau: torch.Tensor,
+        signal_levels: torch.Tensor,
         bins: int = 25,
     ) -> None:
         if not self.is_main_process:
             return
 
-        values = tau.detach().to(dtype=torch.float32).flatten()
+        values = signal_levels.detach().to(dtype=torch.float32).flatten()
         if values.numel() == 0:
             return
 
         if self.wandb_run is None or self._wandb is None:
             return
 
-        if self.noise_log_limit is None:
-            self._log_tau_histogram(
+        if self.signal_log_limit is None:
+            self._log_signal_histogram(
                 values=values,
                 bins=bins,
             )
-            self.noise_log_count += 1
+            self.signal_log_count += 1
             return
 
-        if self._tau_hist_logged:
+        if self._signal_hist_logged:
             return
 
-        self._tau_values.append(values.cpu())
-        self._tau_bins = bins
-        self.noise_log_count += 1
-        if self.noise_log_limit is not None and self.noise_log_count >= self.noise_log_limit:
-            self._flush_tau_histograms()
+        self._signal_values.append(values.cpu())
+        self._signal_bins = bins
+        self.signal_log_count += 1
+        if self.signal_log_limit is not None and self.signal_log_count >= self.signal_log_limit:
+            self._flush_signal_histograms()
 
-    def _flush_tau_histograms(self, force: bool = False) -> None:
-        if self._tau_hist_logged:
+    def _flush_signal_histograms(self, force: bool = False) -> None:
+        if self._signal_hist_logged:
             return
-        if not force and (self.noise_log_limit is None or self.noise_log_count < self.noise_log_limit):
+        if not force and (self.signal_log_limit is None or self.signal_log_count < self.signal_log_limit):
             return
-        if not self._tau_values:
+        if not self._signal_values:
             return
         if self.wandb_run is None or self._wandb is None:
             return
 
-        values = torch.cat(self._tau_values, dim=0)
-        bins = self._tau_bins or 25
-        self._log_tau_histogram(values=values, bins=bins)
-        self._tau_hist_logged = True
-        self._tau_values.clear()
-        self._tau_bins = None
+        values = torch.cat(self._signal_values, dim=0)
+        bins = self._signal_bins or 25
+        self._log_signal_histogram(values=values, bins=bins)
+        self._signal_hist_logged = True
+        self._signal_values.clear()
+        self._signal_bins = None
 
-    def _log_tau_histogram(
+    def _log_signal_histogram(
         self,
         *,
         values: torch.Tensor,
@@ -237,19 +232,19 @@ class WorldModelLogger:
         counts = torch.zeros(bins, device=device, dtype=torch.float32)
         ones = torch.ones_like(values)
         counts.scatter_add_(0, indices, ones)
-        table = self._wandb.Table(columns=["tau", "count"])
+        table = self._wandb.Table(columns=["signal", "count"])
         flat = torch.stack([centers, counts], dim=1).detach().cpu().tolist()
-        for tau_value, count in flat:
-            truncated_tau = math.floor(float(tau_value) * 1000.0) / 1000.0
-            table.add_data(truncated_tau, float(count))
-        logs["debug/tau_histogram"] = self._wandb.plot.bar(
+        for signal_value, count in flat:
+            truncated_signal = math.floor(float(signal_value) * 1000.0) / 1000.0
+            table.add_data(truncated_signal, float(count))
+        logs["debug/signal_histogram"] = self._wandb.plot.bar(
             table,
-            "tau",
+            "signal",
             "count",
-            title="Tau histogram",
+            title="Signal histogram",
         )
         self.debug(
-            "Logged tau histogram for %d samples (bins=%d).",
+            "Logged signal histogram for %d samples (bins=%d).",
             sample_count,
             bins,
         )
@@ -257,7 +252,7 @@ class WorldModelLogger:
             self.wandb_run.log(logs, step=self.current_step, commit=False)
 
     # ------------------------------------------------------------------ visual logging
-    def log_evaluation(self, result: "EvaluationSummary") -> None:
+    def log_evaluation(self, result: "EvaluationSummary", fps: int = 5) -> None:
         if not self.is_main_process or result is None:
             return
         if result.metrics:
@@ -283,7 +278,7 @@ class WorldModelLogger:
             payload.update(result.metrics)
             self.wandb_run.log(payload, step=self.current_step)
         if self.wandb_run is not None and result.videos:
-            video_payload = self._build_video_payload(result.videos)
+            video_payload = self._build_video_payload(result.videos, fps=fps)
             if video_payload:
                 self.wandb_run.log(video_payload, step=self.current_step)
 
@@ -302,19 +297,13 @@ class WorldModelLogger:
         )
         return array
 
-    def _resolve_fps(self) -> int:
-        if self._sample_fps is None:
-            return 10
-        return max(1, int(round(self._sample_fps)))
-
-    def _build_video_payload(self, videos: Dict[str, torch.Tensor]) -> Dict[str, Any]:
+    def _build_video_payload(self, videos: Dict[str, torch.Tensor], fps: int = 5) -> Dict[str, Any]:
         if self._wandb is None or not videos:
             return {}
         payload: Dict[str, Any] = {}
-        fps_value = self._resolve_fps()
         for key, frames in videos.items():
             array = self._video_from_frames(frames)
-            payload[key] = self._wandb.Video(array, fps=fps_value, format="mp4")
+            payload[key] = self._wandb.Video(array, fps=fps, format="mp4")
         return payload
 
     @staticmethod

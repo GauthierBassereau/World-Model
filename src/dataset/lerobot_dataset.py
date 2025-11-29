@@ -7,12 +7,12 @@ import torch
 from torch.utils.data import Dataset
 
 from .common import WorldBatch
-from lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata, LeRobotDataset
+from lerobot.datasets.lerobot_dataset import LeRobotDataset as LeRobotDatasetLib
 from .common import RESIZE_CROP_TRANSFORM_224
 
 
 @dataclass
-class DroidDatasetConfig:
+class LeRobotDatasetConfig:
     repo_id: str = "aractingi/droid_1.0.1"
     cameras: Tuple[str, ...] = (
         "observation.images.exterior_1_left",
@@ -38,75 +38,14 @@ class DroidDatasetConfig:
     drop_action_probability: float = 0.0
 
     def __post_init__(self) -> None:
-        if self.fps <= 0:
-            raise ValueError("fps must be positive.")
-        if self.sequence_length < 1:
-            raise ValueError("sequence_length must be >= 1.")
-        keys: Sequence[str]
-        if isinstance(self.action_keys, str):
-            keys = (self.action_keys,)
-        else:
-            keys = tuple(self.action_keys)
-        if not keys:
-            raise ValueError("DroidDatasetConfig.action_keys must contain at least one key.")
-        self.action_keys = keys
-        if self.action_representation not in {"delta", "position"}:
-            raise ValueError(
-                "DroidDatasetConfig.action_representation must be either 'delta' or 'position'."
-            )
-
-        if self.action_normalization not in {None, "min_max", "mean_std"}:
-            raise ValueError(
-                "DroidDatasetConfig.action_normalization must be one of None, 'min_max', or 'mean_std'."
-            )
-        if self.action_normalization is None:
-            if self.action_normalization_params is not None:
-                raise ValueError(
-                    "action_normalization_params provided without a corresponding action_normalization."
-                )
-        else:
-            if self.action_normalization_params is None:
-                raise ValueError(
-                    "action_normalization_params must be provided when action_normalization is set."
-                )
-            expected_keys = {"min", "max"} if self.action_normalization == "min_max" else {"mean", "std"}
-            provided_keys = set(self.action_normalization_params.keys())
-            missing = expected_keys - provided_keys
-            extra = provided_keys - expected_keys
-            if missing:
-                raise ValueError(
-                    "action_normalization_params missing required entries: " + ", ".join(sorted(missing))
-                )
-            if extra:
-                raise ValueError(
-                    "action_normalization_params contains unexpected entries: " + ", ".join(sorted(extra))
-                )
-            first_key = next(iter(expected_keys))
-            first_value = self.action_normalization_params[first_key]
-            if not isinstance(first_value, Sequence):
-                raise TypeError(
-                    f"action_normalization_params['{first_key}'] must be a sequence of floats."
-                )
-            reference_length = len(first_value)
-            for key in expected_keys:
-                value = self.action_normalization_params[key]
-                if not isinstance(value, Sequence):
-                    raise TypeError(
-                        f"action_normalization_params['{key}'] must be a sequence of floats."
-                    )
-                if len(value) != reference_length:
-                    raise ValueError(
-                        "All action_normalization_params sequences must have the same length."
-                    )
-        self.episodes = self._normalize_episode_indices(self.episodes)
-        self.excluded_episodes = self._normalize_episode_indices(self.excluded_episodes)
+        self.episodes = self._get_list(self.episodes)
+        self.excluded_episodes = self._get_list(self.excluded_episodes)
 
     @staticmethod
-    def _normalize_episode_indices(indices: Optional[Sequence[int]]) -> Optional[List[int]]:
+    def _get_list(indices: Optional[Sequence[int]]) -> Optional[List[int]]:
         if indices is None:
             return None
-        normalized = [int(idx) for idx in indices]
-        return normalized or None
+        return [int(idx) for idx in indices]
 
 
 def _compute_episode_midpoints(
@@ -121,7 +60,7 @@ def _compute_episode_midpoints(
     """
     meta_eps = getattr(getattr(dataset, "meta", None), "episodes", None)
     if meta_eps is None:
-        raise AttributeError("Dataset does not expose episode metadata required for midpoint sampling.")
+        raise ValueError("Dataset does not expose episode metadata required for midpoint sampling.")
 
     target_episode_ids = list(episodes) if episodes is not None else list(range(len(meta_eps)))
 
@@ -155,15 +94,14 @@ def _compute_episode_midpoints(
 
 
 def _create_delta_timestamps(
-    dataset_cfg: "DroidDatasetConfig",
+    dataset_cfg: "LeRobotDatasetConfig",
     sequence_length: int = None,
 ) -> Dict[str, Sequence[float]]:
     """Ensure delta timestamps are provided for all cameras and action key."""
     max_length = sequence_length if sequence_length is not None else dataset_cfg.sequence_length
-    # Compute frame_delta_seconds from fps
     frame_delta_seconds = 1.0 / dataset_cfg.fps
-    # Generate offsets symmetric around 0
-    offsets = [frame_delta_seconds * (i - (max_length - 1) / 2) for i in range(max_length)]
+    # Generate offsets starting from 0
+    offsets = [frame_delta_seconds * i for i in range(max_length)]
     delta = {camera: list(offsets) for camera in dataset_cfg.cameras}
 
     for key in dataset_cfg.action_keys:
@@ -171,14 +109,14 @@ def _create_delta_timestamps(
     return delta
 
 
-class DroidDataset(Dataset):
-    def __init__(self, cfg: DroidDatasetConfig):
+class LeRobotDataset(Dataset):
+    def __init__(self, cfg: LeRobotDatasetConfig):
         self.cfg = cfg
         
         if not self.cfg.cameras:
-            raise ValueError("DroidDatasetConfig.cameras must contain at least one camera key.")
+            raise ValueError("LeRobotDatasetConfig.cameras must contain at least one camera key.")
         if not self.cfg.action_keys:
-            raise ValueError("DroidDatasetConfig.action_keys must contain at least one key.")
+            raise ValueError("LeRobotDatasetConfig.action_keys must contain at least one key.")
         
         self.sequence_length = cfg.sequence_length
         delta_timestamps = _create_delta_timestamps(cfg, self.sequence_length)
@@ -188,7 +126,7 @@ class DroidDataset(Dataset):
             excluded_set = set(cfg.excluded_episodes)
             episodes = [e for e in episodes if e not in excluded_set]
 
-        self.dataset = LeRobotDataset(
+        self.dataset = LeRobotDatasetLib(
             cfg.repo_id,
             episodes=episodes,
             delta_timestamps=delta_timestamps,
@@ -241,10 +179,6 @@ class DroidDataset(Dataset):
             weights = [
                 self.cfg.camera_probabilities.get(camera, 0.0) for camera in self.cfg.cameras
             ]
-            if not any(weight > 0 for weight in weights):
-                raise ValueError(
-                    "camera_probabilities must include a positive weight for at least one camera."
-                )
         else:
             weights = [1.0] * len(self.cfg.cameras)
 
@@ -319,7 +253,6 @@ class DroidDataset(Dataset):
 
     def _prepare_frames(self, sample: Dict[str, torch.Tensor], camera_key: str, target_length: int) -> torch.Tensor:
         frames = sample[camera_key]
-        # Frames are already [T, C, H, W] from LeRobotDataset
         frames = frames.to(torch.uint8)
         return frames[:target_length].contiguous()
 

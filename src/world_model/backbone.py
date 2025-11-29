@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Dict, Optional, List, Tuple
 
 import torch
 import torch.nn as nn
@@ -26,6 +26,7 @@ class WorldModelConfig:
     rope_base: float = 10000.0
     qk_norm_eps: float = 1e-6
     attn_logit_softcapping: Optional[float] = 50.0
+
 
 class WorldModelBackbone(nn.Module):
     def __init__(self, config: WorldModelConfig) -> None:
@@ -136,10 +137,35 @@ class WorldModelBackbone(nn.Module):
 
         return mask
 
+    @staticmethod
+    def _build_inference_temporal_mask(
+        current_step: int,
+        context_length: Optional[int],
+        independent_frames_mask: Optional[torch.Tensor],
+        batch_size: int,
+        device: torch.device,
+    ) -> torch.Tensor:
+        total_len = current_step + 1
+        mask = torch.ones(1, total_len, dtype=torch.bool, device=device)
+        
+        if context_length is not None:
+            valid_start = max(0, current_step - context_length)
+            mask[:valid_start] = False
+            
+        mask = mask.unsqueeze(0).unsqueeze(0).expand(batch_size, 1, 1, total_len).clone()
+        
+        if independent_frames_mask is not None:
+            independent = independent_frames_mask.to(device=device, dtype=torch.bool).view(batch_size, 1, 1, 1)
+            independent_mask = torch.zeros_like(mask)
+            independent_mask[..., -1] = True
+            mask = torch.where(independent, independent_mask, mask)
+            
+        return mask
+
     def forward(
         self,
         noisy_latents: torch.Tensor, # [Batch, Sequence, Tokens, Dimension]
-        noise_levels: torch.Tensor, # [B, S]
+        signal_levels: torch.Tensor, # [B, S]
         actions: Optional[torch.Tensor] = None, # [B, S, D]
         independent_frames_mask: Optional[torch.Tensor] = None, # [B]
         actions_mask: Optional[torch.Tensor] = None, # [B]
@@ -158,11 +184,11 @@ class WorldModelBackbone(nn.Module):
             mask = actions_mask.to(dtype=torch.bool, device=device).unsqueeze(-1).unsqueeze(-1)
             action_tokens = torch.where(mask, action_tokens, actions_embed)
         
-        noise_tokens = self.noise_embed(noise_levels.flatten()).view(batch_size, time_steps, -1).unsqueeze(2)
-        
+        signal_tokens = self.noise_embed(signal_levels.flatten()).view(batch_size, time_steps, -1).unsqueeze(2)
+
         register_tokens = self.register_tokens.unsqueeze(0).unsqueeze(0).expand(batch_size, time_steps, -1, -1)
 
-        x = torch.cat((noise_tokens, action_tokens, register_tokens, noisy_tokens), dim=2)
+        x = torch.cat((signal_tokens, action_tokens, register_tokens, noisy_tokens), dim=2)
         tokens_per_frame = x.shape[2]
 
         spatial_mask = self._build_spatial_mask(
@@ -183,7 +209,7 @@ class WorldModelBackbone(nn.Module):
         temporal_rope = _rope_cache(time_steps, self.config.latent_dim // self.config.num_heads, self.config.rope_base, str(device))
 
         for block in self.layers:
-            x = block(
+            x, _ = block(
                 x,
                 spatial_rope,
                 temporal_rope,
@@ -193,6 +219,84 @@ class WorldModelBackbone(nn.Module):
 
         # Output: Skip registers (num_registers) and conditioning (2) to get latents
         latents = self.final_norm(x[..., self.config.num_registers + 2 :, :])
-        pred_clean_latents = self.output_proj(latents)
+        output = self.output_proj(latents)
 
-        return {"pred_clean_latents": pred_clean_latents}
+        return output
+
+    def forward_inference(
+        self,
+        noisy_latents: torch.Tensor, # [B, 1, Tokens, D]
+        signal_levels: torch.Tensor, # [B, 1]
+        kv_cache: Optional[List[Optional[Tuple[torch.Tensor, torch.Tensor]]]] = None,
+        actions: Optional[torch.Tensor] = None, # [B, 1, D]
+        independent_frames_mask: Optional[torch.Tensor] = None, # [B]
+        actions_mask: Optional[torch.Tensor] = None, # [B]
+    ) -> Tuple[torch.Tensor, List[Optional[Tuple[torch.Tensor, torch.Tensor]]]]:
+        batch_size, time_steps, latent_tokens, _ = noisy_latents.shape
+        assert time_steps == 1, "forward_inference only supports single time step"
+        device = noisy_latents.device
+
+        current_step = 0
+        if kv_cache is not None:
+            for layer_cache in kv_cache:
+                if layer_cache is not None:
+                    current_step = layer_cache[0].shape[2]
+                    break
+
+        noisy_tokens = self.input_proj(noisy_latents)
+        
+        actions_embed = self.base_action_embed.view(1, 1, 1, -1).expand(batch_size, time_steps, 1, -1)
+        if actions is not None:
+            action_tokens = actions_embed + self.action_proj(actions).unsqueeze(2)
+        else:
+            action_tokens = actions_embed
+        if actions_mask is not None:
+            mask = actions_mask.to(dtype=torch.bool, device=device).unsqueeze(-1).unsqueeze(-1)
+            action_tokens = torch.where(mask, action_tokens, actions_embed)
+        
+        signal_tokens = self.noise_embed(signal_levels.flatten()).view(batch_size, time_steps, -1).unsqueeze(2)
+
+        register_tokens = self.register_tokens.unsqueeze(0).unsqueeze(0).expand(batch_size, time_steps, -1, -1)
+
+        x = torch.cat((signal_tokens, action_tokens, register_tokens, noisy_tokens), dim=2)
+        tokens_per_frame = x.shape[2]
+
+        spatial_mask = self._build_spatial_mask(
+            latent_tokens, 
+            self.config.num_registers, 
+            0, # frozen_token_index
+            device
+        )
+        temporal_mask = self._build_inference_temporal_mask(
+            current_step, 
+            self.config.temporal_context_length, 
+            independent_frames_mask, 
+            batch_size, 
+            device
+        )
+
+        spatial_rope = _rope_cache(tokens_per_frame, self.config.latent_dim // self.config.num_heads, self.config.rope_base, str(device))
+        
+        full_temporal_rope = _rope_cache(current_step + 1, self.config.latent_dim // self.config.num_heads, self.config.rope_base, str(device))
+        temporal_rope = (
+            full_temporal_rope[0][current_step : current_step + 1],
+            full_temporal_rope[1][current_step : current_step + 1]
+        )
+
+        new_kv_cache_list = []
+        for i, block in enumerate(self.layers):
+            layer_cache = kv_cache[i] if kv_cache is not None else None
+            x, new_layer_cache = block(
+                x,
+                spatial_rope,
+                temporal_rope,
+                spatial_mask=spatial_mask,
+                temporal_mask=temporal_mask,
+                kv_cache=layer_cache
+            )
+            new_kv_cache_list.append(new_layer_cache)
+
+        latents = self.final_norm(x[..., self.config.num_registers + 2 :, :])
+        output = self.output_proj(latents)
+
+        return output, new_kv_cache_list

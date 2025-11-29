@@ -15,33 +15,36 @@ from .common import WorldBatch
 from .common import RESIZE_CROP_TRANSFORM_224
 
 @dataclass
-class KineticsDatasetConfig:
+class VideoDatasetConfig:
     root: str
     fps: float = 3.0
     sequence_length: int = 15
+    fps_error_threshold: float = 0.3
 
-class KineticsDataset(Dataset):
-    def __init__(self, cfg: KineticsDatasetConfig, action_dim: int):
+# TODO: manage the cuts in videos
+class VideoDataset(Dataset):
+    def __init__(self, cfg: VideoDatasetConfig, action_dim: int):
         self.cfg = cfg
         self.action_dim = action_dim
         self.sequence_length = cfg.sequence_length
         self.fps = cfg.fps
+        self.fps_error_threshold = cfg.fps_error_threshold
         
         root_path = Path(cfg.root)
-        cache_file = root_path / f"kinetics_paths.txt"
+        cache_file = root_path / f"video_paths.txt"
         
         if cache_file.exists():
             with open(cache_file, 'r') as f:
                 self.video_paths = [line.strip() for line in f if line.strip()]
         else:
-            print(f"[KineticsDataset] Scanning Kinetics directory: {root_path}")
+            print(f"[VideoDataset] Scanning directory: {root_path}")
             paths = sorted(list(root_path.rglob("*.mp4")) + list(root_path.rglob("*.avi")))
             self.video_paths = [str(p) for p in paths]
             
             with open(cache_file, 'w') as f:
                 for p in self.video_paths:
                     f.write(f"{p}\n")
-            print(f"[KineticsDataset] Cached {len(self.video_paths)} videos.")
+            print(f"[VideoDataset] Cached {len(self.video_paths)} videos.")
 
     def __len__(self) -> int:
         return len(self.video_paths)
@@ -62,7 +65,7 @@ class KineticsDataset(Dataset):
         step = max(1, int(round(exact_step)))
         effective_fps = native_fps / step
         fps_error = abs(effective_fps - self.fps)
-        if fps_error > 0.2:
+        if fps_error > self.fps_error_threshold:
             raise ValueError(f"FPS Mismatch in {Path(video_path).name}: "
                     f"Native={native_fps:.2f}, Target={self.fps}, Step={step}. "
                     f"Resulting Effective FPS={effective_fps:.2f} (Error: {fps_error:.2f})")

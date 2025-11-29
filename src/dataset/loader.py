@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import torch
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.data.distributed import DistributedSampler
-from .world_dataset import WorldDataset, WorldDatasetConfig
+from .world_dataset import WorldDataset
 from .collator import StackCollator
 
 @dataclass
@@ -14,7 +14,7 @@ class DataloaderConfig:
     pin_memory: bool = True
 
 def build_world_dataloader(
-    dataset_cfg: WorldDatasetConfig,
+    dataset: WorldDataset,
     dataloader_cfg: DataloaderConfig,
     grad_accum_steps: int = 1,
     rank: Optional[int] = None,
@@ -34,18 +34,10 @@ def build_world_dataloader(
     )
     dataloader_batch_size = micro_batch_size
 
-    if rank is None or rank == 0:
-        print("[ ] Building world dataset...")
-
-    world_dataset = WorldDataset(dataset_cfg)
-    
-    if rank is None or rank == 0:
-        print(f"[x] World dataset created with {len(world_dataset.datasets)} sub-datasets. Total virtual length: {len(world_dataset)}")
-
     sampler: Optional[DistributedSampler] = None
     if distributed:
         sampler = DistributedSampler(
-            world_dataset,
+            dataset,
             num_replicas=world_size,
             rank=rank or 0,
             shuffle=dataloader_cfg.shuffle,
@@ -55,11 +47,11 @@ def build_world_dataloader(
 
     collate = StackCollator(
         shuffle=True,
-        sequence_length_distribution=dataset_cfg.sequence_length_distribution
+        sequence_length_distribution=dataset.cfg.sequence_length_distribution
     )
 
     dataloader = DataLoader(
-        world_dataset,
+        dataset,
         batch_size=dataloader_batch_size,
         shuffle=dataloader_cfg.shuffle if sampler is None else False,
         sampler=sampler,
@@ -68,7 +60,4 @@ def build_world_dataloader(
         collate_fn=collate,
     )
     
-    if rank is None or rank == 0:
-        print(f"[x] Dataloader built. Batch size: {dataloader_batch_size} (local), {dataloader_cfg.batch_size} (global).")
-        
     return dataloader

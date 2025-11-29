@@ -1,35 +1,29 @@
 import copy
-import random
 import datetime
 import time
-import yaml
 from contextlib import nullcontext
-from dataclasses import asdict, dataclass, is_dataclass, field
+from dataclasses import asdict, dataclass, field
 from functools import partial
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 import torch.distributed as dist
-from torch.nn.parallel import DistributedDataParallel
 
-from src.rae_dino.rae import RAE
+from src.training.logger import LoggingConfig
+
 from src.dataset.loader import build_world_dataloader, DataloaderConfig
-from src.dataset.world_dataset import WorldDatasetConfig, WorldBatch
-from src.dataset.droid_dataset import DroidDatasetConfig
+from src.dataset.world_dataset import WorldDataset, WorldBatch, WorldDatasetConfig
+
 from src.world_model.backbone import WorldModelConfig
-from src.training.world_evaluator import WorldModelEvaluator, EvaluationConfig
-from src.world_model.diffusion import (
-    DiffusionConfig,
-    EulerSolverConfig,
-    NoiseScheduler,
-    latents_to_velocity,
-    sample_base_noise,
-)
+
+from src.diffusion.common import calculate_velocity_1_to_2
+from src.diffusion.euler_solver import EulerSolverConfig
+from src.diffusion.signal_scheduler import SignalScheduler, SignalSchedulerConfig
+
 from src.training.logger import WorldModelLogger
 from src.training.utils import set_seed, sync_metrics
+from src.training.world_evaluator import WorldModelEvaluator, EvaluationConfig
 
 
 @dataclass
@@ -43,25 +37,16 @@ class OptimizerConfig:
 
 @dataclass
 class TrainerLoopConfig:
-    max_steps: Optional[int] = None
+    loss_type: str = "position"
     grad_accum_steps: int = 1
     precision: str = "bf16"
     seed: int = 1234
-    device: Optional[str] = None
     evaluation_interval: int = 1000
     load_checkpoint: Optional[str] = None
     resume: bool = False
-
-
-@dataclass
-class LoggingConfig:
-    project: str = "world_model"
-    entity: Optional[str] = None
-    run_name: Optional[str] = None
-    log_interval: int = 10
-    checkpoint_interval: int = 1_000
-    output_dir: str = "checkpoints"
-    tau_log_limit: int = 200
+    loss_weighting: Optional[str] = None
+    loss_weighting_intercept: float = 0.1
+    loss_weighting_slope: float = 0.9
 
 
 @dataclass
@@ -81,36 +66,37 @@ class WorldModelTrainingConfig:
     train_dataloader: DataloaderConfig = field(default_factory=DataloaderConfig)
     eval_dataset: WorldDatasetConfig = field(default_factory=lambda: WorldDatasetConfig(datasets={}, weights={}))
     eval_dataloader: DataloaderConfig = field(default_factory=DataloaderConfig)
+    trainer: TrainerLoopConfig = field(default_factory=TrainerLoopConfig)
     evaluator: EvaluationConfig = field(default_factory=EvaluationConfig)
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
-    trainer: TrainerLoopConfig = field(default_factory=TrainerLoopConfig)
-    logging: LoggingConfig = field(default_factory=LoggingConfig)
-    diffusion: DiffusionConfig = field(default_factory=DiffusionConfig)
     world_model: WorldModelConfig = field(default_factory=WorldModelConfig)
+    signal_scheduler: SignalSchedulerConfig = field(default_factory=SignalSchedulerConfig)
+    euler_solver: EulerSolverConfig = field(default_factory=EulerSolverConfig)
     ema: EMAConfig = field(default_factory=EMAConfig)
-    ode_solver: EulerSolverConfig = field(default_factory=EulerSolverConfig)
+    logging: LoggingConfig = field(default_factory=LoggingConfig)
 
 
 class WorldModelTrainer:
     def __init__(
         self,
         config: WorldModelTrainingConfig,
-        model: nn.Module
+        model: torch.nn.Module,
+        autoencoder: torch.nn.Module,
     ) -> None:
         self.config = config
-        self.flow_cfg = config.diffusion
-        self.scheduler = NoiseScheduler(self.flow_cfg)
-        self.ema_cfg = config.ema
-        self.ema_model: Optional[nn.Module] = None
-        self._ema_param_pairs: List[Tuple[torch.nn.Parameter, torch.nn.Parameter]] = []
-        self._ema_buffer_pairs: List[Tuple[torch.Tensor, torch.Tensor]] = []
-        self._ema_checkpoint_state: Optional[Dict[str, torch.Tensor]] = None
-
-        self._sampler_epoch = 0
         self._dataloader_iter = None
-        self._checkpoint_dir: Optional[Path] = None
+        self._sampler_epoch = 0
+        self.epoch_step = 0
+        self.global_step = 0
+        self._train_module: torch.nn.Module
+        autocast_enabled = config.trainer.precision in {"bf16", "bfloat16"}
+        if isinstance(config.optimizer.lr, dict):
+            schedule = {int(k): v for k, v in config.optimizer.lr.items()}
+            min_step = min(schedule.keys())
+            initial_lr = schedule[min_step]
+        else:
+            initial_lr = config.optimizer.lr
 
-        # Managing devices and distributed setup
         dist.init_process_group(backend="nccl", timeout=datetime.timedelta(minutes=30))
         self.world_size = dist.get_world_size()
         self.rank = dist.get_rank()
@@ -118,10 +104,12 @@ class WorldModelTrainer:
         torch.cuda.set_device(self.device_idx)
         self.device = torch.device("cuda", self.device_idx)
         self.is_main_process = self.rank == 0
+        
+        seed = set_seed(config.trainer.seed, self.world_size, self.rank)
 
         self.model = model
         self.model.to(self.device).train()
-        self.autoencoder = RAE() # For now hardcoded RAE, but later could be any AE        
+        self.autoencoder = autoencoder
         self.autoencoder.to(self.device).eval()
         for param in self.autoencoder.parameters():
             param.requires_grad_(False)
@@ -129,89 +117,20 @@ class WorldModelTrainer:
         self.model = torch.compile(self.model)
         # self.autoencoder = torch.compile(self.autoencoder)
 
-        seed = set_seed(config.trainer.seed, self.world_size, self.rank)
-
-        sample_fps = self.config.train_dataset.fps
-        self.logger = WorldModelLogger(
-            config.logging,
-            euler_cfg=self.config.ode_solver,
-            sample_fps=sample_fps,
-            is_main_process=self.is_main_process,
-        )
-
-        self.logger.log_config(asdict(config))
-
-        self.dataloader = build_world_dataloader(
-            dataset_cfg=config.train_dataset,
-            dataloader_cfg=config.train_dataloader,
-            grad_accum_steps=config.trainer.grad_accum_steps,
-            seed=seed,
-            rank=self.rank,
-            world_size=self.world_size,
-        )
-
-        self.evaluator: Optional[WorldModelEvaluator] = None
-        try:
-            evaluator = WorldModelEvaluator(
-                config=config.evaluator,
-                dataset_cfg=config.eval_dataset,
-                dataloader_cfg=config.eval_dataloader,
-                diffusion_cfg=self.flow_cfg,
-                autoencoder=self.autoencoder,
-                device=self.device,
-                seed=seed,
-                solver_cfg=self.config.ode_solver,
-                rank=self.rank,
-                world_size=self.world_size,
-                is_main_process=self.is_main_process,
-            )
-            if evaluator.dataloader is None:
-                if self.is_main_process:
-                    self.logger.warning(
-                        "Evaluation dataset split unavailable; metrics will be skipped."
-                    )
-            else:
-                self.evaluator = evaluator
-        except ValueError as exc:
-            if self.is_main_process:
-                self.logger.warning(
-                    "Evaluation disabled due to configuration issue: %s",
-                    exc,
-                )
-            
-        initial_lr = config.optimizer.lr
-        if isinstance(initial_lr, dict):
-            # If dict, use the value at the smallest step, or 0.0 if empty (unlikely)
-            if initial_lr:
-                # Keys are strings from config, convert to int
-                schedule = {int(k): v for k, v in initial_lr.items()}
-                min_step = min(schedule.keys())
-                initial_lr = schedule[min_step]
-            else:
-                initial_lr = 0.0
-
-        self.optimizer = torch.optim.AdamW(
-            self.model.parameters(),
-            lr=initial_lr,
-            betas=config.optimizer.betas,
-            weight_decay=config.optimizer.weight_decay,
-            eps=config.optimizer.eps,
-        )
-
-        self._init_lr_schedule()
-        
-        self._train_module: nn.Module
         if self.world_size > 1:
-            self._train_module = DistributedDataParallel(
+            self._train_module = torch.nn.parallel.DistributedDataParallel(
                 self.model,
                 device_ids=[self.device_idx],
                 gradient_as_bucket_view=False,
             )
-            print(f"[rank {self.rank}] Backbone wrapped in DDP.", flush=True)
         else:
             self._train_module = self.model
 
-        autocast_enabled = config.trainer.precision in {"bf16", "bfloat16"} and self.device.type == "cuda"
+        self.logger = WorldModelLogger(
+            config.logging,
+            is_main_process=self.is_main_process,
+        )
+        
         if autocast_enabled:
             self._autocast_scope = partial(
                 torch.autocast,
@@ -221,18 +140,67 @@ class WorldModelTrainer:
             )
         else:
             self._autocast_scope = nullcontext
-        self.logger.info(
-            "AMP settings: autocast=%s (dtype=%s)",
-            autocast_enabled,
-            torch.bfloat16 if autocast_enabled else None,
+        self.logger.info("AMP settings: autocast=%s (dtype=%s)", autocast_enabled, torch.bfloat16 if autocast_enabled else None)
+
+        dataset = WorldDataset(config.train_dataset, logger=self.logger)
+        if self.is_main_process:
+            self.logger.info(dataset)
+        
+        self.dataloader = build_world_dataloader(
+            dataset=dataset,
+            dataloader_cfg=config.train_dataloader,
+            grad_accum_steps=config.trainer.grad_accum_steps,
+            seed=seed,
+            rank=self.rank,
+            world_size=self.world_size,
+        )
+        if self.is_main_process:
+            self.logger.info(f"Training dataloader has length: {len(self.dataloader)}")
+
+        self.evaluator: Optional[WorldModelEvaluator] = None
+        evaluator = WorldModelEvaluator(
+            config=config.evaluator,
+            dataset_cfg=config.eval_dataset,
+            dataloader_cfg=config.eval_dataloader,
+            signal_scheduler_cfg=config.signal_scheduler,
+            euler_solver_cfg=config.euler_solver,
+            autoencoder=self.autoencoder,
+            logger=self.logger,
+            device=self.device,
+            seed=seed,
+            rank=self.rank,
+            world_size=self.world_size,
+            is_main_process=self.is_main_process,
+        )
+        self.logger.info(f"Evaluation dataloader has length: {len(evaluator.dataloader)}")
+            
+        self.optimizer = torch.optim.AdamW(
+            self.model.parameters(),
+            lr=initial_lr,
+            betas=config.optimizer.betas,
+            weight_decay=config.optimizer.weight_decay,
+            eps=config.optimizer.eps,
         )
 
-        self.global_step = 0
+        self._init_lr_schedule()
+
+        self.signal_scheduler = SignalScheduler(config.signal_scheduler)
+
+        self.ema_model: Optional[torch.nn.Module] = None
+        self._ema_param_pairs: List[Tuple[torch.nn.Parameter, torch.nn.Parameter]] = []
+        self._ema_buffer_pairs: List[Tuple[torch.Tensor, torch.Tensor]] = []
+        self._ema_checkpoint_state: Optional[Dict[str, torch.Tensor]] = None
+
         self._maybe_load_checkpoint()
-        if self.ema_cfg.enabled:
+        if config.ema.enabled:
             self._init_ema_model()
+
         self.logger.init_wandb(asdict(self.config))
-        self._checkpoint_dir = self._resolve_checkpoint_dir()
+        self.logger.log_config(asdict(config))
+
+        base_dir = Path(config.logging.output_dir)
+        wandb_run = getattr(self.logger, "wandb_run", "no_name")
+        self._checkpoint_dir = base_dir / wandb_run.name
 
 
 
@@ -241,14 +209,9 @@ class WorldModelTrainer:
         self._lr_schedule: Optional[List[Tuple[int, float]]] = None
         
         if isinstance(lr_config, dict):
-            # Convert keys to int and sort
-            try:
-                schedule = {int(k): v for k, v in lr_config.items()}
-            except ValueError as e:
-                raise ValueError(f"LR schedule keys must be convertible to integers. Got error: {e}")
+            schedule = {int(k): v for k, v in lr_config.items()}
             self._lr_schedule = sorted(schedule.items(), key=lambda x: x[0])
         else:
-            # Constant LR, no schedule needed effectively, but we can just set it as None
             self._lr_schedule = None
 
     def _init_ema_model(self) -> None:
@@ -273,10 +236,10 @@ class WorldModelTrainer:
             return
         
         step = self.global_step
-        if step < self.ema_cfg.start_step:
+        if step < self.config.ema.start_step:
             return
 
-        cur_decay = self.ema_cfg.decay
+        cur_decay = self.config.ema.decay
 
         with torch.no_grad():
             for ema_param, param in self._ema_param_pairs:
@@ -293,10 +256,6 @@ class WorldModelTrainer:
     def _apply_lr_schedule(self, step: int) -> None:
         if self._lr_schedule is None:
             return
-
-        # Linear interpolation
-        # Schedule is a sorted list of (step, lr)
-        # Find the segment [start_step, end_step] that contains 'step'
         
         target_lr = self._lr_schedule[-1][1] # Default to last LR if beyond
         
@@ -316,29 +275,21 @@ class WorldModelTrainer:
             group["lr"] = target_lr
 
     def train(self) -> None:
-        total_steps = self._resolve_total_steps()
-        if self.global_step >= total_steps:
-            self.logger.info(
-                "Checkpoint already at or beyond max_steps (%d >= %d); nothing to do.",
-                self.global_step,
-                total_steps,
-            )
-            self.close()
-            return
-
         self.logger.info(
-            "Starting world model training for %d steps on %s (resuming at step %d)",
-            total_steps,
+            "Starting world model training on %s (resuming at epoch %d, epoch step %d, global step %d)",
             self.device,
+            self._sampler_epoch,
+            self.epoch_step,
             self.global_step,
         )
 
-
-        for step in range(self.global_step + 1, total_steps + 1):
-            self._apply_lr_schedule(step)
-            if self.device.type == "cuda" and step == 1:
+        while True:
+            self.epoch_step += 1
+            self.global_step += 1
+            self._apply_lr_schedule(self.global_step)
+            if self.device.type == "cuda" and self.global_step == 1:
                 torch.cuda.reset_peak_memory_stats(self.device)
-            self.logger.start_step(step)
+            self.logger.start_step(self.global_step)
             self._train_module.train()
             self.optimizer.zero_grad()
             accum_metrics: Dict[str, float] = {}
@@ -364,11 +315,9 @@ class WorldModelTrainer:
 
             self._update_ema()
 
-            if self.device.type == "cuda" and step == 1:
+            if self.device.type == "cuda" and self.global_step == 1:
                 peak_mem_gb = torch.cuda.max_memory_allocated(self.device) / (1024**3)
-                print(f"[GPU {self.device.index}] step {step} peak memory: {peak_mem_gb:.2f} GB", flush=True)
-
-            self.global_step = step
+                print(f"[GPU {self.device.index}] global step {self.global_step} peak memory: {peak_mem_gb:.2f} GB", flush=True)
             mean_metrics = {
                 key: value / self.config.trainer.grad_accum_steps for key, value in accum_metrics.items()
             }
@@ -376,83 +325,118 @@ class WorldModelTrainer:
             mean_metrics["learning_rate"] = lr_value
             if grad_metrics:
                 mean_metrics.update(grad_metrics)
-            mean_metrics = self._sync_metrics(mean_metrics)
+            mean_metrics = sync_metrics(mean_metrics, self.world_size, self.device)
             self.logger.log_training_metrics(mean_metrics)
-            self._maybe_run_evaluation(step)
+            self._maybe_run_evaluation(self.global_step)
 
             if (
                 self.config.logging.checkpoint_interval
-                and step % self.config.logging.checkpoint_interval == 0
+                and self.global_step % self.config.logging.checkpoint_interval == 0
             ):
-                self._save_checkpoint(step)
-
-        self.logger.info("Finished training")
+                self._save_checkpoint(self.global_step)
 
     def _train_micro_step(
         self,
         batch: WorldBatch,
     ) -> Dict[str, float]:
         frames = batch.sequence_frames.to(self.device, non_blocking=True)
-        frames = frames.float() / 255.0
         actions = batch.sequence_actions.to(self.device, non_blocking=True)
         independent_frames_mask = batch.independent_frames_mask.to(self.device, non_blocking=True)
         actions_mask = batch.actions_mask.to(self.device, non_blocking=True)
         frames_valid_mask = batch.frames_valid_mask.to(self.device, non_blocking=True)
         dataset_indices = batch.dataset_indices.to(self.device, non_blocking=True)
-
-        latents = self._encode_frames(frames)
-
-        tau = self.scheduler.sample(latents) # High signal level -> tau around 1
-        base_noise = sample_base_noise(latents, self.flow_cfg)
-        tau_factor = tau.unsqueeze(-1).unsqueeze(-1)
-        noisy_latents = (1.0 - tau_factor) * base_noise + tau_factor * latents
-        self.logger.log_distr_noise(tau)
+        
+        frames = frames.float() / 255.0
+        with torch.no_grad():
+            batch_size, steps, channels, height, width = frames.shape
+            flat = frames.view(batch_size * steps, channels, height, width)
+            latents = self.autoencoder.encode(flat).detach().clone() # Detach and clone needed because compile mess with autograd graph
+            tokens, dim = latents.shape[1], latents.shape[2]
+            latents = latents.view(batch_size, steps, tokens, dim)
+        
+        signal_levels = self.signal_scheduler.sample(latents) # High signal level -> tau around 1
+        self.logger.log_distr_signal(signal_levels)
+        base_noise = torch.randn_like(latents)
+        signal_levels = signal_levels.unsqueeze(-1).unsqueeze(-1)
+        
+        noisy_latents = (1.0 - signal_levels) * base_noise + signal_levels * latents
 
         with self._autocast_scope():
             outputs = self._train_module(
                 noisy_latents,
-                noise_levels=tau,
+                signal_levels=signal_levels,
                 actions=actions,
                 independent_frames_mask=independent_frames_mask,
                 actions_mask=actions_mask,
             )
-            pred_clean_latents = outputs.get("pred_clean_latents")
 
-            # Loss computation -> Basically following Dreamerv4 and JiT(https://arxiv.org/pdf/2511.13720v1) papers
-            # It is better to predict in x space because manifold is lower dim there than in noise space
-            # But keep the v prediction formula, because it reweights the loss depending on tau
-            v_true = latents - base_noise
-            v_pred = latents_to_velocity(
-                pred_clean_latents=pred_clean_latents,
+            loss, metrics = self._compute_loss(
+                latents=latents,
                 noisy_latents=noisy_latents,
-                noise_levels=tau,
+                outputs=outputs,
+                signal_levels=signal_levels,
+                base_noise=base_noise,
+                frames_valid_mask=frames_valid_mask,
+                independent_frames_mask=independent_frames_mask,
+                dataset_indices=dataset_indices,
+                dataset_names=batch.dataset_names,
+            )
+
+        loss.backward()
+
+        return metrics
+
+    def _compute_loss(
+        self,
+        latents: torch.Tensor,
+        noisy_latents: torch.Tensor,
+        outputs: torch.Tensor,
+        signal_levels: torch.Tensor,
+        base_noise: torch.Tensor,
+        frames_valid_mask: torch.Tensor,
+        independent_frames_mask: torch.Tensor,
+        dataset_indices: torch.Tensor,
+        dataset_names: Dict[int, str],
+    ) -> Tuple[torch.Tensor, Dict[str, float]]:
+        if self.config.trainer.loss_type == "position":
+            loss_unreduced = F.mse_loss(latents, outputs, reduction="none")
+        else:
+            v_true = latents - base_noise
+            v_pred = calculate_velocity_1_to_2(
+                latent_1=noisy_latents,
+                latent_2=outputs,
+                signal_levels_1=signal_levels,
+                signal_levels_2=torch.ones_like(signal_levels),
+                min_denom=0.05,
             )
             loss_unreduced = F.mse_loss(v_pred, v_true, reduction="none")
 
-            # Apply valid frame mask, some sequences may have padding frames which should not contribute to loss
-            frames_valid_mask = frames_valid_mask.to(dtype=loss_unreduced.dtype)
-            frame_loss = loss_unreduced.mean(dim=(-1, -2))
-            valid_frame_loss = frame_loss * frames_valid_mask
-            denom = frames_valid_mask.sum().clamp_min(1.0)
-            loss = valid_frame_loss.sum() / denom
-            scaled_loss = loss / self.config.trainer.grad_accum_steps
+        if self.config.trainer.loss_weighting == "linear":
+            weights = self.config.trainer.loss_weighting_intercept + self.config.trainer.loss_weighting_slope * signal_levels
+            loss_unreduced = loss_unreduced * weights
+
+        # Apply valid frame mask, some sequences may have padding frames which should not contribute to loss
+        frames_valid_mask = frames_valid_mask.to(dtype=loss_unreduced.dtype)
+        frame_loss = loss_unreduced.mean(dim=(-1, -2))
+        valid_frame_loss = frame_loss * frames_valid_mask
+        denom = frames_valid_mask.sum().clamp_min(1.0)
+        loss = valid_frame_loss.sum() / denom
+        scaled_loss = loss / self.config.trainer.grad_accum_steps
+        
+        metrics = {
+            "l2_loss": float(loss),
+        }
+
+        if self.global_step % 10 == 0:
+            metrics.update(self._compute_loss_breakdown(
+                valid_frame_loss,
+                frames_valid_mask,
+                independent_frames_mask,
+                dataset_indices,
+                dataset_names,
+            ))
             
-            metrics = {
-                "l2_loss": float(loss),
-            }
-
-            if self.global_step % 10 == 0:
-                metrics.update(self._compute_loss_breakdown(
-                    valid_frame_loss,
-                    frames_valid_mask,
-                    independent_frames_mask,
-                    dataset_indices,
-                    batch.dataset_names,
-                ))
-
-        scaled_loss.backward()
-
-        return metrics
+        return scaled_loss, metrics
 
     def _compute_loss_breakdown(
         self,
@@ -516,7 +500,7 @@ class WorldModelTrainer:
                 metrics[f"l2_loss/{name}"] = float(ds_loss_total[idx] / d_total)
                 
             d_indep = ds_denom_indep[idx]
-        if d_indep > 0:
+            if d_indep > 0:
                 metrics[f"l2_loss/{name}/independent"] = float(ds_loss_indep[idx] / d_indep)
                 
             d_dept = ds_denom_dept[idx]
@@ -525,23 +509,15 @@ class WorldModelTrainer:
                     
         return metrics
 
-    @torch.no_grad()
-    def _encode_frames(self, frames: torch.Tensor) -> torch.Tensor:
-        batch, steps, channels, height, width = frames.shape
-        flat = frames.view(batch * steps, channels, height, width)
-        latents = self.autoencoder.encode(flat).detach().clone() # Detach and clone needed because compile mess with autograd graph
-        tokens, dim = latents.shape[1], latents.shape[2]
-        return latents.view(batch, steps, tokens, dim)
-
     def _next_batch(self) -> WorldBatch:
-
         if self._dataloader_iter is None:
             self._dataloader_iter = self._create_data_iter()
         try:
             return next(self._dataloader_iter)
         except StopIteration:
             if self.is_main_process:
-                self.logger.warning("Data iterator exhausted (StopIteration); reinitializing dataloader iterator.")
+                self.logger.info(f"Epoch {self._sampler_epoch} finished at step {self.epoch_step}. Starting epoch {self._sampler_epoch + 1}.")
+            self.epoch_step = 0
             self._dataloader_iter = self._create_data_iter()
             return next(self._dataloader_iter)
 
@@ -552,52 +528,24 @@ class WorldModelTrainer:
         self._sampler_epoch += 1
         return iter(self.dataloader)
 
-
-    def _sync_metrics(self, metrics: Dict[str, float]) -> Dict[str, float]:
-        return sync_metrics(metrics, self.world_size, self.device)
-
     def _maybe_run_evaluation(self, step: int) -> None:
-        if self.evaluator is None:
-            return
         interval = self.config.trainer.evaluation_interval
         if interval is None or interval <= 0 or step % interval != 0:
             return
-        eval_model = self.ema_model if self.ema_model is not None else self.model
-        model_device = next(eval_model.parameters()).device
-        if model_device != self.device:
-            self.logger.warning(
-                "Evaluation model device %s does not match trainer device %s; skipping evaluation.",
-                model_device,
-                self.device,
-            )
-            return
-        if self.is_main_process:
-            self.logger.info("Running evaluation...")
-        result = self.evaluator.evaluate(eval_model)
-        if result is not None and self.is_main_process:
-            self.logger.log_evaluation(result)
-
-    def _resolve_total_steps(self) -> int:
-        configured = self.config.trainer.max_steps
-        if configured is not None:
-            return configured
-        total = len(self.dataloader)
-        if total <= 0:
-            raise ValueError(
-                "TrainerLoopConfig.max_steps resolved to zero steps; check dataset configuration."
-            )
-        return total
+        eval_model = self.ema_model if self.config.ema.enabled else self.model
+        self.evaluator.evaluate(eval_model)
 
     def _save_checkpoint(self, step: int) -> None:
         if not self.is_main_process:
             return
-        checkpoint_dir = self._checkpoint_dir or self._resolve_checkpoint_dir()
-        checkpoint_dir.mkdir(parents=True, exist_ok=True)
-        checkpoint_path = checkpoint_dir / f"world_model_step_{step:06d}.pt"
+        self._checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        checkpoint_path = self._checkpoint_dir / f"world_model_step_{step:06d}.pt"
         payload = {
             "model": self.model.state_dict(),
             "optimizer": self.optimizer.state_dict(),
-            "step": step,
+            "epoch": self._sampler_epoch,
+            "epoch_step": self.epoch_step,
+            "global_step": self.global_step,
         }
         payload["config"] = asdict(self.config)
         if self.ema_model is not None:
@@ -616,27 +564,6 @@ class WorldModelTrainer:
         for buffer in self.ema_model.buffers():
             dist.broadcast(buffer.data, src=0)
 
-    def close(self) -> None:
-        self.logger.close()
-        if self.world_size > 1 and dist.is_initialized():
-            dist.barrier()
-            dist.destroy_process_group()
-
-    def _resolve_checkpoint_dir(self) -> Path:
-        base_dir = Path(self.config.logging.output_dir)
-        run_name = self._get_active_run_name()
-        if run_name:
-            return base_dir / run_name
-        return base_dir / "no_name"
-
-    def _get_active_run_name(self) -> Optional[str]:
-        wandb_run = getattr(self.logger, "wandb_run", None)
-        if wandb_run is not None:
-            name = getattr(wandb_run, "name", None)
-            if name:
-                return name
-        return None
-
     def _maybe_load_checkpoint(self) -> None:
         checkpoint_path = self.config.trainer.load_checkpoint
         if not checkpoint_path:
@@ -648,8 +575,11 @@ class WorldModelTrainer:
 
         if self.config.trainer.resume:
             self.optimizer.load_state_dict(ckpt["optimizer"])
-            self.global_step = int(ckpt.get("step", 0))
-            self.logger.info("Resuming training from step %d", self.global_step)
+            self._sampler_epoch = int(ckpt.get("epoch", 0))
+            self.epoch_step = int(ckpt.get("epoch_step", 0))
+            self.global_step = int(ckpt.get("global_step", 0))
+            self.logger.info("Resuming training from epoch %d, epoch step %d, global step %d", 
+                           self._sampler_epoch, self.epoch_step, self.global_step)
             for param_group in self.optimizer.param_groups:
                 self.logger.info("Learning rate: %f", param_group["lr"])
 
@@ -657,7 +587,7 @@ class WorldModelTrainer:
 
             if "ema_model" in ckpt:
                 self._ema_checkpoint_state = ckpt["ema_model"]
-            elif self.ema_cfg.enabled:
+            elif self.config.ema.enabled:
                 self._ema_checkpoint_state = None
         else:
             self.logger.info("Loaded model weights for finetuning/initialization. Starting from step 0.")

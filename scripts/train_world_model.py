@@ -4,12 +4,14 @@ from src.training.world_trainer import (
     WorldModelTrainingConfig,
 )
 from src.world_model.backbone import WorldModelBackbone
+from src.rae_dino.rae import RAE
 
 def main() -> None:
     config = pyrallis.parse(config_class=WorldModelTrainingConfig)
     
     model = WorldModelBackbone(config.world_model)
-    trainer = WorldModelTrainer(config, model)
+    autoencoder = RAE()
+    trainer = WorldModelTrainer(config, model, autoencoder)
     trainer.train()
 
 
