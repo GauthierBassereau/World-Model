@@ -1,0 +1,15 @@
+__pycache__/
+.env
+.vscode/
+.DS_Store
+.matplotlib/
+.agent/
+
+*.pt
+*.png
+*.mp4
+*.sh
+
+archive/important_papers_text/
+wandb/
+logs/

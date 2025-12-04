@@ -1,0 +1,73 @@
+logging:
+  project: world_model_evaluation
+  entity: null
+  run_name: 5500_0.5rollout_100steps
+  output_dir: "/checkpoints"
+  log_interval: 1
+  signal_level_log_limit: 100
+  checkpoint_interval: 0
+
+checkpoint_path: "/gpfs/helios/home/gauthierbernarda/git/World-Model/checkpoints/droid_dim_shift/world_model_step_005500.pt"
+
+evaluator:
+  video_sample_indices: [0, 1, 2, 3, 4, 5, 6, 7]
+  rollout_start_frame: 3
+  rollout_signal_level: 0.5
+  precision: bf16
+  max_batches: 10
+  denoising_metrics_indices: [0]
+
+eval_dataset:
+  sequence_length_distribution:
+    "16": 1.0
+  fps: 3.0
+  action_dim: 8
+  weights:
+    droid: 1.0
+  reference_dataset: droid
+  datasets:
+    droid:
+      type: lerobot
+      repo_id: aractingi/droid_1.0.1
+      episodes: [0, 1, 2, 3, 4, 5, 6, 7]
+      excluded_episodes: null
+      episode_midpoint_only: true
+      cameras:
+        # observation.images.exterior_1_left: 1.0
+        observation.images.wrist_left: 1.0
+      action_key: observation.state
+      action_representation: position
+      action_normalization: mean_std
+      independent_frames_probability: 0.0
+      use_action_probability: 1.0
+
+eval_dataloader:
+  batch_size: 8
+  shuffle: false
+  num_workers: 0
+  pin_memory: true
+
+signal_scheduler:
+  mode: "resolution_shift"  # {"resolution_shift", "linear_shift", "uniform"}
+  min_value: 0.0
+  max_value: 1.0
+  resolution_shift_base_dimension: 4096
+  resolution_shift_effective_latent_dimension: 196608 # 768*16*16
+
+euler_solver:
+  number_steps: 100
+  min_denom: 0.05
+
+world_model:
+  input_dim: 768
+  latent_dim: 1024
+  action_dim: 8
+  num_registers: 4
+  depth: 24
+  num_heads: 16
+  mlp_multiplier: 4.0
+  temporal_attention_interval: 4
+  temporal_context_length: 10
+  rope_base: 10000.0
+  qk_norm_eps: 1.0e-06
+  attn_logit_softcapping: 50.0
