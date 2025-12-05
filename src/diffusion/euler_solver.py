@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Any
 import torch
 from src.diffusion.common import calculate_velocity_1_to_2
 from src.dataset.common import WorldBatch
@@ -23,14 +24,16 @@ class EulerSolver:
         use_actions: torch.Tensor = None,
         target_clean_latent: torch.Tensor = None,
         independent_frames: torch.Tensor = None,
-    ) -> tuple[torch.Tensor, dict[str, float]]:
+        denoising_indices: list[int] = None,
+    ) -> tuple[torch.Tensor, dict[int, dict[str, Any]]]:
         batch_size, _, tokens, dim = latents.shape
         device = latents.device
         
         times = self.signal_scheduler.get_timesteps(self.config.number_steps)
 
         x = latents
-        metrics = {}
+        # Step -> {latents: Tensor, l1: float, l2: float}
+        denoising_data = {}
         
         for i, t_curr in enumerate(times[:-1]):
             t_next = times[i+1]
@@ -51,18 +54,27 @@ class EulerSolver:
                 latent_1=x, 
                 latent_2=output.latents, 
                 signal_levels_1=t_input, 
-                signal_levels_2=target_signal, 
+                signal_levels_2=target_signal,
                 min_denom=self.config.min_denom
             )
             
             x = x + velocity * dt
             
-            # for logging per timestep metrics
-            if target_clean_latent is not None:
-                diff = output.latents - target_clean_latent
-                l1 = torch.abs(diff).mean().item()
-                l2 = torch.sqrt((diff ** 2).mean()).item()
-                metrics[f"l1_step_{t_curr.item():.4f}"] = l1
-                metrics[f"l2_step_{t_curr.item():.4f}"] = l2
+            # Capture data if this step is requested
+            if denoising_indices is not None and i in denoising_indices:
+                step_data = {}
+                # Capture the first batch element's latent
+                # x is [B, 1, tokens, dim], we want [1, tokens, dim] -> [tokens, dim]
+                step_data["latents"] = x[0, 0].detach().cpu()
+                
+                if target_clean_latent is not None:
+                    # target_clean_latent is [B, 1, tokens, dim]
+                    diff = x[0, 0] - target_clean_latent[0, 0]
+                    l1 = torch.abs(diff).mean().item()
+                    l2 = torch.sqrt((diff ** 2).mean()).item()
+                    step_data["l1"] = l1
+                    step_data["l2"] = l2
+                
+                denoising_data[i] = step_data
             
-        return x, metrics
+        return x, denoising_data

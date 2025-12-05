@@ -67,22 +67,19 @@ class WorldModelBackbone(nn.Module):
                 torch.nn.init.trunc_normal_(m.weight, std=0.02)
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
+        
         self.apply(_basic_init)
 
-        scaled_std = 0.02 / torch.sqrt(torch.tensor(2 * self.config.depth, dtype=torch.float32))
-
         for layer in self.layers:
-            torch.nn.init.trunc_normal_(layer.spatial_attn.out_proj.weight, std=scaled_std)
+            nn.init.constant_(layer.spatial_attn.out_proj.weight, 0)
             if layer.use_temporal:
-                torch.nn.init.trunc_normal_(layer.temporal_attn.out_proj.weight, std=scaled_std)
-            torch.nn.init.trunc_normal_(layer.mlp.w3.weight, std=scaled_std)
+                nn.init.constant_(layer.temporal_attn.out_proj.weight, 0)
+            nn.init.constant_(layer.mlp.w3.weight, 0) 
 
-        nn.init.constant_(self.output_proj.weight, 0)
-        if self.output_proj.bias is not None:
-            nn.init.constant_(self.output_proj.bias, 0)
-        
         nn.init.normal_(self.base_action_embed, mean=0.0, std=0.02)
         nn.init.normal_(self.register_tokens, mean=0.0, std=0.02)
+
+        nn.init.constant_(self.output_proj.weight, 0)
 
     def _get_masks(
         self, 

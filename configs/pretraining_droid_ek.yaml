@@ -1,23 +1,23 @@
 logging:
   project: world_model
   entity: null
-  run_name: resume_droid_ek_dim_shift
+  run_name: droid_ek_8192
   output_dir: checkpoints
   log_interval: 1
   signal_level_log_limit: 100
   checkpoint_interval: 500
 
 trainer:
-  loss_type: velocity
-  loss_weighting: null
+  loss_type: position
+  loss_weighting: linear
   loss_weighting_intercept: 0.1
   loss_weighting_slope: 0.9
   evaluation_interval: 500
   grad_accum_steps: 8
   precision: bf16
-  seed: 5
+  seed: 10
   resume: true
-  load_checkpoint: /gpfs/helios/home/gauthierbernarda/git/World-Model/checkpoints/droid_ek_dim_shift/world_model_step_006500.pt
+  load_checkpoint: /gpfs/helios/home/gauthierbernarda/git/World-Model/checkpoints/droid_ek/world_model_step_007000.pt
 
 evaluator:
   video_sample_indices: [0]
@@ -39,6 +39,12 @@ ema:
   enabled: false
   decay: 0.9995
   start_step: 5000
+
+train_dataloader:
+  batch_size: 256
+  shuffle: true
+  num_workers: 6
+  pin_memory: true
 
 train_dataset:
   sequence_length_distribution:
@@ -64,7 +70,7 @@ train_dataset:
       action_representation: position
       action_normalization: mean_std
       independent_frames_probability: 0.15
-      use_action_probability: 0.5
+      use_action_probability: 0.7
     epic_kitchens:
       type: lerobot
       repo_id: gaugou/epic_kitchens_100
@@ -79,11 +85,11 @@ train_dataset:
       independent_frames_probability: 0.15
       use_action_probability: 0.0
 
-train_dataloader:
-  batch_size: 256
-  shuffle: true
-  num_workers: 6
-  pin_memory: true
+eval_dataloader:
+  batch_size: 8
+  shuffle: false
+  num_workers: 0
+  pin_memory: false
 
 eval_dataset:
   sequence_length_distribution:
@@ -110,17 +116,11 @@ eval_dataset:
       independent_frames_probability: 0.0
       use_action_probability: 1.0
 
-eval_dataloader:
-  batch_size: 8
-  shuffle: false
-  num_workers: 0
-  pin_memory: false
-
 signal_scheduler:
   mode: "resolution_shift"  # {"resolution_shift", "linear_shift", "uniform"}
   min_value: 0.0
   max_value: 1.0
-  resolution_shift_base_dimension: 4096
+  resolution_shift_base_dimension: 8192
   resolution_shift_effective_latent_dimension: 196608 # 768*16*16
 
 euler_solver:

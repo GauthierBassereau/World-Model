@@ -1,4 +1,4 @@
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 
 import torch
 import torch.nn as nn
@@ -22,7 +22,7 @@ def rollout_latents(
     independent_frames: Optional[torch.Tensor] = None,
     target_latents: Optional[torch.Tensor] = None,
     denoising_metrics_indices: Optional[List[int]] = None,
-) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, float]]:
+) -> Tuple[torch.Tensor, torch.Tensor, Dict[int, Dict[str, Any]]]:
     
     batch_size, _, tokens, dim = latents.shape
     device = latents.device
@@ -54,18 +54,25 @@ def rollout_latents(
     all_metrics = {}
     
     # Future Phase (Autoregressive Loop)
+    denoising_data_all = {}
+    
     for t in range(future_len):
         x = torch.randn(batch_size, 1, tokens, dim, device=device)
         
         current_actions = actions[:, context_len + t : context_len + t + 1] if actions is not None else None
         current_use_action = use_actions[:, context_len + t : context_len + t + 1] if use_actions is not None else None
         
+        current_denoising_indices = None
         target_clean_latent = None
-        if target_latents is not None and denoising_metrics_indices is not None:
-             if t in denoising_metrics_indices:
-                 target_clean_latent = target_latents[:, t:t+1]
+        
+        # Only perform denoising metrics collection on the first rollout step
+        if t == 0:
+            if denoising_metrics_indices is not None:
+                current_denoising_indices = denoising_metrics_indices
+                if target_latents is not None:
+                    target_clean_latent = target_latents[:, t:t+1]
 
-        clean_frame, metrics = solver.sample(
+        clean_frame, step_denoising_data = solver.sample(
             model,
             x,
             kv_cache=kv_cache,
@@ -73,11 +80,11 @@ def rollout_latents(
             use_actions=current_use_action,
             target_clean_latent=target_clean_latent,
             independent_frames=None,
+            denoising_indices=current_denoising_indices,
         )
         
-        if metrics:
-            for k, v in metrics.items():
-                all_metrics[f"step_{t}/{k}"] = v
+        if step_denoising_data:
+            denoising_data_all = step_denoising_data
         
         predicted_frames.append(clean_frame)
         
@@ -100,4 +107,4 @@ def rollout_latents(
     predicted_stack = torch.cat(predicted_frames, dim=1)
     full_sequence = torch.cat([latents[:, :context_len], predicted_stack], dim=1)
     
-    return predicted_stack, full_sequence, all_metrics
+    return predicted_stack, full_sequence, denoising_data_all

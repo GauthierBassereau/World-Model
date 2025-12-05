@@ -1,21 +1,21 @@
 logging:
   project: world_model_evaluation
   entity: null
-  run_name: 5500_0.5rollout_100steps
+  run_name: droid_ek_8500_0.8rollout_100steps
   output_dir: "/checkpoints"
   log_interval: 1
   signal_level_log_limit: 100
   checkpoint_interval: 0
 
-checkpoint_path: "/gpfs/helios/home/gauthierbernarda/git/World-Model/checkpoints/droid_dim_shift/world_model_step_005500.pt"
+checkpoint_path: /gpfs/helios/home/gauthierbernarda/git/World-Model/checkpoints/droid_ek/world_model_step_008500.pt
 
 evaluator:
   video_sample_indices: [0, 1, 2, 3, 4, 5, 6, 7]
   rollout_start_frame: 3
-  rollout_signal_level: 0.5
+  rollout_signal_level: 0.8
   precision: bf16
   max_batches: 10
-  denoising_metrics_indices: [0]
+  denoising_metrics_indices: [0, 5, 10, 20, 40, 60, 80, 99] # List of diffusion steps to capture intermediates for (first sequence, first frame only)
 
 eval_dataset:
   sequence_length_distribution:
@@ -33,8 +33,8 @@ eval_dataset:
       excluded_episodes: null
       episode_midpoint_only: true
       cameras:
-        # observation.images.exterior_1_left: 1.0
-        observation.images.wrist_left: 1.0
+        observation.images.exterior_1_left: 1.0
+        # observation.images.wrist_left: 1.0
       action_key: observation.state
       action_representation: position
       action_normalization: mean_std
