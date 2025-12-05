@@ -373,7 +373,7 @@ class WorldModelTrainer:
             tokens, dim = latents.shape[1], latents.shape[2]
             latents = latents.view(batch_size, steps, tokens, dim)
         
-        signal_levels = self.signal_scheduler.sample(latents)
+        signal_levels, scheduler_steps = self.signal_scheduler.sample_with_base(latents)
         self.logger.log_distr_signal(signal_levels)
         base_noise = torch.randn_like(latents)
         signal_levels_expanded = signal_levels.unsqueeze(-1).unsqueeze(-1)
@@ -394,6 +394,7 @@ class WorldModelTrainer:
                 noisy_latents=noisy_latents,
                 outputs=outputs,
                 signal_levels=signal_levels,
+                scheduler_steps=scheduler_steps,
                 base_noise=base_noise,
                 frames_valid_mask=frames_valid_mask,
                 independent_frames=independent_frames,
@@ -412,6 +413,7 @@ class WorldModelTrainer:
         noisy_latents: torch.Tensor,
         outputs: torch.Tensor,
         signal_levels: torch.Tensor,
+        scheduler_steps: torch.Tensor,
         base_noise: torch.Tensor,
         frames_valid_mask: torch.Tensor,
         independent_frames: torch.Tensor,
@@ -432,8 +434,15 @@ class WorldModelTrainer:
             )
             loss_unreduced = torch.nn.functional.mse_loss(v_pred, v_true, reduction="none")
 
-        if self.config.trainer.loss_weighting == "linear":
+        if self.config.trainer.loss_weighting in ("linear", "linear_signal"):
+            # Weight scales linearly with signal level (after scheduler transformation)
             weights = self.config.trainer.loss_weighting_intercept + self.config.trainer.loss_weighting_slope * signal_levels
+            weights = weights.unsqueeze(-1).unsqueeze(-1)
+            loss_unreduced = loss_unreduced * weights
+        elif self.config.trainer.loss_weighting == "linear_scheduler":
+            # Weight scales linearly with scheduler step (before transformation)
+            # This is useful when using dimension shift, so weights scale uniformly with the original uniform distribution
+            weights = self.config.trainer.loss_weighting_intercept + self.config.trainer.loss_weighting_slope * scheduler_steps
             weights = weights.unsqueeze(-1).unsqueeze(-1)
             loss_unreduced = loss_unreduced * weights
 

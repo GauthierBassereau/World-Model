@@ -26,12 +26,25 @@ class SignalScheduler:
             self.intercept = torch.as_tensor(config.linear_shift_intercept, dtype=torch.float32)
 
     def sample(self, latents: torch.Tensor) -> torch.Tensor:
+        signal_level, _ = self.sample_with_base(latents)
+        return signal_level
+
+    def sample_with_base(self, latents: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Sample signal levels and return both transformed signal levels and original base values.
+        
+        Returns:
+            signal_level: The transformed signal levels after applying the scheduler mode.
+            base: The original uniform random values in [0, 1] (scheduler steps).
+        """
         batch, steps, tokens, dim = latents.shape
 
         base = torch.rand((batch, steps), dtype=torch.float32)
         signal_level = self._sample_from_mode(base)
         signal_level = signal_level * (self.config.max_value - self.config.min_value) + self.config.min_value
-        return signal_level.to(device=latents.device, dtype=latents.dtype)
+        return (
+            signal_level.to(device=latents.device, dtype=latents.dtype),
+            base.to(device=latents.device, dtype=latents.dtype),
+        )
 
     def get_timesteps(self, num_steps: int) -> torch.Tensor:
         linear_t = torch.linspace(0.0, 1.0, num_steps + 1, dtype=torch.float32)

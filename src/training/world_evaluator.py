@@ -24,6 +24,7 @@ class EvaluationConfig:
     rollout_signal_level: float = 0.9
     precision: str = "bf16"
     denoising_metrics_indices: Optional[List[int]] = None
+    save_denoising_frames: bool = True
 
 
 @dataclass
@@ -295,13 +296,14 @@ class WorldModelEvaluator:
                             "l1": data.get("l1"),
                             "l2": data.get("l2"),
                         }
-                        # Decode latent to image
-                        # latents is [tokens, dim], need to decode
-                        latent = data["latents"].to(self.device).to(dtype=dtype)
-                        # Add batch and step dims: [1, 1, tokens, dim]
-                        latent = latent.unsqueeze(0).unsqueeze(0)
-                        decoded_img = self._decode_latents(latent).squeeze(0).cpu()
-                        batch_denoising[scenario][d_step]["image"] = decoded_img
+                        if self.config.save_denoising_frames:
+                            # Decode latent to image
+                            # latents is [tokens, dim], need to decode
+                            latent = data["latents"].to(self.device).to(dtype=dtype)
+                            # Add batch and step dims: [1, 1, tokens, dim]
+                            latent = latent.unsqueeze(0).unsqueeze(0)
+                            decoded_img = self._decode_latents(latent).squeeze(0).cpu()
+                            batch_denoising[scenario][d_step]["image"] = decoded_img
                     
                 scenario_sequences[scenario] = full_sequence
             

@@ -7,7 +7,7 @@ logging:
   signal_level_log_limit: 100
   checkpoint_interval: 0
 
-checkpoint_path: /gpfs/helios/home/gauthierbernarda/git/World-Model/checkpoints/droid_ek/world_model_step_008500.pt
+checkpoint_path: /gpfs/helios/home/gauthierbernarda/git/World-Model/checkpoints/droid_ek/world_model_step_009000.pt
 
 evaluator:
   video_sample_indices: [0, 1, 2, 3, 4, 5, 6, 7]
@@ -15,7 +15,8 @@ evaluator:
   rollout_signal_level: 0.8
   precision: bf16
   max_batches: 10
-  denoising_metrics_indices: [0, 5, 10, 20, 40, 60, 80, 99] # List of diffusion steps to capture intermediates for (first sequence, first frame only)
+  denoising_metrics_indices: [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 99] # List of diffusion steps to capture intermediates for (first sequence, first frame only)
+  save_denoising_frames: false
 
 eval_dataset:
   sequence_length_distribution:
