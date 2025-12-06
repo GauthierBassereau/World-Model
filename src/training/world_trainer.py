@@ -194,33 +194,42 @@ class WorldModelTrainer:
             self._checkpoint_dir = None
 
 
-    def _create_optimizer(self, initial_lr: float) -> torch.optim.Optimizer:
-        # Separate parameters for weight decay
-        decay_params = []
-        no_decay_params = []
+    def _create_optimizer(self, initial_lr: float):
+        decay = set()
+        no_decay = set()
         
-        for name, param in self.model.named_parameters():
-            if not param.requires_grad:
-                continue
-            if name.endswith(".bias"):
-                no_decay_params.append(param)
-                continue
-            if param.ndim <= 1: # for RMSNorm
-                no_decay_params.append(param)
-                continue
-            decay_params.append(param)
+        whitelist_weight_modules = (torch.nn.Linear, )
+        blacklist_weight_modules = (torch.nn.Embedding, RMSNorm)
+        
+        for mn, m in self.named_modules():
+            for pn, p in m.named_parameters():
+                fpn = '%s.%s' % (mn, pn) if mn else pn
+                if pn.endswith('bias'):
+                    no_decay.add(fpn)
+                elif pn.endswith('weight') and isinstance(m, whitelist_weight_modules):
+                    decay.add(fpn)
+                elif pn.endswith('weight') and isinstance(m, blacklist_weight_modules):
+                    no_decay.add(fpn)
+                elif pn.endswith('weight'):
+                    decay.add(fpn)
+
+        no_decay.add('base_action_embed')
+        no_decay.add('register_tokens')
+        
+        param_dict = {pn: p for pn, p in self.named_parameters()}
+        inter_params = decay & no_decay
+        union_params = decay | no_decay
+        assert len(inter_params) == 0, "parameters %s made it into both decay/no_decay sets!" % (str(inter_params), )
+        assert len(param_dict.keys() - union_params) == 0, "parameters %s were not separated into either decay/no_decay set!" \
+                                                        % (str(param_dict.keys() - union_params), )
 
         optim_groups = [
-            {"params": decay_params, "weight_decay": self.config.optimizer.weight_decay},
-            {"params": no_decay_params, "weight_decay": 0.0},
+            {"params": [param_dict[pn] for pn in sorted(list(decay))], "weight_decay": self.config.optimizer.weight_decay},
+            {"params": [param_dict[pn] for pn in sorted(list(no_decay))], "weight_decay": 0.0},
         ]
-
-        return torch.optim.AdamW(
-            optim_groups,
-            lr=initial_lr,
-            betas=self.config.optimizer.betas,
-            eps=self.config.optimizer.eps,
-        )
+        
+        optimizer = torch.optim.AdamW(optim_groups, lr=initial_lr, betas=self.config.optimizer.betas, eps=self.config.optimizer.eps)
+        return optimizer
 
     def _init_lr_schedule(self) -> None:
         lr_config = self.config.optimizer.lr
