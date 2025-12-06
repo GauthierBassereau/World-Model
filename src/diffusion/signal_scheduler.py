@@ -11,7 +11,7 @@ class SignalSchedulerConfig:
     resolution_shift_base_dimension: int = 4_096
     resolution_shift_effective_latent_dimension: int = 196_608 # 768*16*16
     # linear_shift parameters
-    linear_shift_slope: float = -0.9
+    linear_shift_slope: float = 0.9
     linear_shift_intercept: float = 0.1
 
 class SignalScheduler:
@@ -30,12 +30,6 @@ class SignalScheduler:
         return signal_level
 
     def sample_with_base(self, latents: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Sample signal levels and return both transformed signal levels and original base values.
-        
-        Returns:
-            signal_level: The transformed signal levels after applying the scheduler mode.
-            base: The original uniform random values in [0, 1] (scheduler steps).
-        """
         batch, steps, tokens, dim = latents.shape
 
         base = torch.rand((batch, steps), dtype=torch.float32)

@@ -116,7 +116,7 @@ class WorldModelBackbone(nn.Module):
             is_indep = independent_frames.bool().unsqueeze(1).unsqueeze(3) # [B, 1, S, 1]
             not_self = torch.arange(total_len, device=device).unsqueeze(0) != torch.arange(cache_len, total_len, device=device).unsqueeze(1)
             not_self = not_self.unsqueeze(0).unsqueeze(0) # [1, 1, S, Total]
-            temporal_mask = torch.where(is_indep & not_self, torch.tensor(float("-inf"), device=device), temporal_mask)
+            temporal_mask = torch.where(is_indep & not_self, float("-inf"), temporal_mask)
 
         return spatial_mask, temporal_mask
 

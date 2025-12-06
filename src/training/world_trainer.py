@@ -645,7 +645,7 @@ class WorldModelTrainer:
         self.model.load_state_dict(ckpt["model"])
 
         if self.config.trainer.resume:
-            self.optimizer.load_state_dict(ckpt["optimizer"])
+            # self.optimizer.load_state_dict(ckpt["optimizer"])
             self._sampler_epoch = int(ckpt.get("epoch", 0))
             self.epoch_step = int(ckpt.get("epoch_step", 0))
             self.global_step = int(ckpt.get("global_step", 0))
