@@ -108,7 +108,9 @@ class Attention(nn.Module):
         kv_cache: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     ) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         B, L, _ = x.shape
-        q, k, v = self.qkv(x).view(B, L, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
+        qkv = self.qkv(x).view(B, L, 3, self.num_heads, self.head_dim)
+        q, k, v = qkv.unbind(2)
+        q, k, v = q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)
 
         q, k = self.q_norm(q), self.k_norm(k)
 
@@ -130,10 +132,10 @@ class Attention(nn.Module):
             if mask is not None:
                 attn = attn + mask
             x = (attn.softmax(dim=-1) @ v)
-        else: # Softcapping not supported with fused attention...
+        else:
             x = F.scaled_dot_product_attention(q, k, v, attn_mask=mask)
 
-        x = x.transpose(1, 2).reshape(B, L, -1)
+        x = x.transpose(1, 2).contiguous().reshape(B, L, -1)
         return self.out_proj(x), (k, v)
 
 
@@ -145,47 +147,25 @@ class TransformerBlock(nn.Module):
         mlp_multiplier: float, 
         qk_norm_eps: float, 
         attn_logit_softcapping: Optional[float], 
-        use_temporal: bool
     ) -> None:
         super().__init__()
-        self.use_temporal = use_temporal
-
-        self.spatial_norm = RMSNorm(dim)
-        self.spatial_attn = Attention(dim, num_heads, qk_norm_eps, attn_logit_softcapping)
-        
-        self.temporal_norm = RMSNorm(dim) if use_temporal else None
-        self.temporal_attn = Attention(dim, num_heads, qk_norm_eps, attn_logit_softcapping) if use_temporal else None
-
-        self.mlp_norm = RMSNorm(dim)
+        self.norm1 = RMSNorm(dim)
+        self.attn = Attention(dim, num_heads, qk_norm_eps, attn_logit_softcapping)
+        self.norm2 = RMSNorm(dim)
         self.mlp = SwiGLUMlp(dim, int(dim * mlp_multiplier))
 
     def forward(
         self,
-        x: torch.Tensor,
-        spatial_rope: Tuple[torch.Tensor, torch.Tensor],
-        temporal_rope: Tuple[torch.Tensor, torch.Tensor],
-        spatial_mask: torch.Tensor,
-        temporal_mask: Optional[torch.Tensor],
+        x: torch.Tensor, 
+        rope: Optional[Tuple[torch.Tensor, torch.Tensor]],
+        mask: Optional[torch.Tensor],
         kv_cache: Optional[Tuple[torch.Tensor, torch.Tensor]],
-    ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
-        B, S, T, D = x.shape
+    ) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         
         resid = x
-        x_spatial = self.spatial_norm(x).view(B * S, T, D)
-        x_spatial, _ = self.spatial_attn(x_spatial, spatial_rope, spatial_mask)
-        x = resid + x_spatial.view(B, S, T, D)
-
-        new_kv = None
-        if self.use_temporal:
-            resid = x
-            x_temporal = self.temporal_norm(x).permute(0, 2, 1, 3).reshape(B * T, S, D)
-            
-            t_mask = temporal_mask
-            if t_mask is not None and t_mask.dim() == 4: # [B, 1, S, S_k]
-                t_mask = t_mask.unsqueeze(1).expand(-1, T, -1, -1, -1).reshape(B * T, 1, S, -1)
-
-            x_temporal, new_kv = self.temporal_attn(x_temporal, temporal_rope, t_mask, kv_cache)
-            x = resid + x_temporal.view(B, T, S, D).permute(0, 2, 1, 3)
+        x = self.norm1(x)
+        x, new_kv = self.attn(x, rope, mask, kv_cache)
+        x = resid + x
         
-        x = x + self.mlp(self.mlp_norm(x))
+        x = x + self.mlp(self.norm2(x))
         return x, new_kv

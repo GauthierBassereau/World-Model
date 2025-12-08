@@ -1,40 +1,42 @@
 logging:
   project: world_model
   entity: null
-  run_name: droid_ek_8192_linear_scheduler
+  run_name: exp_rae
   output_dir: checkpoints
   log_interval: 1
   signal_level_log_limit: 100
   checkpoint_interval: 500
 
 trainer:
-  loss_type: position
-  loss_weighting: linear_scheduler
+  loss_type: velocity
+  loss_rms_normalization: True
+  loss_rms_decay: 0.99
+  loss_weighting: null
   loss_weighting_intercept: 0.1
   loss_weighting_slope: 0.9
   evaluation_interval: 500
   grad_accum_steps: 4
   precision: bf16
-  seed: 19
+  seed: 5
   resume: true
-  load_checkpoint: /gpfs/helios/home/gauthierbernarda/git/World-Model/checkpoints/droid_ek_8192/world_model_step_023500.pt
+  load_checkpoint: /gpfs/helios/home/gauthierbernarda/git/World-Model/checkpoints/exp_rae/world_model_step_000500.pt
 
 evaluator:
-  video_sample_indices: [0]
-  rollout_start_frame: 3
+  video_sample_indices: [0, 1, 3, 4]
+  rollout_start_frame: 6
   rollout_signal_level: 0.8
   precision: bf16
   max_batches: 10
-  denoising_metrics_indices: [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 96, 97, 98, 99] # List of diffusion steps to capture intermediates for (first sequence, first frame only)
+  denoising_metrics_indices: [0, 1, 2, 3, 4, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 96, 97, 98, 99]
   save_denoising_frames: false
 
 optimizer:
   lr:
     "0": 1.0e-6
-    "1000": 1.0e-4
+    "1000": 3.0e-4
   eps: 1.0e-08
-  grad_clip_norm: 1.0
-  weight_decay: 0.0
+  grad_clip_norm: 10.0
+  weight_decay: 0.05
 
 ema:
   enabled: false
@@ -50,11 +52,10 @@ train_dataloader:
 train_dataset:
   sequence_length_distribution:
     "16": 1.0
-  fps: 3.0
+  fps: 5.0
   action_dim: 8
   weights:
     droid: 1.0
-    epic_kitchens: 1.0
   reference_dataset: droid
   datasets:
     droid:
@@ -65,26 +66,13 @@ train_dataset:
       episode_midpoint_only: false
       cameras:
         observation.images.exterior_1_left: 1.0
-        observation.images.exterior_2_left: 1.0
-        observation.images.wrist_left: 1.0
+        # observation.images.exterior_2_left: 0.0
+        # observation.images.wrist_left: 0.0
       action_key: observation.state
       action_representation: position
       action_normalization: mean_std
-      independent_frames_probability: 0.15
-      use_action_probability: 0.7
-    epic_kitchens:
-      type: lerobot
-      repo_id: gaugou/epic_kitchens_100
-      episodes: null
-      excluded_episodes: null
-      episode_midpoint_only: false
-      cameras:
-        observation.images.ego: 1.0
-      action_key: action
-      action_representation: position
-      action_normalization: mean_std
-      independent_frames_probability: 0.15
-      use_action_probability: 0.0
+      independent_frames_probability: 0.30
+      use_action_probability: 0.6
 
 eval_dataloader:
   batch_size: 8
@@ -94,8 +82,8 @@ eval_dataloader:
 
 eval_dataset:
   sequence_length_distribution:
-    "16": 1.0
-  fps: 3.0
+    "30": 1.0
+  fps: 5.0
   action_dim: 8
   weights:
     droid: 1.0
@@ -121,11 +109,11 @@ signal_scheduler:
   mode: "resolution_shift"  # {"resolution_shift", "linear_shift", "uniform"}
   min_value: 0.0
   max_value: 1.0
-  resolution_shift_base_dimension: 8192
+  resolution_shift_base_dimension: 4096
   resolution_shift_effective_latent_dimension: 196608 # 768*16*16
 
 euler_solver:
-  number_steps: 100
+  number_steps: 50
   min_denom: 0.05
 
 world_model: # ~400M parameters
@@ -137,7 +125,7 @@ world_model: # ~400M parameters
   num_heads: 16
   mlp_multiplier: 4.0
   temporal_attention_interval: 4
-  temporal_context_length: 10
+  temporal_context_length: 12
   rope_base: 10000.0
   qk_norm_eps: 1.0e-06
   attn_logit_softcapping: 50.0 # None for no softcapping -> able to use fused_attention
