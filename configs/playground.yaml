@@ -1,0 +1,66 @@
+checkpoint_path: "checkpoints/world_model.pt" # Replace with actual path
+host: "0.0.0.0"
+port: 8000
+device: "cuda"
+
+# Dataset config to load initial context
+dataset:
+  repo_id: "Gaugou/soar"
+  cameras:
+    "observation.images.image": 1.0
+  action_mode: "soar_relative_ee_normalized"
+  sequence_length: 15
+  fps: 15.0
+
+# Initial context length
+context_length: 6
+
+# Sensitivity for actions (multiplier for key press)
+sensitivity: 1.0
+
+# Key Mapping: Key -> [Dimension, Value]
+# Actions are 7D. 
+# 0-2: Position (x,y,z)
+# 3-5: Rotation (r,p,y) or similar
+# 6: Gripper
+key_mapping:
+  "w": [0, 1.0]    # Forward X
+  "s": [0, -1.0]   # Backward X
+  "a": [1, 1.0]    # Left Y
+  "d": [1, -1.0]   # Right Y
+  "q": [2, 1.0]    # Up Z
+  "e": [2, -1.0]   # Down Z
+  "arrowup": [3, 1.0]
+  "arrowdown": [3, -1.0]
+  "arrowleft": [4, 1.0]
+  "arrowright": [4, -1.0]
+  "j": [5, 1.0]
+  "l": [5, -1.0]
+  "space": [6, 1.0] # Close gripper?
+  "shift": [6, -1.0] # Open gripper?
+
+world_model: # ~400M parameters
+  input_dim: 768
+  latent_dim: 1536
+  action_dim: 7
+  num_registers: 4
+  depth: 28
+  num_heads: 24
+  mlp_multiplier: 2.666667
+  temporal_attention_interval: 4
+  temporal_context_length: 18
+  rope_base: 10000.0
+  qk_norm_eps: 1.0e-06
+  attn_logit_softcapping: 50.0 # None for no softcapping -> able to use fused_attention
+
+signal_scheduler:
+  mode: "logit_normal"  # {"resolution_shift", "linear_shift", "uniform", "logit_normal"}
+  min_value: 0.0
+  max_value: 1.0
+  logit_normal_loc: -0.8
+  logit_normal_scale: 0.8
+  
+euler_solver:
+  number_steps: 50
+  min_denom: 0.05
+  timestep_schedule: "linear"

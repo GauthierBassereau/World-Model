@@ -48,8 +48,6 @@ class TrainerLoopConfig:
     loss_weighting: Optional[str] = None
     loss_weighting_intercept: float = 0.1
     loss_weighting_slope: float = 0.9
-    loss_rms_normalization: bool = True
-    loss_rms_decay: float = 0.99
 
 
 @dataclass
@@ -87,7 +85,6 @@ class WorldModelTrainer:
         self._sampler_epoch = 0
         self.epoch_step = 0
         self.global_step = 0
-        self._loss_rms: Optional[float] = None
         self._train_module: torch.nn.Module
         autocast_enabled = config.trainer.precision in {"bf16", "bfloat16"}
         if isinstance(config.optimizer.lr, dict):
@@ -130,6 +127,7 @@ class WorldModelTrainer:
         )
         if self.is_main_process:
             self.logger.info("Model: %s", self.model)
+            self.logger.info("Parameters: %s", sum(p.numel() for p in self.model.parameters()))
         
         if autocast_enabled:
             self._autocast_scope = partial(
@@ -366,13 +364,14 @@ class WorldModelTrainer:
                 mean_metrics.update(grad_metrics)
             mean_metrics = sync_metrics(mean_metrics, self.world_size, self.device)
             self.logger.log_training_metrics(mean_metrics)
-            self._maybe_run_evaluation(self.global_step)
 
             if (
                 self.config.logging.checkpoint_interval
                 and self.global_step % self.config.logging.checkpoint_interval == 0
             ):
                 self._save_checkpoint(self.global_step)
+                
+            self._maybe_run_evaluation(self.global_step)
 
     def _train_micro_step(
         self,
@@ -474,31 +473,9 @@ class WorldModelTrainer:
         denom = frames_valid_mask.sum().clamp_min(1.0)
         raw_loss = (valid_frame_loss.sum() / denom)
 
-        if self.config.trainer.loss_rms_normalization:
-            loss_sq = raw_loss.detach().pow(2)
-            
-            # Sync loss_sq across GPUs to ensure consistent RMS update
-            if self.world_size > 1:
-                dist.all_reduce(loss_sq, op=dist.ReduceOp.AVG)
-            
-            loss_sq_scalar = float(loss_sq)
-
-            if self._loss_rms is None:
-                self._loss_rms = loss_sq_scalar
-            else:
-                decay = self.config.trainer.loss_rms_decay
-                self._loss_rms = decay * self._loss_rms + (1.0 - decay) * loss_sq_scalar
-            
-            rms = max(self._loss_rms ** 0.5, 1e-8)
-            norm_loss = raw_loss / rms
-        
         metrics = {
             "raw_l2_loss": float(raw_loss.detach()),
         }
-        if self.config.trainer.loss_rms_normalization:
-            metrics["rms_l2_loss"] = float(self._loss_rms ** 0.5)
-            metrics["norm_l2_loss"] = float(norm_loss.detach())
-
         if self.global_step % 10 == 0:
             breakdown = self._compute_loss_breakdown(
                 valid_frame_loss,
@@ -510,7 +487,7 @@ class WorldModelTrainer:
             )
             metrics.update(breakdown)
             
-        final_loss = norm_loss if self.config.trainer.loss_rms_normalization else raw_loss
+        final_loss = raw_loss
         final_loss = final_loss / self.config.trainer.grad_accum_steps
         
         metrics = {k: v / self.config.trainer.grad_accum_steps for k, v in metrics.items()}
@@ -663,7 +640,6 @@ class WorldModelTrainer:
             "epoch": self._sampler_epoch,
             "epoch_step": self.epoch_step,
             "global_step": self.global_step,
-            "loss_rms": self._loss_rms,
         }
         payload["config"] = asdict(self.config)
         if self.ema_model is not None:
@@ -706,8 +682,6 @@ class WorldModelTrainer:
                 self._ema_checkpoint_state = ckpt["ema_model"]
             elif self.config.ema.enabled:
                 self._ema_checkpoint_state = None
-            if "loss_rms" in ckpt:
-                self._loss_rms = float(ckpt["loss_rms"])
         else:
             self.logger.info("Loaded model weights for finetuning/initialization. Starting from step 0.")
             self._ema_checkpoint_state = None

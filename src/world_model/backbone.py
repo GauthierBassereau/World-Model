@@ -25,6 +25,7 @@ class WorldModelConfig:
     rope_base: float = 10000.0
     qk_norm_eps: float = 1e-6
     attn_logit_softcapping: Optional[float] = 50.0
+    bottleneck_dim: Optional[int] = None
 
 @dataclass
 class WorldModelOutput:
@@ -38,7 +39,12 @@ class WorldModelBackbone(nn.Module):
         super().__init__()
         self.config = config
 
-        self.input_proj = nn.Linear(config.input_dim, config.latent_dim, bias=False) if config.input_dim != config.latent_dim else nn.Identity()
+        if config.bottleneck_dim is not None:
+            self.input_proj = nn.Sequential(
+                nn.Linear(config.input_dim, config.bottleneck_dim, bias=False),
+                nn.Linear(config.bottleneck_dim, config.latent_dim, bias=False))
+        else:
+            self.input_proj = nn.Linear(config.input_dim, config.latent_dim, bias=False) if config.input_dim != config.latent_dim else nn.Identity()
         self.signal_embed = SignalEmbedder(config.latent_dim, base_freq_dim=256, scale=1000.0, max_period=10000)
         self.base_action_embed = nn.Parameter(torch.randn(config.latent_dim) * 0.02)
         self.action_proj = nn.Linear(config.action_dim, config.latent_dim)
@@ -60,21 +66,27 @@ class WorldModelBackbone(nn.Module):
         self.initialize_weights()
 
     def initialize_weights(self):
-        def _basic_init(m):
-            if isinstance(m, nn.Linear):
-                torch.nn.init.trunc_normal_(m.weight, std=0.02)
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
-        
-        self.apply(_basic_init)
+        def _init_weights(module):
+            if isinstance(module, nn.Linear):
+                torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+                if module.bias is not None:
+                    torch.nn.init.zeros_(module.bias)
+            
+            elif isinstance(module, nn.Embedding):
+                torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-        for layer in self.layers:
-            nn.init.constant_(layer.attn.out_proj.weight, 0)
-            nn.init.constant_(layer.mlp.w3.weight, 0) 
+        self.apply(_init_weights)
+
+        res_scale = 1.0 / (2.0 * self.config.depth) ** 0.5
+        for block in self.layers:
+            if hasattr(block.attn, 'out_proj'):
+                 block.attn.out_proj.weight.data.mul_(res_scale)
+            if hasattr(block.mlp, 'w3'):
+                 block.mlp.w3.weight.data.mul_(res_scale)
 
         nn.init.normal_(self.base_action_embed, mean=0.0, std=0.02)
         nn.init.normal_(self.register_tokens, mean=0.0, std=0.02)
-        nn.init.constant_(self.output_proj.weight, 0)
+        torch.nn.init.zeros_(self.output_proj.weight)
 
     def _get_spatial_mask(self, seq_len: int, device: torch.device) -> torch.Tensor:
         return torch.zeros((1, 1, seq_len, seq_len), device=device, dtype=torch.bool) # full attention baby

@@ -219,7 +219,6 @@ def port_epic_kitchens(
             features=EPIC_FEATURES,
             robot_type="epic_kitchens", 
         )
-        lerobot_dataset.meta.update_chunk_settings(video_files_size_in_mb=500)
     
     # Find videos
     video_paths = get_video_paths(raw_dir)

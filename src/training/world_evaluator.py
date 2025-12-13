@@ -1,4 +1,5 @@
 import math
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Union, Any
 
@@ -338,14 +339,43 @@ class WorldModelEvaluator:
     def _gather_video_samples(self, local_samples: List[Dict[str, torch.Tensor]]) -> List[Dict[str, torch.Tensor]]:
         if self.world_size <= 1 or not dist.is_initialized():
             return local_samples
-        gathered: List[Optional[List[Dict[str, torch.Tensor]]]] = [None for _ in range(self.world_size)] if self.is_main_process else None
-        dist.gather_object(local_samples, object_gather_list=gathered, dst=0)
-        if not self.is_main_process:
-            return []
+        
+        # Use filesystem to gather samples to avoid NCCL object gathering issues
+        # We assume shared filesystem (GPFS)
+        output_dir = getattr(self.logger, "log_dir", None)
+        if output_dir is None:
+            # Fallback to current directory
+            output_dir = Path(".")
+        else:
+            output_dir = Path(output_dir)
+            
+        temp_dir = output_dir / "temp_gather_videos"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Save local samples to file
+        temp_file = temp_dir / f"samples_rank_{self.rank}.pt"
+        torch.save(local_samples, temp_file)
+        
+        dist.barrier()
+        
         all_samples: List[Dict[str, torch.Tensor]] = []
-        for entry in gathered or []:
-            if entry:
-                all_samples.extend(entry)
+        if self.is_main_process:
+            for rank in range(self.world_size):
+                rank_file = temp_dir / f"samples_rank_{rank}.pt"
+                try:
+                    rank_samples = torch.load(rank_file, map_location="cpu")
+                    all_samples.extend(rank_samples)
+                except Exception as e:
+                    self.logger.warning(f"Failed to load samples from rank {rank}: {e}")
+            
+            # Cleanup
+            import shutil
+            try:
+                shutil.rmtree(temp_dir)
+            except Exception as e:
+                self.logger.warning(f"Failed to cleanup temp dir {temp_dir}: {e}")
+                
+        dist.barrier()
         return all_samples
 
     def _prepare_video_samples(

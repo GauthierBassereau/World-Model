@@ -1,16 +1,16 @@
 logging:
   project: world_model_evaluation
   entity: null
-  run_name: droid_ek_8192_23000_0.95rollout_6start_2steps
+  run_name: exp_jit_19500_95rollout_5steps_train
   output_dir: "/checkpoints"
   log_interval: 1
   signal_level_log_limit: 100
   checkpoint_interval: 0
 
-checkpoint_path: /gpfs/helios/home/gauthierbernarda/git/World-Model/checkpoints/droid_ek_8192_linear_scheduler/world_model_step_023000.pt
+checkpoint_path: /gpfs/helios/home/gauthierbernarda/git/World-Model/checkpoints/exp_jit/world_model_step_019500.pt
 
 evaluator:
-  video_sample_indices: [0, 1, 2, 3, 4, 5, 6, 7]
+  video_sample_indices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
   rollout_start_frame: 6
   rollout_signal_level: 0.95
   precision: bf16
@@ -21,8 +21,8 @@ evaluator:
 eval_dataset:
   sequence_length_distribution:
     "40": 1.0
-  fps: 3.0
-  action_dim: 8
+  fps: 5.0
+  action_dim: 7
   weights:
     droid: 1.0
   reference_dataset: droid
@@ -30,46 +30,46 @@ eval_dataset:
     droid:
       type: lerobot
       repo_id: aractingi/droid_1.0.1
-      episodes: [0, 1, 2, 3, 4, 5, 6, 7]
+      episodes: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
       excluded_episodes: null
       episode_midpoint_only: true
       cameras:
-        # observation.images.exterior_1_left: 1.0
-        observation.images.exterior_2_left: 1.0
+        observation.images.exterior_1_left: 1.0
+        # observation.images.exterior_2_left: 1.0
         # observation.images.wrist_left: 1.0
-      action_key: observation.state
-      action_representation: position
-      action_normalization: mean_std
+      action_normalization: null
       independent_frames_probability: 0.0
       use_action_probability: 1.0
+      action_mode: endeffector
 
 eval_dataloader:
-  batch_size: 8
+  batch_size: 12
   shuffle: false
   num_workers: 0
   pin_memory: true
 
 signal_scheduler:
-  mode: "resolution_shift"  # {"resolution_shift", "linear_shift", "uniform"}
+  mode: "logit_normal"  # {"resolution_shift", "linear_shift", "uniform", "logit_normal"}
   min_value: 0.0
   max_value: 1.0
-  resolution_shift_base_dimension: 8192
-  resolution_shift_effective_latent_dimension: 196608 # 768*16*16
+
 
 euler_solver:
-  number_steps: 2
+  number_steps: 5
   min_denom: 0.05
+  timestep_schedule: "linear"
 
 world_model:
   input_dim: 768
-  latent_dim: 1024
-  action_dim: 8
+  latent_dim: 768
+  bottleneck_dim: 128
+  action_dim: 7
   num_registers: 4
-  depth: 24
-  num_heads: 16
+  depth: 15
+  num_heads: 12
   mlp_multiplier: 4.0
   temporal_attention_interval: 4
-  temporal_context_length: 10
+  temporal_context_length: 15
   rope_base: 10000.0
   qk_norm_eps: 1.0e-06
   attn_logit_softcapping: 50.0

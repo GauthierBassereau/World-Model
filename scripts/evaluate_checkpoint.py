@@ -26,7 +26,7 @@ class EvaluationScriptConfig:
     seed: int = 1234
 
 def main() -> None:
-    config = pyrallis.parse(config_class=EvaluationScriptConfig)
+    config = pyrallis.parse(config_class=EvaluationScriptConfig, config_path="configs/evaluation.yaml")
 
     if torch.cuda.is_available():
         dist.init_process_group(backend="nccl", timeout=datetime.timedelta(minutes=30))

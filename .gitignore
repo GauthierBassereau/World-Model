@@ -10,6 +10,6 @@ __pycache__/
 *.mp4
 *.sh
 
-archive/important_papers_text/
+archive/
 wandb/
 logs/

@@ -27,52 +27,6 @@
 
 # print("Files downloaded to:", local_dir)
 
-import os
-import subprocess
-import uuid
-from pathlib import Path
-from tqdm import tqdm
-
-INPUT_ROOT = "/gpfs/helios/home/gauthierbernarda/data/epic_kitchens_100"
-OUTPUT_ROOT = "/gpfs/helios/home/gauthierbernarda/data/epic_kitchens_100_chunks"
-SEGMENT_TIME = 120
-input_path = Path(INPUT_ROOT)
-output_path = Path(OUTPUT_ROOT)
-output_path.mkdir(parents=True, exist_ok=True)
-
-exts = ['*.mp4', '*.MP4', '*.avi', '*.AVI', '*.mov', '*.MOV', '*.mkv']
-files = []
-for ext in exts:
-    files.extend(list(input_path.rglob(ext)))
-
-print(f"Found {len(files)} videos to process.")
-
-for video_file in tqdm(files, desc="Chunking videos"):
-    unique_id = str(uuid.uuid4())[:8]
-    save_pattern = output_path / f"{unique_id}_%03d.mp4"
-
-    try:
-        cmd = [
-            "ffmpeg", "-y",
-            "-fflags", "+genpts",
-            "-i", str(video_file),
-            "-c", "copy",
-            "-map", "0:v",
-            "-map_metadata", "-1",
-            "-f", "segment",
-            "-segment_time", str(SEGMENT_TIME),
-            "-reset_timestamps", "1",
-            "-loglevel", "error",
-            str(save_pattern)
-        ]
-
-        subprocess.run(cmd, check=True)
-
-    except subprocess.CalledProcessError as e:
-        print(f"\nError processing {video_file.name}: {e}")
-    except Exception as e:
-        print(f"\nUnexpected error: {e}")
-
 
 # =================
 # Split LeRobot Dataset, don't why it needs huge RAM for days, don't have the budget for it...

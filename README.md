@@ -27,6 +27,7 @@ Note: Some datasets have language instructions for each video -> I wonder how fa
 ---
 
 Todos:
+  - implement different sequence lengths correctly, keeping always same amount of tokens but different batch size
   - Separate WorldBatch and WorldBatchMetadata -> also adding the camera used in it so we can evaluate on all cameras during training...
   - Shortcut forcing
   - Dinov3 -> training decoder using RAE codebase

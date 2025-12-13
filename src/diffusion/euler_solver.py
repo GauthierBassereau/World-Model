@@ -9,6 +9,12 @@ from src.diffusion.signal_scheduler import SignalScheduler, SignalSchedulerConfi
 class EulerSolverConfig:
     number_steps: int = 50
     min_denom: float = 0.05
+    timestep_schedule: str = "signal" # "signal" or "linear"
+
+    def __post_init__(self):
+        self.timestep_schedule = self.timestep_schedule.lower()
+        if self.timestep_schedule not in ["linear", "signal"]:
+            raise ValueError(f"Unknown timestep_schedule: {self.timestep_schedule}")
 
 class EulerSolver:
     def __init__(self, config: EulerSolverConfig, signal_scheduler_cfg: SignalSchedulerConfig):
@@ -29,7 +35,10 @@ class EulerSolver:
         batch_size, _, tokens, dim = latents.shape
         device = latents.device
         
-        times = self.signal_scheduler.get_timesteps(self.config.number_steps)
+        if self.config.timestep_schedule == "linear":
+            times = torch.linspace(0.0, 1.0, self.config.number_steps + 1)
+        elif self.config.timestep_schedule == "signal":
+            times = self.signal_scheduler.get_timesteps(self.config.number_steps)
 
         x = latents
         # Step -> {latents: Tensor, l1: float, l2: float}
