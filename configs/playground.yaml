@@ -1,4 +1,4 @@
-checkpoint_path: "checkpoints/world_model.pt" # Replace with actual path
+checkpoint_path: "/gpfs/helios/home/gauthierbernarda/git/World-Model/checkpoints/soar/world_model_step_016500.pt" # Replace with actual path
 host: "0.0.0.0"
 port: 8000
 device: "cuda"
@@ -8,6 +8,7 @@ dataset:
   repo_id: "Gaugou/soar"
   cameras:
     "observation.images.image": 1.0
+  episodes: [500]
   action_mode: "soar_relative_ee_normalized"
   sequence_length: 15
   fps: 15.0
@@ -24,12 +25,12 @@ sensitivity: 1.0
 # 3-5: Rotation (r,p,y) or similar
 # 6: Gripper
 key_mapping:
-  "w": [0, 1.0]    # Forward X
+  "z": [0, 1.0]    # Forward X
   "s": [0, -1.0]   # Backward X
-  "a": [1, 1.0]    # Left Y
+  "q": [1, 1.0]    # Left Y
   "d": [1, -1.0]   # Right Y
-  "q": [2, 1.0]    # Up Z
-  "e": [2, -1.0]   # Down Z
+  "w": [2, 1.0]    # Up Z
+  "x": [2, -1.0]   # Down Z
   "arrowup": [3, 1.0]
   "arrowdown": [3, -1.0]
   "arrowleft": [4, 1.0]

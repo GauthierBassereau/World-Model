@@ -1,18 +1,18 @@
 logging:
   project: world_model_evaluation
   entity: null
-  run_name: exp_jit_19500_95rollout_5steps_train
+  run_name: soar_60rollout_50steps_16500
   output_dir: "/checkpoints"
   log_interval: 1
   signal_level_log_limit: 100
   checkpoint_interval: 0
 
-checkpoint_path: /gpfs/helios/home/gauthierbernarda/git/World-Model/checkpoints/exp_jit/world_model_step_019500.pt
+checkpoint_path: /gpfs/helios/home/gauthierbernarda/git/World-Model/checkpoints/soar/world_model_step_016500.pt
 
 evaluator:
-  video_sample_indices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+  video_sample_indices: [0, 50, 500, 5000, 1000, 10000, 15000, 20000]
   rollout_start_frame: 6
-  rollout_signal_level: 0.95
+  rollout_signal_level: 0.60
   precision: bf16
   max_batches: 10
   denoising_metrics_indices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99] # List of diffusion steps to capture intermediates for (first sequence, first frame only)
@@ -20,30 +20,27 @@ evaluator:
 
 eval_dataset:
   sequence_length_distribution:
-    "40": 1.0
-  fps: 5.0
+    "100": 1.0
+  fps: 15.0
   action_dim: 7
   weights:
-    droid: 1.0
-  reference_dataset: droid
+    soar: 1.0
+  reference_dataset: soar
   datasets:
-    droid:
+    soar:
       type: lerobot
-      repo_id: aractingi/droid_1.0.1
-      episodes: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+      repo_id: Gaugou/soar
+      episodes: [0, 50, 500, 5000, 1000, 10000, 15000, 20000]
       excluded_episodes: null
       episode_midpoint_only: true
       cameras:
-        observation.images.exterior_1_left: 1.0
-        # observation.images.exterior_2_left: 1.0
-        # observation.images.wrist_left: 1.0
-      action_normalization: null
+        observation.images.image: 1.0
+      action_mode: soar_relative_ee_normalized
       independent_frames_probability: 0.0
       use_action_probability: 1.0
-      action_mode: endeffector
 
 eval_dataloader:
-  batch_size: 12
+  batch_size: 8
   shuffle: false
   num_workers: 0
   pin_memory: true
@@ -52,24 +49,24 @@ signal_scheduler:
   mode: "logit_normal"  # {"resolution_shift", "linear_shift", "uniform", "logit_normal"}
   min_value: 0.0
   max_value: 1.0
-
+  logit_normal_loc: -0.8
+  logit_normal_scale: 0.8
 
 euler_solver:
-  number_steps: 5
+  number_steps: 50
   min_denom: 0.05
   timestep_schedule: "linear"
 
-world_model:
+world_model: # ~400M parameters
   input_dim: 768
-  latent_dim: 768
-  bottleneck_dim: 128
+  latent_dim: 1536
   action_dim: 7
   num_registers: 4
-  depth: 15
-  num_heads: 12
-  mlp_multiplier: 4.0
+  depth: 28
+  num_heads: 24
+  mlp_multiplier: 2.666667
   temporal_attention_interval: 4
-  temporal_context_length: 15
+  temporal_context_length: 25
   rope_base: 10000.0
   qk_norm_eps: 1.0e-06
-  attn_logit_softcapping: 50.0
+  attn_logit_softcapping: 50.0 # None for no softcapping -> able to use fused_attention

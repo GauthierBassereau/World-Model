@@ -32,8 +32,8 @@ optimizer:
   lr:
     "0": 1.0e-7
     "1000": 3.0e-4
-    "16500": 3.0e-4
-    "20000": 1.0e-4
+    "16500": 1.0e-4
+    "30000": 5e-5
 
   eps: 1.0e-08
   grad_clip_norm: 1.0
@@ -45,7 +45,7 @@ ema:
   start_step: 5000
 
 train_dataloader:
-  batch_size: 256
+  batch_size: 128
   shuffle: true
   num_workers: 6
   pin_memory: true
@@ -79,7 +79,7 @@ eval_dataloader:
 
 eval_dataset:
   sequence_length_distribution:
-    "99": 1.0
+    "100": 1.0
   fps: 15.0
   action_dim: 7
   weights:

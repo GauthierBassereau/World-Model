@@ -10,10 +10,20 @@ from lerobot.datasets.lerobot_dataset import LeRobotDataset as LeRobotDatasetBac
 from .common import WorldBatch, RESIZE_CROP_TRANSFORM_224
 from src.dataset.common import get_delta_timestamps, get_actions
 
+def _flatten_dict(d: dict, parent_key: str = '', sep: str = '.') -> dict:
+    items = []
+    for k, v in d.items():
+        new_key = parent_key + sep + k if parent_key else k
+        if isinstance(v, dict):
+            items.extend(_flatten_dict(v, new_key, sep=sep).items())
+        else:
+            items.append((new_key, v))
+    return dict(items)
+
 @dataclass
 class LeRobotDatasetConfig:
     repo_id: str = "aractingi/droid_1.0.1"
-    cameras: Dict[str, float] = field(
+    cameras: Dict[str, Any] = field(
         default_factory=lambda: {
             "observation.images.exterior_1_left": 0.25,
             "observation.images.exterior_2_left": 0.25,
@@ -31,6 +41,7 @@ class LeRobotDatasetConfig:
     action_dim: int = 7
 
     def __post_init__(self) -> None:
+        self.cameras = _flatten_dict(self.cameras)
         self.episodes = self._get_list(self.episodes)
         self.excluded_episodes = self._get_list(self.excluded_episodes)
 

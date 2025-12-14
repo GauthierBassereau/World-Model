@@ -13,7 +13,7 @@ from src.dataset.world_dataset import WorldDatasetConfig, WorldBatch, WorldDatas
 from src.dataset.loader import build_world_dataloader, DataloaderConfig
 from src.diffusion.signal_scheduler import SignalSchedulerConfig
 from src.diffusion.euler_solver import EulerSolver, EulerSolverConfig
-from src.world_model.rollout import rollout_latents
+from src.world_model.rollout import collect_rollout_latents
 
 
 @dataclass
@@ -254,7 +254,7 @@ class WorldModelEvaluator:
                 # Pass denoising indices only for the very first batch
                 denoising_indices = self.config.denoising_metrics_indices if batch_idx == 0 else None
 
-                predicted_stack, full_sequence, denoising_data = rollout_latents(
+                predicted_stack, full_sequence, denoising_data = collect_rollout_latents(
                     model,
                     self.euler_solver,
                     latents,

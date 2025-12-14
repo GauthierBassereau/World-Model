@@ -22,15 +22,12 @@ def rollout_latents(
     independent_frames: Optional[torch.Tensor] = None,
     target_latents: Optional[torch.Tensor] = None,
     denoising_metrics_indices: Optional[List[int]] = None,
-) -> Tuple[torch.Tensor, torch.Tensor, Dict[int, Dict[str, Any]]]:
-    
+):
     batch_size, _, tokens, dim = latents.shape
     device = latents.device
     
     kv_cache = None
-    
 
-    # Context Phase (Batched Prefill)
     if context_len > 0:
         context_frames = latents[:, :context_len]
         noisy_context = _apply_noise(context_frames, rollout_signal_level)
@@ -50,12 +47,6 @@ def rollout_latents(
             )
         kv_cache = output.kv_cache
 
-    predicted_frames = []
-    all_metrics = {}
-    
-    # Future Phase (Autoregressive Loop)
-    denoising_data_all = {}
-    
     for t in range(future_len):
         x = torch.randn(batch_size, 1, tokens, dim, device=device)
         
@@ -65,7 +56,6 @@ def rollout_latents(
         current_denoising_indices = None
         target_clean_latent = None
         
-        # Only perform denoising metrics collection on the first rollout step
         if t == 0:
             if denoising_metrics_indices is not None:
                 current_denoising_indices = denoising_metrics_indices
@@ -83,12 +73,8 @@ def rollout_latents(
             denoising_indices=current_denoising_indices,
         )
         
-        if step_denoising_data:
-            denoising_data_all = step_denoising_data
+        yield t, clean_frame, step_denoising_data
         
-        predicted_frames.append(clean_frame)
-        
-        # Update KV cache for next step
         if t < future_len - 1:
             noisy_next_input = _apply_noise(clean_frame, rollout_signal_level)
             signal = torch.full((batch_size, 1), rollout_signal_level, device=device)
@@ -103,6 +89,40 @@ def rollout_latents(
                     kv_cache=kv_cache
                 )
             kv_cache = output.kv_cache
+
+
+def collect_rollout_latents(
+    model: nn.Module,
+    solver: EulerSolver,
+    latents: torch.Tensor,
+    context_len: int,
+    future_len: int,
+    rollout_signal_level: float,
+    actions: Optional[torch.Tensor] = None,
+    use_actions: Optional[torch.Tensor] = None,
+    independent_frames: Optional[torch.Tensor] = None,
+    target_latents: Optional[torch.Tensor] = None,
+    denoising_metrics_indices: Optional[List[int]] = None,
+) -> Tuple[torch.Tensor, torch.Tensor, Dict[int, Dict[str, Any]]]:
+    predicted_frames = []
+    denoising_data_all = {}
+    
+    for t, clean_frame, step_denoising_data in rollout_latents(
+        model,
+        solver,
+        latents,
+        context_len,
+        future_len,
+        rollout_signal_level,
+        actions,
+        use_actions,
+        independent_frames,
+        target_latents,
+        denoising_metrics_indices,
+    ):
+        predicted_frames.append(clean_frame)
+        if step_denoising_data:
+            denoising_data_all = step_denoising_data
 
     predicted_stack = torch.cat(predicted_frames, dim=1)
     full_sequence = torch.cat([latents[:, :context_len], predicted_stack], dim=1)

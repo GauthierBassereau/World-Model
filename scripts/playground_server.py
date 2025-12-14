@@ -16,6 +16,8 @@ from src.dataset.world_dataset import WorldDatasetConfig, WorldDataset
 from src.dataset.lerobot_dataset import LeRobotDatasetConfig, LeRobotDataset
 from src.dataset.loader import DataloaderConfig
 from src.diffusion.euler_solver import EulerSolver, EulerSolverConfig
+from src.diffusion.signal_scheduler import SignalSchedulerConfig
+from src.world_model.rollout import rollout_latents
 from src.training.utils import set_seed
 from src.dataset.common import WorldBatch
 
@@ -31,12 +33,14 @@ class PlaygroundConfig:
     
     dataset: LeRobotDatasetConfig = field(default_factory=LeRobotDatasetConfig)
     context_length: int = 6
+    rollout_signal_level: float = 0.9
     sensitivity: float = 1.0
     
     key_mapping: Dict[str, List[float]] = field(default_factory=dict)
     
     world_model: WorldModelConfig = field(default_factory=WorldModelConfig)
     euler_solver: EulerSolverConfig = field(default_factory=EulerSolverConfig)
+    signal_scheduler: SignalSchedulerConfig = field(default_factory=SignalSchedulerConfig)
     
     def __post_init__(self):
         if not self.key_mapping:
@@ -166,7 +170,7 @@ def load_model():
     dataset_backend = ds.backend
     dataset_stats = ds.stats
     
-    solver = EulerSolver(config.euler_solver)
+    solver = EulerSolver(config.euler_solver, config.signal_scheduler)
     
     logger.info("Ready!")
 
@@ -174,35 +178,52 @@ def load_model():
 async def get():
     return HTMLResponse(html)
 
+def encode_latents(frames: torch.Tensor, device: torch.device) -> torch.Tensor:
+    frames_norm = frames.float() / 255.0
+    b, t, c, h, w = frames_norm.shape
+    flat = frames_norm.view(b * t, c, h, w)
+    with torch.no_grad():
+        latents = autoencoder.encode(flat)
+    tokens, dim = latents.shape[1], latents.shape[2]
+    return latents.view(b, t, tokens, dim)
+
+
+def decode_and_send_frame(latent: torch.Tensor) -> bytes:
+    flat = latent.view(-1, latent.shape[-2], latent.shape[-1])
+    with torch.no_grad():
+        rec_img = autoencoder.decode(flat)
+    img_tensor = rec_img.squeeze(0).cpu().clamp(0, 1)
+    img_np = img_tensor.permute(1, 2, 0).numpy()
+    img_np = (img_np * 255).astype(np.uint8)
+    _, buffer = cv2.imencode('.jpg', cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR))
+    return buffer.tobytes()
+
+
+def load_context_frames(start_idx: int, cam_key: str, device: torch.device) -> torch.Tensor:
+    context_frames_list = []
+    for i in range(config.context_length):
+        item = dataset_backend[start_idx + i]
+        img = item[cam_key]
+        context_frames_list.append(img.unsqueeze(0))
+    return torch.cat(context_frames_list, dim=0).unsqueeze(0).to(device)
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     
     device = torch.device(config.device)
+    cam_key = list(config.dataset.cameras.keys())[0]
     
     episode_idx = np.random.choice(len(dataset_backend.meta.episodes))
     ep_meta = dataset_backend.meta.episodes[episode_idx]
     start_idx = ep_meta["dataset_from_index"]
     
-    context_frames_list = []
-    cam_key = list(config.dataset.cameras.keys())[0]
+    context_frames = load_context_frames(start_idx, cam_key, device)
+    context_latents = encode_latents(context_frames, device)
     
-    for i in range(config.context_length):
-        item = dataset_backend[start_idx + i]
-        img = item[cam_key]
-        context_frames_list.append(img.unsqueeze(0))
-        
-    context_imgs = torch.cat(context_frames_list, dim=0).unsqueeze(0).to(device)
-    
-    b, t, c, h, w = context_imgs.shape
-    context_imgs_flat = context_imgs.view(b * t, c, h, w)
-    
-    with torch.no_grad():
-        posterior = autoencoder.encode(context_imgs_flat)
-        latents = posterior.sample().view(b, t, -1)
-
-    current_latents = latents
-    kv_cache = None
+    rollout_generator = None
+    last_clean_frame = None
     
     try:
         while True:
@@ -213,79 +234,47 @@ async def websocket_endpoint(websocket: WebSocket):
                 episode_idx = np.random.choice(len(dataset_backend.meta.episodes))
                 ep_meta = dataset_backend.meta.episodes[episode_idx]
                 start_idx = ep_meta["dataset_from_index"]
-                context_frames_list = []
-                for i in range(config.context_length):
-                    item = dataset_backend[start_idx + i]
-                    img = item[cam_key]
-                    context_frames_list.append(img.unsqueeze(0))
-                context_imgs = torch.cat(context_frames_list, dim=0).unsqueeze(0).to(device)
-                context_imgs_flat = context_imgs.view(b * t, c, h, w)
-                with torch.no_grad():
-                    posterior = autoencoder.encode(context_imgs_flat)
-                    current_latents = posterior.sample().view(b, t, -1)
-                kv_cache = None
+                context_frames = load_context_frames(start_idx, cam_key, device)
+                context_latents = encode_latents(context_frames, device)
+                rollout_generator = None
+                last_clean_frame = None
                 continue
             
             keys = message["keys"]
-            
-            action_vec = torch.zeros(1, 1, 7, device=device)
-            
+            action_vec = torch.zeros(1, config.context_length + 1, 7, device=device)
             for key in keys:
                 if key in config.key_mapping:
                     dim, val = config.key_mapping[key]
-                    action_vec[0, 0, dim] += val * config.sensitivity
+                    action_vec[0, -1, dim] += val * config.sensitivity
             
-            if len(current_latents.shape) == 3:
-                current_latents = current_latents.unsqueeze(2)
-                
-            if kv_cache is None:
-                signal = torch.ones(1, config.context_length, device=device)
-                ctx_actions = torch.zeros(1, config.context_length, 7, device=device) 
-                
-                with torch.no_grad():
-                    output = model(
-                        noisy_latents=current_latents,
-                        signal_levels=signal,
-                        actions=ctx_actions,
-                        kv_cache=None
-                    )
-                    kv_cache = output.kv_cache
-                    
-            _, _, N, D = current_latents.shape
-            x = torch.randn(1, 1, N, D, device=device)
-            
-            clean_frame, _ = solver.sample(
-                model,
-                x,
-                kv_cache=kv_cache,
-                actions=action_vec,
-            )
-            
-            frame_latent = clean_frame.squeeze(1)
-            if N == 1:
-                frame_latent = frame_latent.squeeze(1)
-            
-            with torch.no_grad():
-                rec_img = autoencoder.decode(frame_latent)
-                
-            img_tensor = rec_img.squeeze(0).cpu().clamp(0, 1)
-            img_np = img_tensor.permute(1, 2, 0).numpy()
-            img_np = (img_np * 255).astype(np.uint8)
-            
-            ret, buffer = cv2.imencode('.jpg', cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR))
-            frame_bytes = buffer.tobytes()
-            
-            await websocket.send_bytes(frame_bytes)
-            
-            signal_next = torch.ones(1, 1, device=device)
-            with torch.no_grad():
-                output = model(
-                    noisy_latents=clean_frame,
-                    signal_levels=signal_next,
+            if rollout_generator is None:
+                rollout_generator = rollout_latents(
+                    model,
+                    solver,
+                    context_latents,
+                    config.context_length,
+                    future_len=1,
+                    rollout_signal_level=config.rollout_signal_level,
                     actions=action_vec,
-                    kv_cache=kv_cache
                 )
-                kv_cache = output.kv_cache
+            else:
+                current_latents = torch.cat([context_latents, last_clean_frame], dim=1)
+                single_action = action_vec[:, -1:, :]
+                rollout_generator = rollout_latents(
+                    model,
+                    solver,
+                    current_latents,
+                    config.context_length + 1,
+                    future_len=1,
+                    rollout_signal_level=config.rollout_signal_level,
+                    actions=torch.cat([action_vec[:, :-1, :], single_action], dim=1),
+                )
+            
+            for _, clean_frame, _ in rollout_generator:
+                last_clean_frame = clean_frame
+                frame_bytes = decode_and_send_frame(clean_frame)
+                await websocket.send_bytes(frame_bytes)
+                break
                 
     except WebSocketDisconnect:
         logger.info("Client disconnected")

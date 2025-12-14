@@ -45,3 +45,5 @@
 
 # train_ds = LeRobotDataset("droid-train", root=train_root)
 # val_ds   = LeRobotDataset("droid-val", root=val_root)
+
+print("Done.")
