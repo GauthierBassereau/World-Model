@@ -6,7 +6,6 @@ __pycache__/
 .agent/
 
 *.pt
-*.png
 *.mp4
 *.sh
 
