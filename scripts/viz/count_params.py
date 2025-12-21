@@ -2,9 +2,6 @@ import sys
 import os
 import torch
 
-# Add the project root to the path so we can import src
-sys.path.append(os.path.join(os.path.dirname(__file__), '../../'))
-
 from src.world_model.backbone import WorldModelBackbone, WorldModelConfig
 
 def count_parameters(model):

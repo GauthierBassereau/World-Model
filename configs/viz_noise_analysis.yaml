@@ -1,6 +1,5 @@
 output_dir: archive/noise_analysis
 
-# Signal levels to analyze (0 = pure noise, 1 = clean signal)
 signal_levels:
   - 0.05
   - 0.1

@@ -1,18 +1,18 @@
 logging:
   project: world_model_evaluation
   entity: null
-  run_name: soar_60rollout_50steps_16500
+  run_name: soar_bottleneck_0.7rollout
   output_dir: "/checkpoints"
   log_interval: 1
   signal_level_log_limit: 100
   checkpoint_interval: 0
 
-checkpoint_path: /gpfs/helios/home/gauthierbernarda/git/World-Model/checkpoints/soar/world_model_step_016500.pt
+checkpoint_path: /gpfs/helios/home/gauthierbernarda/git/World-Model/checkpoints/soar_bottleneck/world_model_step_015500.pt
 
 evaluator:
   video_sample_indices: [0, 50, 500, 5000, 1000, 10000, 15000, 20000]
   rollout_start_frame: 6
-  rollout_signal_level: 0.60
+  rollout_signal_level: 0.7
   precision: bf16
   max_batches: 10
   denoising_metrics_indices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99] # List of diffusion steps to capture intermediates for (first sequence, first frame only)
@@ -20,8 +20,8 @@ evaluator:
 
 eval_dataset:
   sequence_length_distribution:
-    "100": 1.0
-  fps: 15.0
+    "90": 1.0
+  fps: 5.0
   action_dim: 7
   weights:
     soar: 1.0
@@ -29,7 +29,7 @@ eval_dataset:
   datasets:
     soar:
       type: lerobot
-      repo_id: Gaugou/soar
+      repo_id: Gaugou/Soar
       episodes: [0, 50, 500, 5000, 1000, 10000, 15000, 20000]
       excluded_episodes: null
       episode_midpoint_only: true
@@ -57,9 +57,10 @@ euler_solver:
   min_denom: 0.05
   timestep_schedule: "linear"
 
-world_model: # ~400M parameters
+world_model:
   input_dim: 768
   latent_dim: 1536
+  bottleneck_dim: 64
   action_dim: 7
   num_registers: 4
   depth: 28

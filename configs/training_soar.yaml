@@ -1,7 +1,7 @@
 logging:
   project: world_model
   entity: null
-  run_name: soar
+  run_name: soar_bottleneck
   output_dir: checkpoints
   log_interval: 1
   signal_level_log_limit: 100
@@ -13,14 +13,14 @@ trainer:
   loss_weighting_intercept: 0.1
   loss_weighting_slope: 0.9
   evaluation_interval: 500
-  grad_accum_steps: 4
+  grad_accum_steps: 8
   precision: bf16
-  seed: 36
-  resume: true
-  load_checkpoint: /gpfs/helios/home/gauthierbernarda/git/World-Model/checkpoints/soar/world_model_step_016500.pt
+  seed: 3
+  resume: false
+  load_checkpoint: null
 
 evaluator:
-  video_sample_indices: [500, 5000]
+  video_sample_indices: [0, 1, 2, 3, 4, 5, 6, 7]
   rollout_start_frame: 6
   rollout_signal_level: 0.9
   precision: bf16
@@ -32,8 +32,6 @@ optimizer:
   lr:
     "0": 1.0e-7
     "1000": 3.0e-4
-    "16500": 1.0e-4
-    "30000": 5e-5
 
   eps: 1.0e-08
   grad_clip_norm: 1.0
@@ -45,7 +43,7 @@ ema:
   start_step: 5000
 
 train_dataloader:
-  batch_size: 128
+  batch_size: 256
   shuffle: true
   num_workers: 6
   pin_memory: true
@@ -53,7 +51,7 @@ train_dataloader:
 train_dataset:
   sequence_length_distribution:
     "23": 1.0
-  fps: 15.0
+  fps: 5.0
   action_dim: 7
   weights:
     soar: 1.0
@@ -61,7 +59,7 @@ train_dataset:
   datasets:
     soar:
       type: lerobot
-      repo_id: Gaugou/soar
+      repo_id: Gaugou/Soar
       episodes: null
       excluded_episodes: null
       episode_midpoint_only: false
@@ -79,8 +77,8 @@ eval_dataloader:
 
 eval_dataset:
   sequence_length_distribution:
-    "100": 1.0
-  fps: 15.0
+    "90": 1.0
+  fps: 5.0
   action_dim: 7
   weights:
     soar: 1.0
@@ -88,7 +86,7 @@ eval_dataset:
   datasets:
     soar:
       type: lerobot
-      repo_id: Gaugou/soar
+      repo_id: Gaugou/Soar
       episodes: [0, 50, 500, 5000, 1000, 10000, 15000, 20000]
       excluded_episodes: null
       episode_midpoint_only: true
@@ -113,6 +111,7 @@ euler_solver:
 world_model: # ~400M parameters
   input_dim: 768
   latent_dim: 1536
+  bottleneck_dim: 64
   action_dim: 7
   num_registers: 4
   depth: 28
