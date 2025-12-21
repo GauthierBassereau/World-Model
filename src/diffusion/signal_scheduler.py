@@ -4,15 +4,18 @@ from dataclasses import dataclass
 
 @dataclass
 class SignalSchedulerConfig:
-    mode: str = "resolution_shift"  # {"resolution_shift", "linear_shift", "uniform"}
+    mode: str = "resolution_shift"  # {"resolution_shift", "linear_shift", "uniform", "logit_normal"}
     min_value: float = 0.0
     max_value: float = 1.0
     # resolution_shift parameters
     resolution_shift_base_dimension: int = 4_096
     resolution_shift_effective_latent_dimension: int = 196_608 # 768*16*16
     # linear_shift parameters
-    linear_shift_slope: float = -0.9
+    linear_shift_slope: float = 0.9
     linear_shift_intercept: float = 0.1
+    # logit_normal parameters
+    logit_normal_loc: float = -0.8
+    logit_normal_scale: float = 0.8
 
 class SignalScheduler:
     def __init__(self, config: SignalSchedulerConfig) -> None:
@@ -24,14 +27,24 @@ class SignalScheduler:
         elif self._mode == "linear_shift":
             self.slope = torch.as_tensor(config.linear_shift_slope, dtype=torch.float32)
             self.intercept = torch.as_tensor(config.linear_shift_intercept, dtype=torch.float32)
+        elif self._mode == "logit_normal":
+            self.loc = torch.as_tensor(config.logit_normal_loc, dtype=torch.float32)
+            self.scale = torch.as_tensor(config.logit_normal_scale, dtype=torch.float32)
 
     def sample(self, latents: torch.Tensor) -> torch.Tensor:
+        signal_level, _ = self.sample_with_base(latents)
+        return signal_level
+
+    def sample_with_base(self, latents: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         batch, steps, tokens, dim = latents.shape
 
         base = torch.rand((batch, steps), dtype=torch.float32)
         signal_level = self._sample_from_mode(base)
         signal_level = signal_level * (self.config.max_value - self.config.min_value) + self.config.min_value
-        return signal_level.to(device=latents.device, dtype=latents.dtype)
+        return (
+            signal_level.to(device=latents.device, dtype=latents.dtype),
+            base.to(device=latents.device, dtype=latents.dtype),
+        )
 
     def get_timesteps(self, num_steps: int) -> torch.Tensor:
         linear_t = torch.linspace(0.0, 1.0, num_steps + 1, dtype=torch.float32)
@@ -45,6 +58,8 @@ class SignalScheduler:
             return self.slope * base + self.intercept
         if mode == "resolution_shift":
             return self._sample_signal(base)
+        if mode == "logit_normal":
+            return self._sample_logit_normal(base)
         raise RuntimeError(f"Unsupported noise sampling mode: {mode}")
 
     def _sample_signal(self, base: torch.Tensor) -> torch.Tensor:
@@ -54,3 +69,10 @@ class SignalScheduler:
         denom = 1.0 + (alpha - 1.0) * base
         denom = torch.clamp_min(denom, 1e-8)
         return (alpha * base) / denom
+
+    def _sample_logit_normal(self, base: torch.Tensor) -> torch.Tensor:
+        eps = 1e-6
+        base = torch.clamp(base, eps, 1.0 - eps)
+        z = math.sqrt(2) * torch.erfinv(2 * base - 1) # transforms the uniform base into Standard Normal distribution
+        y = self.loc + self.scale * z
+        return torch.sigmoid(y)

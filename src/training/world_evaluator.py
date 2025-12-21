@@ -1,4 +1,5 @@
 import math
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Union, Any
 
@@ -12,7 +13,7 @@ from src.dataset.world_dataset import WorldDatasetConfig, WorldBatch, WorldDatas
 from src.dataset.loader import build_world_dataloader, DataloaderConfig
 from src.diffusion.signal_scheduler import SignalSchedulerConfig
 from src.diffusion.euler_solver import EulerSolver, EulerSolverConfig
-from src.world_model.rollout import rollout_latents
+from src.world_model.rollout import collect_rollout_latents
 
 
 @dataclass
@@ -24,6 +25,7 @@ class EvaluationConfig:
     rollout_signal_level: float = 0.9
     precision: str = "bf16"
     denoising_metrics_indices: Optional[List[int]] = None
+    save_denoising_frames: bool = True
 
 
 @dataclass
@@ -88,8 +90,9 @@ class WorldModelEvaluator:
     @torch.no_grad()
     def evaluate(self, model: nn.Module) -> Optional[EvaluationSummary]:
         metrics_accumulator: Dict[str, List[float]] = {}
-        denoising_metrics_accumulator: Dict[str, Dict[int, Dict[int, List[float]]]] = {} 
-        # scenario -> rollout_step -> diffusion_step -> list of values
+        # scenario -> diffusion_step -> {l1, l2, image}
+        # Since we only do this for the first batch, we can just store the result directly
+        denoising_results: Dict[str, Dict[int, Dict[str, Any]]] = {}
 
         video_samples: List[Dict[str, torch.Tensor]] = []
         was_training = model.training
@@ -99,23 +102,16 @@ class WorldModelEvaluator:
         for batch_idx, batch in enumerate(self.dataloader):
             self.logger.info(f"Evaluating batch {batch_idx + 1}/{self.config.max_batches if self.config.max_batches is not None else len(self.dataloader)}...")
             
-            batch_metrics, sample_payloads, batch_denoising = self._evaluate_batch(model, batch)
+            batch_metrics, sample_payloads, batch_denoising = self._evaluate_batch(model, batch, batch_idx)
             
             for key, val in batch_metrics.items():
                 if key not in metrics_accumulator:
                     metrics_accumulator[key] = []
                 metrics_accumulator[key].append(val)
             
-            for scenario, d_metrics in batch_denoising.items():
-                if scenario not in denoising_metrics_accumulator:
-                    denoising_metrics_accumulator[scenario] = {}
-                for r_step, steps_data in d_metrics.items():
-                    if r_step not in denoising_metrics_accumulator[scenario]:
-                        denoising_metrics_accumulator[scenario][r_step] = {}
-                    for d_step, val in steps_data.items():
-                        if d_step not in denoising_metrics_accumulator[scenario][r_step]:
-                            denoising_metrics_accumulator[scenario][r_step][d_step] = []
-                        denoising_metrics_accumulator[scenario][r_step][d_step].append(val)
+            # If we have denoising results (from batch 0), store them
+            if batch_denoising:
+                denoising_results = batch_denoising
             
             if sample_payloads:
                 video_samples.extend(sample_payloads)
@@ -137,10 +133,7 @@ class WorldModelEvaluator:
                 metrics[key] = sum(values) / len(values)
         
         plots: Dict[str, Any] = {}
-        # Process denoising metrics for plotting
-        # We want one plot per scenario per metric type (l1, l2)
-        # Each plot has multiple lines (one per rollout step)
-
+        
         videos: Dict[str, torch.Tensor] = {}
         for payload in video_samples:
             # payload now includes "index" to identify the sample
@@ -148,34 +141,38 @@ class WorldModelEvaluator:
             for key, frames in payload.items():
                 videos[f"evaluation/video_samples/sample_{idx}/{key}"] = frames
 
-        # Actually constructing the plots dictionary here
-        for scenario, r_steps_data in denoising_metrics_accumulator.items():
-             xs = []
+        # Process denoising results for plotting and video logging
+        for scenario, d_steps_data in denoising_results.items():
+             xs = sorted(d_steps_data.keys())
              l1_ys = []
              l2_ys = []
-             keys = []
              
-             # Assuming all rollout steps have same diffusion steps
-             first_r_step = next(iter(r_steps_data))
-             xs = sorted(r_steps_data[first_r_step].keys())
-             
-             for r_step in sorted(r_steps_data.keys()):
-                 keys.append(f"rollout_step_{r_step}")
-                 l1_series = []
-                 l2_series = []
-                 for d_step in xs:
-                     # vals is list of {"l1": ..., "l2": ...}
-                     vals_list = r_steps_data[r_step][d_step]
-                     # Average
-                     avg_l1 = sum(v["l1"] for v in vals_list) / len(vals_list)
-                     avg_l2 = sum(v["l2"] for v in vals_list) / len(vals_list)
-                     l1_series.append(avg_l1)
-                     l2_series.append(avg_l2)
-                 l1_ys.append(l1_series)
-                 l2_ys.append(l2_series)
-             
-             plots[f"denoising_l1/{scenario}"] = {"xs": xs, "ys": l1_ys, "keys": keys, "title": f"Denoising L1 ({scenario})"}
-             plots[f"denoising_l2/{scenario}"] = {"xs": xs, "ys": l2_ys, "keys": keys, "title": f"Denoising L2 ({scenario})"}
+             for d_step in xs:
+                 data = d_steps_data[d_step]
+                 if "l1" in data and data["l1"] is not None:
+                     l1_ys.append(data["l1"])
+                 if "l2" in data and data["l2"] is not None:
+                     l2_ys.append(data["l2"])
+                 
+                 # Add image to videos
+                 if "image" in data:
+                     # Key format: evaluation/denoising/{scenario}/step_{d_step}
+                     videos[f"evaluation/denoising/{scenario}/step_{d_step}"] = data["image"]
+
+             if l1_ys:
+                 plots[f"denoising_l1/{scenario}"] = {
+                     "xs": xs, 
+                     "ys": [l1_ys], # single line
+                     "keys": ["l1_error"], 
+                     "title": f"Denoising L1 ({scenario}) target_step=0"
+                 }
+             if l2_ys:
+                 plots[f"denoising_l2/{scenario}"] = {
+                     "xs": xs,
+                     "ys": [l2_ys],
+                     "keys": ["l2_error"],
+                     "title": f"Denoising L2 ({scenario}) target_step=0"
+                 }
 
         for scenario, _ in self.scenarios:
              step_keys = [k for k in metrics.keys() if k.startswith(f"evaluation_rollouts_metrics/{scenario}/l1_step_")]
@@ -206,10 +203,11 @@ class WorldModelEvaluator:
         self,
         model: nn.Module,
         batch: WorldBatch,
+        batch_idx: int,
     ) -> Tuple[
         Dict[str, float],
         List[Dict[str, torch.Tensor]],
-        Dict[str, Dict[int, Dict[int, Dict[str, float]]]], # scenario -> rollout_step -> diffusion_step -> metrics
+        Dict[str, Dict[int, Dict[str, Any]]], # scenario -> diffusion_step -> {l1, l2, image}
     ]:
         dtype = torch.bfloat16 if self.config.precision == "bf16" else torch.float32
         is_autocast = self.config.precision == "bf16"
@@ -230,9 +228,10 @@ class WorldModelEvaluator:
             target_future = latents[:, context_len:, ...].detach() if future_len > 0 else None
 
             batch_metrics: Dict[str, float] = {}
-            batch_denoising: Dict[str, Dict[int, Dict[int, Dict[str, float]]]] = {}
+            # scenario -> diffusion_step -> {l1, l2, image}
+            batch_denoising: Dict[str, Dict[int, Dict[str, Any]]] = {}
             scenario_sequences: Dict[str, torch.Tensor] = {}
-            future_mask = frames_valid_mask[:, context_len:]
+            # future_mask = frames_valid_mask[:, context_len:] # Unused variables
 
             for scenario, use_actions_flag in self.scenarios:
                 if future_len <= 0:
@@ -251,8 +250,11 @@ class WorldModelEvaluator:
                         dtype=torch.bool, 
                         device=self.device
                     )
+                
+                # Pass denoising indices only for the very first batch
+                denoising_indices = self.config.denoising_metrics_indices if batch_idx == 0 else None
 
-                predicted_stack, full_sequence, denoising_metrics = rollout_latents(
+                predicted_stack, full_sequence, denoising_data = collect_rollout_latents(
                     model,
                     self.euler_solver,
                     latents,
@@ -263,7 +265,7 @@ class WorldModelEvaluator:
                     use_actions=use_actions_tensor,
                     independent_frames=independent_frames,
                     target_latents=target_future,
-                    denoising_metrics_indices=self.config.denoising_metrics_indices,
+                    denoising_metrics_indices=denoising_indices,
                 )
                 
                 
@@ -286,24 +288,23 @@ class WorldModelEvaluator:
                         batch_metrics[f"evaluation_rollouts_metrics/{scenario}/l1_step_{t}"] = per_step_l1[t].item()
                         batch_metrics[f"evaluation_rollouts_metrics/{scenario}/l2_step_{t}"] = per_step_l2[t].item()
 
-                # Process denoising metrics
-                # denoising_metrics keys are "step_{t}/l1_step_{i}"
-                if denoising_metrics:
+                # Process denoising metrics if available
+                # denoising_data is Dict[int, Dict[str, Any]] (diffusion_step -> {latents, l1, l2})
+                if denoising_data:
                     batch_denoising[scenario] = {}
-                    for k, v in denoising_metrics.items():
-                        # k format: step_{t}/l1_step_{i}
-                        parts = k.split('/')
-                        rollout_step = int(parts[0].split('_')[1])
-                        metric_part = parts[1] # l1_step_{i}
-                        metric_type = metric_part.split('_')[0] # l1 or l2
-                        diffusion_step = float(metric_part.split('_')[2])
-                        
-                        if rollout_step not in batch_denoising[scenario]:
-                            batch_denoising[scenario][rollout_step] = {}
-                        if diffusion_step not in batch_denoising[scenario][rollout_step]:
-                            batch_denoising[scenario][rollout_step][diffusion_step] = {}
-                        
-                        batch_denoising[scenario][rollout_step][diffusion_step][metric_type] = v
+                    for d_step, data in denoising_data.items():
+                        batch_denoising[scenario][d_step] = {
+                            "l1": data.get("l1"),
+                            "l2": data.get("l2"),
+                        }
+                        if self.config.save_denoising_frames:
+                            # Decode latent to image
+                            # latents is [tokens, dim], need to decode
+                            latent = data["latents"].to(self.device).to(dtype=dtype)
+                            # Add batch and step dims: [1, 1, tokens, dim]
+                            latent = latent.unsqueeze(0).unsqueeze(0)
+                            decoded_img = self._decode_latents(latent).squeeze(0).cpu()
+                            batch_denoising[scenario][d_step]["image"] = decoded_img
                     
                 scenario_sequences[scenario] = full_sequence
             
@@ -338,14 +339,43 @@ class WorldModelEvaluator:
     def _gather_video_samples(self, local_samples: List[Dict[str, torch.Tensor]]) -> List[Dict[str, torch.Tensor]]:
         if self.world_size <= 1 or not dist.is_initialized():
             return local_samples
-        gathered: List[Optional[List[Dict[str, torch.Tensor]]]] = [None for _ in range(self.world_size)] if self.is_main_process else None
-        dist.gather_object(local_samples, object_gather_list=gathered, dst=0)
-        if not self.is_main_process:
-            return []
+        
+        # Use filesystem to gather samples to avoid NCCL object gathering issues
+        # We assume shared filesystem (GPFS)
+        output_dir = getattr(self.logger, "log_dir", None)
+        if output_dir is None:
+            # Fallback to current directory
+            output_dir = Path(".")
+        else:
+            output_dir = Path(output_dir)
+            
+        temp_dir = output_dir / "temp_gather_videos"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Save local samples to file
+        temp_file = temp_dir / f"samples_rank_{self.rank}.pt"
+        torch.save(local_samples, temp_file)
+        
+        dist.barrier()
+        
         all_samples: List[Dict[str, torch.Tensor]] = []
-        for entry in gathered or []:
-            if entry:
-                all_samples.extend(entry)
+        if self.is_main_process:
+            for rank in range(self.world_size):
+                rank_file = temp_dir / f"samples_rank_{rank}.pt"
+                try:
+                    rank_samples = torch.load(rank_file, map_location="cpu")
+                    all_samples.extend(rank_samples)
+                except Exception as e:
+                    self.logger.warning(f"Failed to load samples from rank {rank}: {e}")
+            
+            # Cleanup
+            import shutil
+            try:
+                shutil.rmtree(temp_dir)
+            except Exception as e:
+                self.logger.warning(f"Failed to cleanup temp dir {temp_dir}: {e}")
+                
+        dist.barrier()
         return all_samples
 
     def _prepare_video_samples(

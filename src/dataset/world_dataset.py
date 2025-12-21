@@ -13,18 +13,6 @@ from src.training.logger import WorldModelLogger
 from .common import WorldBatch
 
 
-
-def _flatten_dict(d: Dict[str, Any], parent_key: str = '', sep: str = '.') -> Dict[str, Any]:
-    items = []
-    for k, v in d.items():
-        new_key = parent_key + sep + k if parent_key else k
-        if isinstance(v, dict):
-            items.extend(_flatten_dict(v, new_key, sep=sep).items())
-        else:
-            items.append((new_key, v))
-    return dict(items)
-
-
 @dataclass
 class WorldDatasetConfig:
     weights: Dict[str, float]
@@ -87,10 +75,6 @@ class WorldDataset(Dataset):
             ds_conf_dict["sequence_length"] = max_sequence_length
             ds_conf_dict["fps"] = self.cfg.fps
             ds_conf_dict["action_dim"] = self.action_dim
-            
-            # This is kind of a hack... not good code
-            if "cameras" in ds_conf_dict and isinstance(ds_conf_dict["cameras"], dict):
-                ds_conf_dict["cameras"] = _flatten_dict(ds_conf_dict["cameras"])
             
             if ds_type == "lerobot":
                 ds_cfg = pyrallis.decode(LeRobotDatasetConfig, ds_conf_dict)

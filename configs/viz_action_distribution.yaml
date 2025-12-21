@@ -1,0 +1,24 @@
+output_dir: archive/action_distribution
+
+num_samples: 1000
+
+dataset:
+  sequence_length_distribution:
+    "20": 1.0
+  fps: 15.0
+  action_dim: 7
+  weights:
+    soar: 1.0
+  reference_dataset: soar
+  datasets:
+    soar:
+      type: lerobot
+      repo_id: Gaugou/soar
+      episodes: null
+      excluded_episodes: [0, 10, 100, 1000, 10000]
+      episode_midpoint_only: false
+      cameras:
+        observation.images.image: 1.0
+      action_mode: soar_relative_ee_normalized
+      independent_frames_probability: 0.0
+      use_action_probability: 1.0

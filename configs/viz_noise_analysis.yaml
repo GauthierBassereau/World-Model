@@ -1,0 +1,38 @@
+output_dir: archive/noise_analysis
+
+signal_levels:
+  - 0.05
+  - 0.1
+  - 0.15
+  - 0.2
+  - 0.3
+  - 0.4
+  - 0.5
+  - 0.7
+  - 0.9
+
+loss_weighting_intercept: 0.1
+loss_weighting_slope: 0.9
+
+dataset:
+  sequence_length_distribution:
+    "1": 1.0
+  fps: 5.0
+  action_dim: 8
+  weights:
+    droid: 1.0
+  reference_dataset: droid
+  datasets:
+    droid:
+      type: lerobot
+      repo_id: aractingi/droid_1.0.1
+      episodes: [0]
+      excluded_episodes: null
+      episode_midpoint_only: true
+      cameras:
+        observation.images.exterior_1_left: 1.0
+      action_key: observation.state
+      action_representation: position
+      action_normalization: mean_std
+      independent_frames_probability: 0.0
+      use_action_probability: 0.0
