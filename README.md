@@ -28,6 +28,12 @@ Other related papers:
 <!-- Potential additions: Ego4D, Something-Something V2, EgoDex, agibot_alpha, OpenVid1M, HowTo100M -->
 -  Learning robot interactions + action conditioning with world -> SOAR
 
+Links to HF datasets:
+- [https://huggingface.co/datasets/Gaugou/BridgeV2]
+- [https://huggingface.co/datasets/Gaugou/Soar]
+- [https://huggingface.co/datasets/Gaugou/epic_kitchens_100]
+- [https://huggingface.co/datasets/lerobot/droid_1.0.1]
+
 ---
 
 Todos:

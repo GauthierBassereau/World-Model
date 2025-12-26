@@ -13,14 +13,14 @@ trainer:
   loss_weighting_intercept: 0.1
   loss_weighting_slope: 0.9
   evaluation_interval: 500
-  grad_accum_steps: 8
+  grad_accum_steps: 4
   precision: bf16
-  seed: 3
-  resume: false
-  load_checkpoint: null
+  seed: 10
+  resume: true
+  load_checkpoint: /gpfs/helios/home/gauthierbernarda/git/World-Model/checkpoints/soar_bottleneck/world_model_step_030500.pt
 
 evaluator:
-  video_sample_indices: [0, 1, 2, 3, 4, 5, 6, 7]
+  video_sample_indices: [0, 50, 500, 5000, 1000, 10000, 15000, 20000]
   rollout_start_frame: 6
   rollout_signal_level: 0.9
   precision: bf16
@@ -32,6 +32,8 @@ optimizer:
   lr:
     "0": 1.0e-7
     "1000": 3.0e-4
+    "17500": 3.0e-4
+    "30000": 3.0e-5
 
   eps: 1.0e-08
   grad_clip_norm: 1.0
