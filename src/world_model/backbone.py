@@ -26,6 +26,7 @@ class WorldModelConfig:
     qk_norm_eps: float = 1e-6
     attn_logit_softcapping: Optional[float] = 50.0
     bottleneck_dim: Optional[int] = None
+    use_action_token: bool = True  # False during pretraining to exclude action token from sequence
 
 @dataclass
 class WorldModelOutput:
@@ -46,8 +47,10 @@ class WorldModelBackbone(nn.Module):
         else:
             self.input_proj = nn.Linear(config.input_dim, config.latent_dim, bias=False) if config.input_dim != config.latent_dim else nn.Identity()
         self.signal_embed = SignalEmbedder(config.latent_dim, base_freq_dim=256, scale=1000.0, max_period=10000)
-        self.base_action_embed = nn.Parameter(torch.randn(config.latent_dim) * 0.02)
-        self.action_proj = nn.Linear(config.action_dim, config.latent_dim)
+        # Only create action parameters when use_action_token is True (for finetuning with actions)
+        if config.use_action_token:
+            self.base_action_embed = nn.Parameter(torch.randn(config.latent_dim) * 0.02)
+            self.action_proj = nn.Linear(config.action_dim, config.latent_dim)
         self.register_tokens = nn.Parameter(torch.randn(config.num_registers, config.latent_dim) * 0.02)
 
         self.layers = nn.ModuleList([
@@ -84,7 +87,8 @@ class WorldModelBackbone(nn.Module):
             if hasattr(block.mlp, 'w3'):
                  block.mlp.w3.weight.data.mul_(res_scale)
 
-        nn.init.normal_(self.base_action_embed, mean=0.0, std=0.02)
+        if self.config.use_action_token:
+            nn.init.normal_(self.base_action_embed, mean=0.0, std=0.02)
         nn.init.normal_(self.register_tokens, mean=0.0, std=0.02)
         torch.nn.init.zeros_(self.output_proj.weight)
 
@@ -145,17 +149,26 @@ class WorldModelBackbone(nn.Module):
         x = self.input_proj(noisy_latents)
         sig_emb = self.signal_embed(signal_levels.flatten()).view(B, T, 1, -1)
         reg_emb = self.register_tokens.view(1, 1, self.config.num_registers, -1).expand(B, T, -1, -1)
-        act_emb = self.base_action_embed.view(1, 1, 1, -1).expand(B, T, 1, -1)
         
-        if actions is not None:
-            proj_act = self.action_proj(actions).unsqueeze(2)
-            act_emb = act_emb + proj_act
-            if use_actions is not None:
-                mask = use_actions.bool().view(B, T, 1, 1)
-                act_emb = torch.where(mask, act_emb, self.base_action_embed.view(1, 1, 1, -1))
+        # this if is basically to be able to pretrain without action data, just on raw video, making finetuning easier
+        if self.config.use_action_token:
+            # [Signal, Action, Registers, Latents]
+            act_emb = self.base_action_embed.view(1, 1, 1, -1).expand(B, T, 1, -1)
+            
+            if actions is not None:
+                proj_act = self.action_proj(actions).unsqueeze(2)
+                act_emb = act_emb + proj_act
+                if use_actions is not None:
+                    mask = use_actions.bool().view(B, T, 1, 1)
+                    act_emb = torch.where(mask, act_emb, self.base_action_embed.view(1, 1, 1, -1))
 
-        # [Signal, Action, Registers, Latents]
-        x = torch.cat((sig_emb, act_emb, reg_emb, x), dim=2)
+            x = torch.cat((sig_emb, act_emb, reg_emb, x), dim=2)
+            num_prefix_tokens = 2 + self.config.num_registers  # signal + action + registers
+        else:
+            # [Signal, Registers, Latents] - no action token during pretraining
+            x = torch.cat((sig_emb, reg_emb, x), dim=2)
+            num_prefix_tokens = 1 + self.config.num_registers  # signal + registers
+        
         S_total = x.shape[2]
         
         # Get cache length
@@ -164,7 +177,7 @@ class WorldModelBackbone(nn.Module):
             for i, c in enumerate(kv_cache):
                 is_temporal = (i % self.config.temporal_attention_interval == 0) and (i != 0)
                 if is_temporal and c is not None:
-                    temp_cache_len = c[0].shape[2] 
+                    temp_cache_len = c[0].shape[2]
                     break
 
         spatial_mask = self._get_spatial_mask(S_total, device)
@@ -176,7 +189,7 @@ class WorldModelBackbone(nn.Module):
         new_kv_cache = []
 
         for i, block in enumerate(self.layers):
-            is_temporal = (i % self.config.temporal_attention_interval == 0) and (i != 0) and (i != self.config.depth - 1) # temporal should probably be neither first or last...
+            is_temporal = (i % self.config.temporal_attention_interval == 0) and (i != 0) and (i != self.config.depth - 1) # temporal should be neither first or last...
             layer_cache = kv_cache[i] if (kv_cache is not None and is_temporal) else None
 
             if is_temporal:
@@ -193,7 +206,7 @@ class WorldModelBackbone(nn.Module):
 
             new_kv_cache.append(new_cache if is_temporal else None)
 
-        latents = x[..., 2 + self.config.num_registers :, :]
+        latents = x[..., num_prefix_tokens:, :]
         latents = self.final_norm(latents)
         output = self.output_proj(latents)
 

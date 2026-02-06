@@ -16,7 +16,7 @@ dataset:
       repo_id: Gaugou/soar
       episodes: null
       excluded_episodes: [0, 10, 100, 1000, 10000]
-      episode_midpoint_only: false
+      episode_startpoint_only: false
       cameras:
         observation.images.image: 1.0
       action_mode: soar_relative_ee_normalized

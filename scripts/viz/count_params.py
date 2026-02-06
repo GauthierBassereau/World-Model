@@ -12,14 +12,14 @@ def main():
     config = WorldModelConfig(
         latent_dim=1536,
         input_dim=768,
-        bottleneck_dim=256,
+        bottleneck_dim=64,
         action_dim=7,
         num_registers=4,
-        depth=28,
-        num_heads=1,
+        depth=33,
+        num_heads=24,
         mlp_multiplier=2.666667,
         temporal_attention_interval=4,
-        temporal_context_length=15,
+        temporal_context_length=40,
         rope_base=10000.0,
         qk_norm_eps=1e-6,
         attn_logit_softcapping=50.0,
@@ -29,6 +29,8 @@ def main():
     print(config)
 
     model = WorldModelBackbone(config)
+
+    print(model)
     
     params = count_parameters(model)
     print(f"Number of parameters: {params:,}")

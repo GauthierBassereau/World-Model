@@ -10,8 +10,6 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import torch
 import torch.distributed as dist
 
-from src.training.logger import LoggingConfig
-
 from src.dataset.loader import build_world_dataloader, DataloaderConfig
 from src.dataset.world_dataset import WorldDataset, WorldBatch, WorldDatasetConfig
 
@@ -22,7 +20,7 @@ from src.diffusion.common import calculate_velocity_1_to_2
 from src.diffusion.euler_solver import EulerSolverConfig
 from src.diffusion.signal_scheduler import SignalScheduler, SignalSchedulerConfig
 
-from src.training.logger import WorldModelLogger
+from src.training.logger import WorldModelLogger, LoggingConfig
 from src.training.utils import set_seed, sync_metrics
 from src.training.world_evaluator import WorldModelEvaluator, EvaluationConfig
 
@@ -399,7 +397,7 @@ class WorldModelTrainer:
         signal_levels_expanded = signal_levels.unsqueeze(-1).unsqueeze(-1)
         
         noisy_latents = (1.0 - signal_levels_expanded) * base_noise + signal_levels_expanded * latents
-
+        
         with self._autocast_scope():
             outputs = self._train_module(
                 noisy_latents,
@@ -408,7 +406,6 @@ class WorldModelTrainer:
                 independent_frames=independent_frames,
                 use_actions=use_actions,
             )
-
             loss, metrics = self._compute_loss(
                 latents=latents,
                 noisy_latents=noisy_latents,
@@ -509,28 +506,24 @@ class WorldModelTrainer:
         mask_dept = frames_valid_mask * (~indep_mask_bool).to(dtype=frames_valid_mask.dtype)
 
         denom_indep = mask_indep.sum()
-        if denom_indep > 0:
-            loss_indep = (valid_frame_loss * mask_indep).sum() / denom_indep
-            metrics["l2_loss/independent_frames"] = float(loss_indep)
+        loss_indep = (valid_frame_loss * mask_indep).sum() / denom_indep if denom_indep > 0 else 0.0
+        metrics["l2_loss/independent_frames"] = float(loss_indep)
         
         denom_dept = mask_dept.sum()
-        if denom_dept > 0:
-            loss_dept = (valid_frame_loss * mask_dept).sum() / denom_dept
-            metrics["l2_loss/dependent_frames"] = float(loss_dept)
+        loss_dept = (valid_frame_loss * mask_dept).sum() / denom_dept if denom_dept > 0 else 0.0
+        metrics["l2_loss/dependent_frames"] = float(loss_dept)
             
         action_mask_bool = use_actions.to(dtype=torch.bool)
         mask_action = frames_valid_mask * action_mask_bool.to(dtype=frames_valid_mask.dtype)
         mask_no_action = frames_valid_mask * (~action_mask_bool).to(dtype=frames_valid_mask.dtype)
         
         denom_action = mask_action.sum()
-        if denom_action > 0:
-            loss_action = (valid_frame_loss * mask_action).sum() / denom_action
-            metrics["l2_loss/with_actions"] = float(loss_action)
+        loss_action = (valid_frame_loss * mask_action).sum() / denom_action if denom_action > 0 else 0.0
+        metrics["l2_loss/with_actions"] = float(loss_action)
             
         denom_no_action = mask_no_action.sum()
-        if denom_no_action > 0:
-            loss_no_action = (valid_frame_loss * mask_no_action).sum() / denom_no_action
-            metrics["l2_loss/without_actions"] = float(loss_no_action)
+        loss_no_action = (valid_frame_loss * mask_no_action).sum() / denom_no_action if denom_no_action > 0 else 0.0
+        metrics["l2_loss/without_actions"] = float(loss_no_action)
         
         num_datasets = max(dataset_names.keys()) + 1
         
@@ -581,24 +574,19 @@ class WorldModelTrainer:
         
         for idx, name in dataset_names.items():
             d_total = ds_denom_total[idx]
-            if d_total > 0:
-                metrics[f"l2_loss/{name}"] = float(ds_loss_total[idx] / d_total)
+            metrics[f"l2_loss/{name}"] = float(ds_loss_total[idx] / d_total) if d_total > 0 else 0.0
                 
             d_indep = ds_denom_indep[idx]
-            if d_indep > 0:
-                metrics[f"l2_loss/{name}/independent"] = float(ds_loss_indep[idx] / d_indep)
+            metrics[f"l2_loss/{name}/independent"] = float(ds_loss_indep[idx] / d_indep) if d_indep > 0 else 0.0
                 
             d_dept = ds_denom_dept[idx]
-            if d_dept > 0:
-                metrics[f"l2_loss/{name}/dependent"] = float(ds_loss_dept[idx] / d_dept)
+            metrics[f"l2_loss/{name}/dependent"] = float(ds_loss_dept[idx] / d_dept) if d_dept > 0 else 0.0
             
             d_action = ds_denom_action[idx]
-            if d_action > 0:
-                metrics[f"l2_loss/{name}/with_actions"] = float(ds_loss_action[idx] / d_action)
+            metrics[f"l2_loss/{name}/with_actions"] = float(ds_loss_action[idx] / d_action) if d_action > 0 else 0.0
                 
             d_no_action = ds_denom_no_action[idx]
-            if d_no_action > 0:
-                metrics[f"l2_loss/{name}/without_actions"] = float(ds_loss_no_action[idx] / d_no_action)
+            metrics[f"l2_loss/{name}/without_actions"] = float(ds_loss_no_action[idx] / d_no_action) if d_no_action > 0 else 0.0
                     
         return metrics
 
@@ -664,7 +652,22 @@ class WorldModelTrainer:
         
         self.logger.info("Loading checkpoint from %s...", checkpoint_path)
         ckpt = torch.load(checkpoint_path, map_location=self.device)
-        self.model.load_state_dict(ckpt["model"])
+        
+        # When resuming, require exact match. When finetuning, allow missing/extra keys.
+        strict = self.config.trainer.resume
+        incompatible = self.model.load_state_dict(ckpt["model"], strict=strict)
+        
+        if not strict:
+            if incompatible.missing_keys:
+                self.logger.warning(
+                    "Missing keys in checkpoint (will be randomly initialized): %s",
+                    incompatible.missing_keys
+                )
+            if incompatible.unexpected_keys:
+                self.logger.warning(
+                    "Unexpected keys in checkpoint (will be ignored): %s",
+                    incompatible.unexpected_keys
+                )
 
         if self.config.trainer.resume:
             self.optimizer.load_state_dict(ckpt["optimizer"])

@@ -1,7 +1,7 @@
 logging:
   project: world_model
   entity: null
-  run_name: training_soar
+  run_name: pretraining
   output_dir: checkpoints
   log_interval: 1
   signal_level_log_limit: 100
@@ -15,14 +15,14 @@ trainer:
   evaluation_interval: 500
   grad_accum_steps: 16
   precision: bf16
-  seed: 15
-  resume: false
-  load_checkpoint: /gpfs/helios/home/gauthierbernarda/git/World-Model/checkpoints/pretraining/world_model_step_020000.pt
+  seed: 10
+  resume: true
+  load_checkpoint: /gpfs/helios/home/gauthierbernarda/git/World-Model/checkpoints/pretraining/world_model_step_009000.pt
 
 evaluator:
   video_sample_indices: [0, 5000, 10000, 15000, 20000, 25000, 30000, 35000, 40000, 45000, 50000]
-  rollout_start_frame: 6
-  rollout_signal_level: 0.8
+  rollout_start_frame: 3
+  rollout_signal_level: 0.9
   precision: bf16
   max_batches: 10
   denoising_metrics_indices: [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 99]
@@ -31,7 +31,7 @@ evaluator:
 optimizer:
   lr:
     "0": 1.0e-7
-    "500": 3.0e-4
+    "1000": 3.0e-4
   eps: 1.0e-08
   grad_clip_norm: 1.0
   weight_decay: 0.0
@@ -53,11 +53,24 @@ train_dataset:
   fps: 5.0
   action_dim: 7
   weights:
-    epic_kitchens: 0.2
-    droid: 0.1
-    soar: 0.7
-  reference_dataset: soar
+    bridgev2: 0.3
+    epic_kitchens: 0.5
+    droid: 0.2
+  reference_dataset: bridgev2
   datasets:
+    bridgev2:
+      type: lerobot
+      repo_id: Gaugou/BridgeV2
+      episodes: null
+      excluded_episodes: [0, 5000, 10000, 15000, 20000, 25000, 30000, 35000, 40000, 45000, 50000]
+      episode_startpoint_only: false
+      cameras:
+        observation.images.primary: 0.5
+        observation.images.side1: 0.25
+        observation.images.side2: 0.25
+      action_mode: null
+      independent_frames_probability: 0.3
+      use_action_probability: 0.0
     epic_kitchens:
       type: lerobot
       repo_id: Gaugou/epic_kitchens_100
@@ -80,17 +93,6 @@ train_dataset:
       action_mode: null
       independent_frames_probability: 0.3
       use_action_probability: 0.0
-    soar:
-      type: lerobot
-      repo_id: Gaugou/Soar
-      episodes: null
-      excluded_episodes: [0, 5000, 7500, 10000, 12500, 15000, 17500, 20000, 22500, 25000, 27500, 30000]
-      episode_startpoint_only: false
-      cameras:
-        observation.images.image: 1.0
-      action_mode: soar_relative_ee_normalized
-      independent_frames_probability: 0.3
-      use_action_probability: 0.9
 
 eval_dataloader:
   batch_size: 8
@@ -100,24 +102,24 @@ eval_dataloader:
 
 eval_dataset:
   sequence_length_distribution:
-    "60": 1.0
+    "10": 1.0
   fps: 5.0
   action_dim: 7
   weights:
-    soar: 1.0
-  reference_dataset: soar
+    bridgev2: 1.0
+  reference_dataset: bridgev2
   datasets:
-    soar:
+    bridgev2:
       type: lerobot
-      repo_id: Gaugou/Soar
-      episodes: [0, 5000, 7500, 10000, 12500, 15000, 17500, 20000, 22500, 25000, 27500, 30000]
+      repo_id: Gaugou/BridgeV2
+      episodes: [0, 5000, 10000, 15000, 20000, 25000, 30000, 35000, 40000, 45000, 50000]
       excluded_episodes: null
       episode_startpoint_only: true
       cameras:
-        observation.images.image: 1.0
-      action_mode: soar_relative_ee_normalized
+        observation.images.primary: 1.0
+      action_mode: null
       independent_frames_probability: 0.0
-      use_action_probability: 1.0
+      use_action_probability: 0.0
 
 signal_scheduler:
   mode: "logit_normal"  # {"resolution_shift", "linear_shift", "uniform", "logit_normal"}
@@ -145,4 +147,4 @@ world_model:
   rope_base: 10000.0
   qk_norm_eps: 1.0e-06
   attn_logit_softcapping: 50.0 # None for no softcapping -> able to use fused_attention
-  use_action_token: true  # false for pretraining (no actions), true for finetuning
+  use_action_token: false  # false for pretraining (no actions), true for finetuning
