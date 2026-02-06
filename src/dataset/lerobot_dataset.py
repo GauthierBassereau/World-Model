@@ -30,10 +30,10 @@ class LeRobotDatasetConfig:
             "observation.images.wrist_left": 0.5,
         }
     )
-    action_mode: str = "soar_ee_relative_normalized" # {soar_relative_ee_normalized, soar_relative_ee}
+    action_mode: Optional[str] = "soar_relative_ee_normalized"  # None for no actions (pretraining)
     episodes: Optional[List[int]] = None
     excluded_episodes: Optional[List[int]] = None
-    episode_midpoint_only: bool = False
+    episode_startpoint_only: bool = False
     sequence_length: int = 15
     fps: float = 3.0
     independent_frames_probability: float = 0.0
@@ -99,9 +99,8 @@ class LeRobotDataset(Dataset):
             ep_meta = self.backend.meta.episodes[ep_idx]
             start_idx = ep_meta["dataset_from_index"]
             end_idx = ep_meta["dataset_to_index"]
-            if self.cfg.episode_midpoint_only:
-                midpoint = (start_idx + end_idx) // 2
-                indices.append(midpoint)
+            if self.cfg.episode_startpoint_only:
+                indices.append(start_idx)
             else:
                 indices.extend(range(start_idx, end_idx))
 
@@ -116,7 +115,11 @@ class LeRobotDataset(Dataset):
         cam_key = random.choices(self.camera_keys, weights=self.camera_probs, k=1)[0]
         sequence_frames = item[cam_key]
 
-        sequence_actions, validity_mask = get_actions(self.cfg.action_mode, item, self.stats)
+        sequence_actions = get_actions(
+            self.cfg.action_mode, item,
+            sequence_length=self.sequence_length,
+            action_dim=self.cfg.action_dim
+        )
 
         if sequence_actions.shape[-1] < self.cfg.action_dim:
             padding = torch.zeros(
@@ -143,7 +146,6 @@ class LeRobotDataset(Dataset):
             actions_mask[dependent_mask] = torch.rand(num_dependent) < self.cfg.use_action_probability
             actions_mask[0] = False
             actions_mask[padded_frames] = False
-            actions_mask = actions_mask & validity_mask
 
         episode_index = item["episode_index"]
         if isinstance(episode_index, torch.Tensor):
