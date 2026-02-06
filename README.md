@@ -1,6 +1,7 @@
-# World Model | Master Thesis (in progress)
+# Diffusion World Model for Robotics
+*Master's Thesis (in progress)*
 
-Build a latent world model that combines Dreamer V4 training with DINO representation encoder for robotic planning, goal-conditioned MPC and offline/model-based RL.
+Building a latent world model that combines Dreamer V4 training with DINO representation encoder for robotic planning, goal-conditioned MPC and offline/model-based RL.
 Learning general world dynamics and robot actions from large scale video datasets, both non-robot data and robot data.
 
 ## Research Foundations
