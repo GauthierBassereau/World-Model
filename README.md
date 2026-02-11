@@ -47,7 +47,6 @@ Pretrained on a mixture of diverse video datasets to learn general world dynamic
 | Sequence Length | 45 frames @ 5 FPS (9 seconds) |
 | Training Steps | 20,000 (~83 hours on 4x h200) |
 | Independant Frames Probability | 0.3 |
-| Precision | BF16 |
 
 <details open>
 <summary>📊 Loss Curves</summary>
@@ -76,12 +75,12 @@ Fine-tuned with action conditioning on the SOAR dataset:
 
 | Config | Value |
 |--------|-------|
-| Model | Same architecture, `use_action_token: true` |
+| Model | Same architecture + Action token |
 | Batch Size | 256 |
 | Sequence Length | 45 frames @ 5 FPS (9 seconds) |
 | Training steps | 2,000 (~8 hours on 4x h200) |
 | Independant Frames Probability | 0.3 |
-| Action Probability (SOAR) | 0.9 |
+| Action Probability (only SOAR) | 0.9 |
 
 <details open>
 <summary>📊 Loss Curves</summary>
@@ -119,30 +118,14 @@ Fine-tuned with action conditioning on the SOAR dataset:
 > This allows direct comparison between the real trajectory and the model's imagination (however, keeping in mind that errors accumulate).
 
 #### Example 1 (Episode 15000)
+*Left: Ground Truth — Right: Model Generated (with actions)*
 
-<table>
-<tr>
-<td align="center"><strong>🎯 Ground Truth</strong></td>
-<td align="center"><strong>🤖 Model Generated (with actions)</strong></td>
-</tr>
-<tr>
-<td><img src="assets/training_soar/videos/15000_ground_truth.gif" width="300"/></td>
-<td><img src="assets/training_soar/videos/15000_actions.gif" width="300"/></td>
-</tr>
-</table>
+<img src="assets/training_soar/videos/15000_combined.gif" width="600"/>
 
 #### Example 2 (Episode 25000)
+*Left: Ground Truth — Right: Model Generated (with actions)*
 
-<table>
-<tr>
-<td align="center"><strong>🎯 Ground Truth</strong></td>
-<td align="center"><strong>🤖 Model Generated (with actions)</strong></td>
-</tr>
-<tr>
-<td><img src="assets/training_soar/videos/25000_ground_truth.gif" width="300"/></td>
-<td><img src="assets/training_soar/videos/25000_actions.gif" width="300"/></td>
-</tr>
-</table>
+<img src="assets/training_soar/videos/25000_combined.gif" width="600"/>
 
 </details>
 
