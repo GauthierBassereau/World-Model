@@ -614,7 +614,7 @@ class WorldModelTrainer:
         interval = self.config.trainer.evaluation_interval
         if interval is None or interval <= 0 or step % interval != 0:
             return
-        eval_model = self.ema_model if self.config.ema.enabled else self.model
+        eval_model = self.ema_model if self.config.ema.enabled else getattr(self.model, '_orig_mod', self.model)
         self.evaluator.evaluate(eval_model)
 
     def _save_checkpoint(self, step: int) -> None:

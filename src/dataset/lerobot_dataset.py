@@ -118,7 +118,8 @@ class LeRobotDataset(Dataset):
         sequence_actions = get_actions(
             self.cfg.action_mode, item,
             sequence_length=self.sequence_length,
-            action_dim=self.cfg.action_dim
+            action_dim=self.cfg.action_dim,
+            stats=self.stats,
         )
 
         if sequence_actions.shape[-1] < self.cfg.action_dim:

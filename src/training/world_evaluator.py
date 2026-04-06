@@ -19,7 +19,7 @@ from src.world_model.rollout import collect_rollout_latents
 @dataclass
 class EvaluationConfig:
     max_batches: Optional[int] = None
-    video_sample_indices: Optional[List[int]] = None
+    video_sample_indices: Optional[Union[str, List[int]]] = None
     batch_size: Optional[int] = None
     rollout_start_frame: int = 3
     rollout_signal_level: float = 0.9
@@ -384,9 +384,9 @@ class WorldModelEvaluator:
         scenario_predictions: Dict[str, torch.Tensor],
         batch: WorldBatch,
     ) -> List[Dict[str, Union[torch.Tensor, int]]]:
-        target_indices = self.config.video_sample_indices
-        if not target_indices:
+        if self.config.video_sample_indices is None:
             return []
+        select_all = self.config.video_sample_indices == "all"
         
         samples: List[Dict[str, Union[torch.Tensor, int]]] = []
         batch_size = latents.shape[0]
@@ -404,7 +404,7 @@ class WorldModelEvaluator:
                 episode_id = dataset_episode_ids[batch_idx]
             
             match_key = episode_id if (episode_id is not None and episode_id != -1) else current_idx
-            if match_key not in target_indices:
+            if not select_all and match_key not in self.config.video_sample_indices:
                 continue
                 
             entry: Dict[str, Union[torch.Tensor, int]] = {

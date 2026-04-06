@@ -40,9 +40,16 @@ def get_delta_timestamps(
         for key in camera_keys
     }
     
+    ACTION_KEYS = {
+        "soar_relative_ee": ["action"],
+        "soar_relative_ee_normalized": ["action"],
+        "ur5_relative_local_ee_normalized": ["action.delta_local"],
+    }
+    
     if action_mode is not None:
-        # Shifted by -1/fps because action[i] is the action that leads TO frame[i] (from frame[i-1])
-        delta_timestamps["action"] = [(i - 1) / fps for i in range(sequence_length)]
+        # action[i] is the action that takes us FROM frame[i-1] TO frame[i] (shifted by -1/fps)
+        for key in ACTION_KEYS[action_mode]:
+            delta_timestamps[key] = [(i - 1) / fps for i in range(sequence_length)]
 
     return delta_timestamps
 
@@ -51,27 +58,30 @@ def get_actions(
     item: Dict[str, Any], 
     sequence_length: int = 0,
     action_dim: int = 7,
+    stats: Optional[Dict] = None,
 ) -> torch.Tensor:
     """Returns action tensor. For action_mode=None, returns zeros."""
     if action_mode is None:
         return torch.zeros(sequence_length, action_dim)
-    elif action_mode == "soar_relative_ee":
+    if action_mode == "soar_relative_ee":
         return item["action"]
-    elif action_mode == "soar_relative_ee_normalized":
-        return _get_actions_soar_relative_normalized(item)
-        
-    raise ValueError(f"Unknown action mode for processing: {action_mode}")
+    if action_mode == "soar_relative_ee_normalized":
+        return _normalize_actions(item["action"])
+    if action_mode == "ur5_relative_local_ee_normalized":
+        return _normalize_actions(item["action.delta_local"], stats=stats["action.delta_local"])
+    raise ValueError(f"Unknown action mode: {action_mode}")
 
-def _get_actions_soar_relative_normalized(item: Dict[str, Any]) -> torch.Tensor:
-    """Normalize and clamp actions to avoid outliers."""
-    actions = item["action"]
-    mean = torch.tensor([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5], device=actions.device)
-    std = torch.tensor([0.01, 0.01, 0.01, 0.05, 0.05, 0.05, 0.5], device=actions.device)
-    
-    min_val = torch.tensor([-5.0, -5.0, -5.0, -5.0, -5.0, -5.0, -1.0], device=actions.device)
-    max_val = torch.tensor([5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 1.0], device=actions.device)
-    
-    normalized = (actions - mean) / std
-    clamped = torch.clamp(normalized, min_val, max_val)
-    
-    return clamped
+def _normalize_actions(
+    actions: torch.Tensor,
+    stats: Optional[Dict] = None,
+    clamp_range: float = 5.0,
+) -> torch.Tensor:
+    """Normalize actions by mean/std and clamp."""
+    if stats is not None:
+        mean = torch.as_tensor(stats["mean"], device=actions.device)
+        std = torch.as_tensor(stats["std"], device=actions.device)
+    else:
+        # Legacy fallback for soar
+        mean = torch.tensor([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5], device=actions.device)
+        std = torch.tensor([0.01, 0.01, 0.01, 0.05, 0.05, 0.05, 0.5], device=actions.device)
+    return torch.clamp((actions - mean) / (std + 1e-8), -clamp_range, clamp_range).float()
