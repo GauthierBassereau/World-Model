@@ -1,16 +1,20 @@
-import math
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Union, Any
 
+import pyrallis
 import torch
 import torch.distributed as dist
 import torch.nn as nn
+from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
 
 from src.training.logger import WorldModelLogger
 
-from src.dataset.world_dataset import WorldDatasetConfig, WorldBatch, WorldDataset
-from src.dataset.loader import build_world_dataloader, DataloaderConfig
+from src.dataset.collator import StackCollator
+from src.dataset.world_dataset import WorldDatasetConfig, WorldBatch
+from src.dataset.loader import DataloaderConfig
+from src.dataset.lerobot_dataset import LeRobotDataset, LeRobotDatasetConfig
 from src.diffusion.signal_scheduler import SignalSchedulerConfig
 from src.diffusion.euler_solver import EulerSolver, EulerSolverConfig
 from src.world_model.rollout import collect_rollout_latents
@@ -68,24 +72,83 @@ class WorldModelEvaluator:
         if self.max_sequence_length < 2:
             raise ValueError("Evaluation sequence length must be >= 2.")
         self.max_future_steps = max(1, self.max_sequence_length - self.config.rollout_start_frame)
-        dataset = WorldDataset(dataset_cfg, logger=self.logger, seed=seed)
+        self.dataset_name, dataset = self._build_eval_dataset(dataset_cfg)
+        self.dataloader = self._build_eval_dataloader(dataset_cfg, dataloader_cfg, dataset, seed)
         if self.is_main_process:
-            self.logger.info(dataset)
-        self.dataloader = build_world_dataloader(
-            dataset=dataset,
-            dataloader_cfg=dataloader_cfg,
-            grad_accum_steps=1,
-            rank=self.rank if self.world_size > 1 else None,
-            world_size=self.world_size if self.world_size > 1 else None,
-            seed=seed,
-        )
-        if self.is_main_process:
+            self.logger.info(
+                "Evaluation dataset %s has %d sampleable indices.",
+                self.dataset_name,
+                len(dataset),
+            )
             self.logger.info(f"Evaluation dataloader has length: {len(self.dataloader)}")
             if self.config.max_batches is not None:
                 self.config.max_batches = min(self.config.max_batches, len(self.dataloader))
                 self.logger.info(f"Limiting evaluation to {self.config.max_batches} batches based on dataloader length.")
         self.scenarios: List[Tuple[str, bool]] = [("actions", True), ("no_actions", False)]
         self.ground_truth_logged = False
+
+    def _build_eval_dataset(
+        self,
+        dataset_cfg: WorldDatasetConfig,
+    ) -> Tuple[str, LeRobotDataset]:
+        if len(dataset_cfg.datasets) != 1:
+            raise ValueError(
+                "Evaluation expects exactly one dataset. "
+                "WorldDataset-based resampling was removed from evaluation."
+            )
+
+        dataset_name, ds_conf_dict = next(iter(dataset_cfg.datasets.items()))
+        ds_type = ds_conf_dict.get("type")
+        if ds_type != "lerobot":
+            raise ValueError(f"Unsupported evaluation dataset type: {ds_type}")
+
+        ds_conf_dict = ds_conf_dict.copy()
+        del ds_conf_dict["type"]
+        ds_conf_dict["sequence_length"] = self.max_sequence_length
+        ds_conf_dict["fps"] = dataset_cfg.fps
+        ds_conf_dict["action_dim"] = dataset_cfg.action_dim
+
+        ds_cfg = pyrallis.decode(LeRobotDatasetConfig, ds_conf_dict)
+        return dataset_name, LeRobotDataset(ds_cfg, logger=self.logger)
+
+    def _build_eval_dataloader(
+        self,
+        dataset_cfg: WorldDatasetConfig,
+        dataloader_cfg: DataloaderConfig,
+        dataset: LeRobotDataset,
+        seed: int,
+    ) -> DataLoader:
+        global_batch_size = self.config.batch_size or dataloader_cfg.batch_size
+        if global_batch_size <= 0:
+            raise ValueError("Evaluation batch size must be > 0.")
+
+        distributed = self.world_size > 1
+        if distributed and global_batch_size % self.world_size != 0:
+            raise ValueError("Evaluation batch size must be divisible by world_size.")
+
+        local_batch_size = global_batch_size // self.world_size if distributed else global_batch_size
+        sampler: Optional[DistributedSampler] = None
+        if distributed:
+            sampler = DistributedSampler(
+                dataset,
+                num_replicas=self.world_size,
+                rank=self.rank or 0,
+                shuffle=dataloader_cfg.shuffle,
+                drop_last=False,
+                seed=seed,
+            )
+
+        collate = StackCollator(sequence_length_distribution=dataset_cfg.sequence_length_distribution)
+        return DataLoader(
+            dataset,
+            batch_size=local_batch_size,
+            shuffle=dataloader_cfg.shuffle if sampler is None else False,
+            sampler=sampler,
+            num_workers=dataloader_cfg.num_workers,
+            pin_memory=dataloader_cfg.pin_memory,
+            collate_fn=collate,
+            persistent_workers=True if dataloader_cfg.num_workers > 0 else False,
+        )
 
     @torch.no_grad()
     def evaluate(self, model: nn.Module) -> Optional[EvaluationSummary]:
@@ -98,7 +161,6 @@ class WorldModelEvaluator:
         was_training = model.training
         model.eval()
 
-        sample_offset = 0
         for batch_idx, batch in enumerate(self.dataloader):
             self.logger.info(f"Evaluating batch {batch_idx + 1}/{self.config.max_batches if self.config.max_batches is not None else len(self.dataloader)}...")
             
@@ -434,5 +496,3 @@ class WorldModelEvaluator:
         frames = self.autoencoder.decode(flat)
         channels, height, width = frames.shape[1:]
         return frames.view(batch, steps, channels, height, width)
-
-
