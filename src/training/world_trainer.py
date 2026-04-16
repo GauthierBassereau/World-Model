@@ -21,7 +21,7 @@ from src.diffusion.euler_solver import EulerSolverConfig
 from src.diffusion.signal_scheduler import SignalScheduler, SignalSchedulerConfig
 
 from src.training.logger import WorldModelLogger, LoggingConfig
-from src.training.utils import set_seed, sync_metrics
+from src.training.utils import set_seed, sync_metric_stats, sync_metrics
 from src.training.world_evaluator import WorldModelEvaluator, EvaluationConfig
 
 
@@ -328,14 +328,13 @@ class WorldModelTrainer:
             self.logger.start_step(self.global_step)
             self._train_module.train()
             self.optimizer.zero_grad()
-            accum_metrics: Dict[str, float] = {}
+            accum_metric_stats: Dict[str, Tuple[float, float]] = {}
 
             for accum_idx in range(self.config.trainer.grad_accum_steps):
                 self.logger.start_micro_step(accum_idx)
                 batch = self._next_batch()
-                metrics = self._train_micro_step(batch)
-                for key, value in metrics.items():
-                    accum_metrics[key] = accum_metrics.get(key, 0.0) + value # already scaled by grad_accum_steps
+                metric_stats = self._train_micro_step(batch)
+                self._accumulate_metric_stats(accum_metric_stats, metric_stats)
 
             grad_metrics = self.logger.log_grad_norm(model=self.model, key="grad_norm_before_clip")
 
@@ -354,13 +353,14 @@ class WorldModelTrainer:
             if self.device.type == "cuda" and self.global_step == 1:
                 peak_mem_gb = torch.cuda.max_memory_allocated(self.device) / (1024**3)
                 self.logger.info(f"[GPU {self.device.index}] global step {self.global_step} peak memory: {peak_mem_gb:.2f} GB")
-            # Metrics are already scaled by grad_accum_steps in _compute_loss, so just use the sum
-            mean_metrics = accum_metrics
+            mean_metrics = self._finalize_metric_stats(
+                sync_metric_stats(accum_metric_stats, self.world_size, self.device)
+            )
             lr_value = float(self.optimizer.param_groups[0]["lr"])
-            mean_metrics["learning_rate"] = lr_value
+            scalar_metrics = {"learning_rate": lr_value}
             if grad_metrics:
-                mean_metrics.update(grad_metrics)
-            mean_metrics = sync_metrics(mean_metrics, self.world_size, self.device)
+                scalar_metrics.update(grad_metrics)
+            mean_metrics.update(sync_metrics(scalar_metrics, self.world_size, self.device))
             self.logger.log_training_metrics(mean_metrics)
 
             if (
@@ -374,7 +374,7 @@ class WorldModelTrainer:
     def _train_micro_step(
         self,
         batch: WorldBatch,
-    ) -> Dict[str, float]:
+    ) -> Dict[str, Tuple[float, float]]:
         frames = batch.sequence_frames.to(self.device, non_blocking=True)
         actions = batch.sequence_actions.to(self.device, non_blocking=True)
         independent_frames = batch.independent_frames.to(self.device, non_blocking=True)
@@ -437,7 +437,7 @@ class WorldModelTrainer:
         dataset_indices: torch.Tensor,
         dataset_names: Dict[int, str],
         use_actions: torch.Tensor,
-    ) -> Tuple[torch.Tensor, Dict[str, float]]:
+    ) -> Tuple[torch.Tensor, Dict[str, Tuple[float, float]]]:
         if self.config.trainer.loss_type == "position":
             loss_unreduced = torch.nn.functional.mse_loss(latents, outputs.latents, reduction="none")
         else:
@@ -467,11 +467,15 @@ class WorldModelTrainer:
         frames_valid_mask = frames_valid_mask.to(dtype=loss_unreduced.dtype)
         frame_loss = loss_unreduced.mean(dim=(-1, -2))
         valid_frame_loss = frame_loss * frames_valid_mask
-        denom = frames_valid_mask.sum().clamp_min(1.0)
-        raw_loss = (valid_frame_loss.sum() / denom)
+        raw_loss_sum = valid_frame_loss.sum()
+        raw_loss_count = frames_valid_mask.sum()
+        raw_loss = raw_loss_sum / raw_loss_count.clamp_min(1.0)
 
         metrics = {
-            "raw_l2_loss": float(raw_loss.detach()),
+            "raw_l2_loss": (
+                float(raw_loss_sum.detach()),
+                float(raw_loss_count.detach()),
+            ),
         }
         if self.global_step % 10 == 0:
             breakdown = self._compute_loss_breakdown(
@@ -486,8 +490,6 @@ class WorldModelTrainer:
             
         final_loss = raw_loss
         final_loss = final_loss / self.config.trainer.grad_accum_steps
-        
-        metrics = {k: v / self.config.trainer.grad_accum_steps for k, v in metrics.items()}
         return final_loss, metrics
 
     def _compute_loss_breakdown(
@@ -498,32 +500,44 @@ class WorldModelTrainer:
         dataset_indices: torch.Tensor,
         dataset_names: Dict[int, str],
         use_actions: torch.Tensor,
-    ) -> Dict[str, float]:
-        metrics: Dict[str, float] = {}
+    ) -> Dict[str, Tuple[float, float]]:
+        metrics: Dict[str, Tuple[float, float]] = {}
         
         indep_mask_bool = independent_frames.to(dtype=torch.bool)
         mask_indep = frames_valid_mask * indep_mask_bool.to(dtype=frames_valid_mask.dtype)
         mask_dept = frames_valid_mask * (~indep_mask_bool).to(dtype=frames_valid_mask.dtype)
 
         denom_indep = mask_indep.sum()
-        loss_indep = (valid_frame_loss * mask_indep).sum() / denom_indep if denom_indep > 0 else 0.0
-        metrics["l2_loss/independent_frames"] = float(loss_indep)
+        loss_indep_sum = (valid_frame_loss * mask_indep).sum()
+        metrics["l2_loss/independent_frames"] = (
+            float(loss_indep_sum.detach()),
+            float(denom_indep.detach()),
+        )
         
         denom_dept = mask_dept.sum()
-        loss_dept = (valid_frame_loss * mask_dept).sum() / denom_dept if denom_dept > 0 else 0.0
-        metrics["l2_loss/dependent_frames"] = float(loss_dept)
+        loss_dept_sum = (valid_frame_loss * mask_dept).sum()
+        metrics["l2_loss/dependent_frames"] = (
+            float(loss_dept_sum.detach()),
+            float(denom_dept.detach()),
+        )
             
         action_mask_bool = use_actions.to(dtype=torch.bool)
         mask_action = frames_valid_mask * action_mask_bool.to(dtype=frames_valid_mask.dtype)
         mask_no_action = frames_valid_mask * (~action_mask_bool).to(dtype=frames_valid_mask.dtype)
         
         denom_action = mask_action.sum()
-        loss_action = (valid_frame_loss * mask_action).sum() / denom_action if denom_action > 0 else 0.0
-        metrics["l2_loss/with_actions"] = float(loss_action)
+        loss_action_sum = (valid_frame_loss * mask_action).sum()
+        metrics["l2_loss/with_actions"] = (
+            float(loss_action_sum.detach()),
+            float(denom_action.detach()),
+        )
             
         denom_no_action = mask_no_action.sum()
-        loss_no_action = (valid_frame_loss * mask_no_action).sum() / denom_no_action if denom_no_action > 0 else 0.0
-        metrics["l2_loss/without_actions"] = float(loss_no_action)
+        loss_no_action_sum = (valid_frame_loss * mask_no_action).sum()
+        metrics["l2_loss/without_actions"] = (
+            float(loss_no_action_sum.detach()),
+            float(denom_no_action.detach()),
+        )
         
         num_datasets = max(dataset_names.keys()) + 1
         
@@ -573,22 +587,48 @@ class WorldModelTrainer:
         ds_denom_no_action.scatter_add_(0, dataset_indices, denom_no_action_b)
         
         for idx, name in dataset_names.items():
-            d_total = ds_denom_total[idx]
-            metrics[f"l2_loss/{name}"] = float(ds_loss_total[idx] / d_total) if d_total > 0 else 0.0
-                
-            d_indep = ds_denom_indep[idx]
-            metrics[f"l2_loss/{name}/independent"] = float(ds_loss_indep[idx] / d_indep) if d_indep > 0 else 0.0
-                
-            d_dept = ds_denom_dept[idx]
-            metrics[f"l2_loss/{name}/dependent"] = float(ds_loss_dept[idx] / d_dept) if d_dept > 0 else 0.0
-            
-            d_action = ds_denom_action[idx]
-            metrics[f"l2_loss/{name}/with_actions"] = float(ds_loss_action[idx] / d_action) if d_action > 0 else 0.0
-                
-            d_no_action = ds_denom_no_action[idx]
-            metrics[f"l2_loss/{name}/without_actions"] = float(ds_loss_no_action[idx] / d_no_action) if d_no_action > 0 else 0.0
+            metrics[f"l2_loss/{name}"] = (
+                float(ds_loss_total[idx].detach()),
+                float(ds_denom_total[idx].detach()),
+            )
+
+            metrics[f"l2_loss/{name}/independent"] = (
+                float(ds_loss_indep[idx].detach()),
+                float(ds_denom_indep[idx].detach()),
+            )
+
+            metrics[f"l2_loss/{name}/dependent"] = (
+                float(ds_loss_dept[idx].detach()),
+                float(ds_denom_dept[idx].detach()),
+            )
+
+            metrics[f"l2_loss/{name}/with_actions"] = (
+                float(ds_loss_action[idx].detach()),
+                float(ds_denom_action[idx].detach()),
+            )
+
+            metrics[f"l2_loss/{name}/without_actions"] = (
+                float(ds_loss_no_action[idx].detach()),
+                float(ds_denom_no_action[idx].detach()),
+            )
                     
         return metrics
+
+    @staticmethod
+    def _accumulate_metric_stats(
+        accum_metric_stats: Dict[str, Tuple[float, float]],
+        metric_stats: Dict[str, Tuple[float, float]],
+    ) -> None:
+        for key, (loss_sum, denom) in metric_stats.items():
+            prev_loss_sum, prev_denom = accum_metric_stats.get(key, (0.0, 0.0))
+            accum_metric_stats[key] = (prev_loss_sum + loss_sum, prev_denom + denom)
+
+    @staticmethod
+    def _finalize_metric_stats(metric_stats: Dict[str, Tuple[float, float]]) -> Dict[str, float]:
+        finalized: Dict[str, float] = {}
+        for key, (loss_sum, denom) in metric_stats.items():
+            finalized[key] = loss_sum / denom if denom > 0.0 else 0.0
+        return finalized
 
     def _next_batch(self) -> WorldBatch:
         if self._dataloader_iter is None:

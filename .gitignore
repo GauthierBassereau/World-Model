@@ -5,6 +5,8 @@ __pycache__/
 .matplotlib/
 .agent/
 
+.codex
+
 *.pt
 *.mp4
 *.sh

@@ -16,7 +16,7 @@ class RAE(nn.Module):
         dinov2_path: str = "facebook/dinov2-with-registers-base",
         encoder_input_size: int = 224,  # always 224 because decoder is expecting this.
         # ---- decoder configs ----
-        decoder_config_path: str = "src/rae_dino/config.json",
+        decoder_config_path: str = "src/rae_dino/decoder/config.json",
         decoder_patch_size: int = 16,
         pretrained_decoder_path: str = "src/rae_dino/decoder/decoder_weights/ViTXL_n08.pt",
         # ---- noising and normalization -----
@@ -25,7 +25,7 @@ class RAE(nn.Module):
         eps: float = 1e-5,
     ):
         super().__init__()
-        proc = AutoImageProcessor.from_pretrained(dinov2_path)
+        proc = AutoImageProcessor.from_pretrained(dinov2_path, use_fast=False)
         self.encoder_mean = torch.tensor(proc.image_mean).view(1, 3, 1, 1)
         self.encoder_std = torch.tensor(proc.image_std).view(1, 3, 1, 1)
         self.encoder = Dinov2withNorm(dinov2_path)

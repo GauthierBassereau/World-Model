@@ -1,8 +1,10 @@
 import torch
 import random
+import json
 from torch.utils.data import Dataset
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple, Any, Union
+from pathlib import Path
 import numpy as np
 
 from src.training.logger import WorldModelLogger
@@ -77,13 +79,15 @@ class LeRobotDataset(Dataset):
         )
         
         self.stats = self.backend.meta.stats
+        self.selected_episodes = self._get_selected_episodes()
+        self.native_fps = self._resolve_native_fps()
+        self.available_frame_count = self._count_available_frames()
+        self.duration_seconds = self.available_frame_count / self.native_fps if self.available_frame_count > 0 else 0.0
         self.indices = self._build_indices()
         self.camera_keys = list(self.cfg.cameras.keys())
         self.camera_probs = list(self.cfg.cameras.values())
 
-    def _build_indices(self) -> List[int]:
-        indices = []
-
+    def _get_selected_episodes(self) -> List[int]:
         total_episodes = self.backend.meta.total_episodes
         available_episodes = set(range(total_episodes))
 
@@ -93,9 +97,12 @@ class LeRobotDataset(Dataset):
         if self.cfg.excluded_episodes is not None:
             available_episodes = available_episodes - set(self.cfg.excluded_episodes)
 
-        sorted_episodes = sorted(list(available_episodes))
+        return sorted(list(available_episodes))
 
-        for ep_idx in sorted_episodes:
+    def _build_indices(self) -> List[int]:
+        indices = []
+
+        for ep_idx in self.selected_episodes:
             ep_meta = self.backend.meta.episodes[ep_idx]
             start_idx = ep_meta["dataset_from_index"]
             end_idx = ep_meta["dataset_to_index"]
@@ -105,6 +112,44 @@ class LeRobotDataset(Dataset):
                 indices.extend(range(start_idx, end_idx))
 
         return indices
+
+    def _count_available_frames(self) -> int:
+        frame_count = 0
+
+        for ep_idx in self.selected_episodes:
+            ep_meta = self.backend.meta.episodes[ep_idx]
+            start_idx = int(ep_meta["dataset_from_index"])
+            end_idx = int(ep_meta["dataset_to_index"])
+            frame_count += max(0, end_idx - start_idx)
+
+        return frame_count
+
+    def effective_length(self, target_fps: float) -> float:
+        return self.duration_seconds * float(target_fps)
+
+    def _resolve_native_fps(self) -> float:
+        root = getattr(self.backend, "root", None)
+        if root is None:
+            raise RuntimeError(f"[LeRobotDataset] | backend.root is missing for {self.cfg.repo_id}.")
+
+        info_path = Path(root) / "meta" / "info.json"
+        if not info_path.is_file():
+            raise FileNotFoundError(f"[LeRobotDataset] | Missing dataset metadata file: {info_path}")
+
+        with info_path.open("r", encoding="utf-8") as f:
+            info = json.load(f)
+
+        try:
+            fps = float(info["fps"])
+        except KeyError as e:
+            raise KeyError(f"[LeRobotDataset] | Missing 'fps' in dataset metadata: {info_path}") from e
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"[LeRobotDataset] | Invalid 'fps' value in dataset metadata: {info_path}") from e
+
+        if fps <= 0:
+            raise ValueError(f"[LeRobotDataset] | Dataset fps must be > 0 in metadata: {info_path}")
+
+        return fps
 
     def __len__(self) -> int:
         return len(self.indices)

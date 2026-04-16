@@ -5,15 +5,15 @@ logging:
   output_dir: checkpoints
   log_interval: 1
   signal_level_log_limit: 100
-  checkpoint_interval: 500
+  checkpoint_interval: 1000
 
 trainer:
   loss_type: velocity
   loss_weighting: null
   loss_weighting_intercept: 0.1
   loss_weighting_slope: 0.9
-  evaluation_interval: 10
-  grad_accum_steps: 4
+  evaluation_interval: 500
+  grad_accum_steps: 16
   precision: bf16
   seed: 3
   resume: false
@@ -21,7 +21,7 @@ trainer:
 
 evaluator:
   video_sample_indices: all # null -> no videos, all -> all videos, [1, 2, 3] -> specific indices
-  rollout_start_frame: 6
+  rollout_start_frame: 10
   rollout_signal_level: 0.8
   precision: bf16
   max_batches: 10
@@ -31,7 +31,7 @@ evaluator:
 optimizer:
   lr:
     "0": 1.0e-7
-    "500": 3.0e-4
+    "1000": 3.0e-4
   eps: 1.0e-08
   grad_clip_norm: 1.0
   weight_decay: 0.0
@@ -49,24 +49,74 @@ train_dataloader:
 
 train_dataset:
   sequence_length_distribution:
-    "30": 1.0
+    "60": 1.0
   fps: 5.0
   action_dim: 7
   weights:
-    ur5: 1.0
-  reference_dataset: ur5
+    ur5_fix: 0.25
+    ur5_wild: 0.25
+    bridgev2: 0.2
+    epic_kitchens: 0.2
+    droid: 0.1
+  reference_dataset: ur5_fix
   datasets:
-    ur5:
+    ur5_fix:
       type: lerobot
-      repo_id: Gaugou/ur5_WM
+      repo_id: Gaugou/ur5_fix_5hz
       episodes: null
       excluded_episodes: null
       episode_startpoint_only: false
       cameras:
         observation.images.front: 1.0
-      action_mode: ur5_relative_local_ee_normalized
+      action_mode: ur5_relative_base_ee_normalized
       independent_frames_probability: 0.3
-      use_action_probability: 0.7
+      use_action_probability: 0.8
+    ur5_wild:
+      type: lerobot
+      repo_id: Gaugou/ur5_wild_5hz
+      episodes: null
+      excluded_episodes: null
+      episode_startpoint_only: false
+      cameras:
+        observation.images.front: 1.0
+      action_mode: null
+      independent_frames_probability: 0.3
+      use_action_probability: 0.0
+    bridgev2:
+      type: lerobot
+      repo_id: Gaugou/BridgeV2
+      episodes: null
+      excluded_episodes: null
+      episode_startpoint_only: false
+      cameras:
+        observation.images.primary: 0.5
+        observation.images.side1: 0.25
+        observation.images.side2: 0.25
+      action_mode: null
+      independent_frames_probability: 0.3
+      use_action_probability: 0.0
+    epic_kitchens:
+      type: lerobot
+      repo_id: Gaugou/epic_kitchens_100
+      episodes: null
+      excluded_episodes: null
+      episode_startpoint_only: false
+      cameras:
+        observation.images.ego: 1.0
+      action_mode: null
+      independent_frames_probability: 0.3
+      use_action_probability: 0.0
+    droid:
+      type: lerobot
+      repo_id: aractingi/droid_1.0.1
+      episodes: null
+      excluded_episodes: null
+      episode_startpoint_only: false
+      cameras:
+        observation.images.exterior_1_left: 1.0
+      action_mode: null
+      independent_frames_probability: 0.3
+      use_action_probability: 0.0
 
 eval_dataloader:
   batch_size: 8
@@ -76,22 +126,22 @@ eval_dataloader:
 
 eval_dataset:
   sequence_length_distribution:
-    "100": 1.0
+    "85": 1.0
   fps: 5.0
   action_dim: 7
   weights:
-    ur5: 1.0
-  reference_dataset: ur5
+    ur5_fix_eval: 1.0
+  reference_dataset: ur5_fix_eval
   datasets:
-    ur5:
+    ur5_fix_eval:
       type: lerobot
-      repo_id: Gaugou/ur5_WM_eval
+      repo_id: Gaugou/ur5_fix_5hz_eval
       episodes: null
       excluded_episodes: null
       episode_startpoint_only: true
       cameras:
         observation.images.front: 1.0
-      action_mode: ur5_relative_local_ee_normalized
+      action_mode: ur5_relative_base_ee_normalized
       independent_frames_probability: 0.0
       use_action_probability: 1.0
 
@@ -109,15 +159,15 @@ euler_solver:
 
 world_model:
   input_dim: 768
-  latent_dim: 768
-  bottleneck_dim: 64
+  latent_dim: 1024
+  bottleneck_dim: null
   action_dim: 7
   num_registers: 4
   depth: 24
   num_heads: 16
   mlp_multiplier: 4
-  temporal_attention_interval: 3
-  temporal_context_length: 20
+  temporal_attention_interval: 4
+  temporal_context_length: 40
   rope_base: 10000.0
   qk_norm_eps: 1.0e-06
   attn_logit_softcapping: 50.0 # None for no softcapping -> able to use fused_attention

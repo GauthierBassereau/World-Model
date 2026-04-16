@@ -1,17 +1,17 @@
 logging:
   project: world_model_evaluation
   entity: null
-  run_name: soar_bottleneck_0.7rollout
+  run_name: finetuning_ur5
   output_dir: "/checkpoints"
   log_interval: 1
   signal_level_log_limit: 100
   checkpoint_interval: 0
 
-checkpoint_path: /gpfs/helios/home/gauthierbernarda/git/World-Model/checkpoints/soar_bottleneck/world_model_step_015500.pt
+checkpoint_path: /gpfs/helios/home/gauthierbernarda/git/World-Model/checkpoints/finetuning_ur5/world_model_step_002000.pt
 
 evaluator:
-  video_sample_indices: [0, 50, 500, 5000, 1000, 10000, 15000, 20000]
-  rollout_start_frame: 6
+  video_sample_indices: all
+  rollout_start_frame: 10
   rollout_signal_level: 0.7
   precision: bf16
   max_batches: 10
@@ -20,22 +20,22 @@ evaluator:
 
 eval_dataset:
   sequence_length_distribution:
-    "90": 1.0
+    "100": 1.0
   fps: 5.0
   action_dim: 7
   weights:
-    soar: 1.0
-  reference_dataset: soar
+    ur5: 1.0
+  reference_dataset: ur5
   datasets:
-    soar:
+    ur5:
       type: lerobot
-      repo_id: Gaugou/Soar
-      episodes: [0, 50, 500, 5000, 1000, 10000, 15000, 20000]
+      repo_id: Gaugou/ur5_WM_eval
+      episodes: null
       excluded_episodes: null
       episode_startpoint_only: true
       cameras:
-        observation.images.image: 1.0
-      action_mode: soar_relative_ee_normalized
+        observation.images.front: 1.0
+      action_mode: ur5_relative_base_ee_normalized
       independent_frames_probability: 0.0
       use_action_probability: 1.0
 
@@ -67,7 +67,8 @@ world_model:
   num_heads: 24
   mlp_multiplier: 2.666667
   temporal_attention_interval: 4
-  temporal_context_length: 25
+  temporal_context_length: 30
   rope_base: 10000.0
   qk_norm_eps: 1.0e-06
   attn_logit_softcapping: 50.0 # None for no softcapping -> able to use fused_attention
+  use_action_token: true  # false for pretraining (no actions), true for finetuning

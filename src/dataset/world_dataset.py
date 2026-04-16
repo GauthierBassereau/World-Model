@@ -87,20 +87,51 @@ class WorldDataset(Dataset):
         self.idx_to_dataset = {i: name for name, i in self.dataset_to_idx.items()}
         
         dataset_lengths = {name: len(ds) for name, ds in self.datasets.items()}
+        dataset_available_frames = {
+            name: getattr(ds, "available_frame_count", len(ds))
+            for name, ds in self.datasets.items()
+        }
+        dataset_native_fps = {
+            name: getattr(ds, "native_fps", self.cfg.fps)
+            for name, ds in self.datasets.items()
+        }
+        dataset_durations = {
+            name: getattr(ds, "duration_seconds", len(ds) / max(float(self.cfg.fps), 1e-8))
+            for name, ds in self.datasets.items()
+        }
+        effective_dataset_lengths = {
+            name: getattr(ds, "effective_length", lambda target_fps: len(ds))(self.cfg.fps)
+            for name, ds in self.datasets.items()
+        }
         
         total_weight = sum(self.weights.values())
         self.normalized_weights = {k: v / total_weight for k, v in self.weights.items()}
 
-        ref_len = dataset_lengths[self.cfg.reference_dataset]
+        ref_effective_length = effective_dataset_lengths[self.cfg.reference_dataset]
         ref_weight = self.normalized_weights[self.cfg.reference_dataset]
-        theoretical_total_length = int(ref_len / ref_weight)
+        theoretical_total_effective_length = int(ref_effective_length / ref_weight)
         
         self.samples_per_dataset = {
-            name: int(theoretical_total_length * w) for name, w in self.normalized_weights.items()
+            name: int(theoretical_total_effective_length * w) for name, w in self.normalized_weights.items()
         }
         self.total_length = sum(self.samples_per_dataset.values())
 
         self.create_virtual_map(seed=seed)
+
+        for name in self.dataset_names:
+            self.logger.info(
+                "[WorldDataset] | %s | native_fps=%.3f | duration_s=%.1f | available_frames=%d | sampleable_indices=%d | "
+                "effective_length@%.3ffps=%.1f | target_weight=%.4f | virtual_samples=%d",
+                name,
+                float(dataset_native_fps[name]),
+                float(dataset_durations[name]),
+                int(dataset_available_frames[name]),
+                int(dataset_lengths[name]),
+                float(self.cfg.fps),
+                float(effective_dataset_lengths[name]),
+                float(self.normalized_weights[name]),
+                int(self.samples_per_dataset[name]),
+            )
 
         self.logger.info(f"[WorldDataset] | World dataset initialized.")
 
