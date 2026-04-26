@@ -1,7 +1,7 @@
 logging:
   project: world_model
   entity: null
-  run_name: training_ur5
+  run_name: training_ur5_400M_proprio
   output_dir: checkpoints
   log_interval: 1
   signal_level_log_limit: 100
@@ -13,11 +13,11 @@ trainer:
   loss_weighting_intercept: 0.1
   loss_weighting_slope: 0.9
   evaluation_interval: 500
-  grad_accum_steps: 16
+  grad_accum_steps: 8
   precision: bf16
-  seed: 3
-  resume: false
-  load_checkpoint: null
+  seed: 5
+  resume: false # true
+  load_checkpoint: null # /gpfs/helios/home/gauthierbernarda/git/World-Model/checkpoints/training_ur5/world_model_step_002000.pt
 
 evaluator:
   video_sample_indices: all # null -> no videos, all -> all videos, [1, 2, 3] -> specific indices
@@ -31,7 +31,7 @@ evaluator:
 optimizer:
   lr:
     "0": 1.0e-7
-    "1000": 3.0e-4
+    "500": 3.0e-4
   eps: 1.0e-08
   grad_clip_norm: 1.0
   weight_decay: 0.0
@@ -51,13 +51,13 @@ train_dataset:
   sequence_length_distribution:
     "60": 1.0
   fps: 5.0
-  action_dim: 7
+  action_dim: 14
   weights:
-    ur5_fix: 0.25
-    ur5_wild: 0.25
+    ur5_fix: 0.05
+    ur5_wild: 0.15
     bridgev2: 0.2
-    epic_kitchens: 0.2
-    droid: 0.1
+    epic_kitchens: 0.3
+    droid: 0.3
   reference_dataset: ur5_fix
   datasets:
     ur5_fix:
@@ -68,9 +68,9 @@ train_dataset:
       episode_startpoint_only: false
       cameras:
         observation.images.front: 1.0
-      action_mode: ur5_relative_base_ee_normalized
+      action_mode: ur5_ee_state_relative_base_ee_normalized
       independent_frames_probability: 0.3
-      use_action_probability: 0.8
+      use_action_probability: 0.7
     ur5_wild:
       type: lerobot
       repo_id: Gaugou/ur5_wild_5hz
@@ -79,9 +79,9 @@ train_dataset:
       episode_startpoint_only: false
       cameras:
         observation.images.front: 1.0
-      action_mode: null
+      action_mode: ur5_ee_state_relative_base_ee_normalized
       independent_frames_probability: 0.3
-      use_action_probability: 0.0
+      use_action_probability: 0.7
     bridgev2:
       type: lerobot
       repo_id: Gaugou/BridgeV2
@@ -128,7 +128,7 @@ eval_dataset:
   sequence_length_distribution:
     "85": 1.0
   fps: 5.0
-  action_dim: 7
+  action_dim: 14
   weights:
     ur5_fix_eval: 1.0
   reference_dataset: ur5_fix_eval
@@ -141,7 +141,7 @@ eval_dataset:
       episode_startpoint_only: true
       cameras:
         observation.images.front: 1.0
-      action_mode: ur5_relative_base_ee_normalized
+      action_mode: ur5_ee_state_relative_base_ee_normalized
       independent_frames_probability: 0.0
       use_action_probability: 1.0
 
@@ -159,13 +159,13 @@ euler_solver:
 
 world_model:
   input_dim: 768
-  latent_dim: 1024
+  latent_dim: 1024 # 1536, 1024
   bottleneck_dim: null
-  action_dim: 7
+  action_dim: 14
   num_registers: 4
-  depth: 24
-  num_heads: 16
-  mlp_multiplier: 4
+  depth: 24 # 28, 24
+  num_heads: 16 # 24, 16
+  mlp_multiplier: 4 # 2.666667, 4
   temporal_attention_interval: 4
   temporal_context_length: 40
   rope_base: 10000.0

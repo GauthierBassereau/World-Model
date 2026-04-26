@@ -56,6 +56,7 @@ def build_world_dataloader(
         pin_memory=dataloader_cfg.pin_memory,
         collate_fn=collate,
         persistent_workers=True if dataloader_cfg.num_workers > 0 else False,
+        drop_last = True
     )
     
     return dataloader

@@ -68,7 +68,7 @@ class LeRobotDataset(Dataset):
             camera_keys=list(self.cfg.cameras.keys())
         )
 
-        # Initialize backend with episodes=None to avoid loading all data into RAM, and because splitting the dataset is too expensive...
+        # Initialize backend with episodes=None to avoid loading all data into RAM, and because splitting the dataset is too expensive... :(
         self.backend = LeRobotDatasetBackend(
             repo_id=cfg.repo_id,
             episodes=None,

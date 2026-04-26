@@ -1,18 +1,18 @@
 logging:
   project: world_model_evaluation
   entity: null
-  run_name: finetuning_ur5
+  run_name: evaluation_ur5_800M_100steps
   output_dir: "/checkpoints"
   log_interval: 1
   signal_level_log_limit: 100
   checkpoint_interval: 0
 
-checkpoint_path: /gpfs/helios/home/gauthierbernarda/git/World-Model/checkpoints/finetuning_ur5/world_model_step_002000.pt
+checkpoint_path: /gpfs/helios/home/gauthierbernarda/git/World-Model/checkpoints/training_ur5_800M/world_model_step_010000.pt
 
 evaluator:
   video_sample_indices: all
   rollout_start_frame: 10
-  rollout_signal_level: 0.7
+  rollout_signal_level: 0.8
   precision: bf16
   max_batches: 10
   denoising_metrics_indices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99] # List of diffusion steps to capture intermediates for (first sequence, first frame only)
@@ -20,16 +20,16 @@ evaluator:
 
 eval_dataset:
   sequence_length_distribution:
-    "100": 1.0
+    "85": 1.0
   fps: 5.0
   action_dim: 7
   weights:
-    ur5: 1.0
-  reference_dataset: ur5
+    ur5_fix_eval: 1.0
+  reference_dataset: ur5_fix_eval
   datasets:
-    ur5:
+    ur5_fix_eval:
       type: lerobot
-      repo_id: Gaugou/ur5_WM_eval
+      repo_id: Gaugou/ur5_fix_5hz_eval
       episodes: null
       excluded_episodes: null
       episode_startpoint_only: true
@@ -53,21 +53,21 @@ signal_scheduler:
   logit_normal_scale: 0.8
 
 euler_solver:
-  number_steps: 50
+  number_steps: 100
   min_denom: 0.05
   timestep_schedule: "linear"
 
 world_model:
   input_dim: 768
-  latent_dim: 1536
-  bottleneck_dim: 64
+  latent_dim: 1536 # 1536, 1024
+  bottleneck_dim: null
   action_dim: 7
   num_registers: 4
-  depth: 28
-  num_heads: 24
-  mlp_multiplier: 2.666667
+  depth: 28 # 28, 24
+  num_heads: 24 # 24, 16
+  mlp_multiplier: 2.666667 # 2.666667, 4
   temporal_attention_interval: 4
-  temporal_context_length: 30
+  temporal_context_length: 40
   rope_base: 10000.0
   qk_norm_eps: 1.0e-06
   attn_logit_softcapping: 50.0 # None for no softcapping -> able to use fused_attention

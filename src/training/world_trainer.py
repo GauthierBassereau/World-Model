@@ -71,6 +71,17 @@ class WorldModelTrainingConfig:
     logging: LoggingConfig = field(default_factory=LoggingConfig)
 
 
+MetricStats = Dict[str, Tuple[float, float]]
+
+
+@dataclass
+class MicroStepLoss:
+    loss_sum: torch.Tensor
+    valid_frame_count: torch.Tensor
+    total_frame_count: torch.Tensor
+    metric_stats: MetricStats
+
+
 class WorldModelTrainer:
     def __init__(
         self,
@@ -328,13 +339,26 @@ class WorldModelTrainer:
             self.logger.start_step(self.global_step)
             self._train_module.train()
             self.optimizer.zero_grad()
-            accum_metric_stats: Dict[str, Tuple[float, float]] = {}
+            accum_metric_stats: MetricStats = {}
+            local_valid_frame_count = torch.zeros((), device=self.device, dtype=torch.float32)
+            local_total_frame_count = torch.zeros((), device=self.device, dtype=torch.float32)
 
             for accum_idx in range(self.config.trainer.grad_accum_steps):
                 self.logger.start_micro_step(accum_idx)
                 batch = self._next_batch()
-                metric_stats = self._train_micro_step(batch)
-                self._accumulate_metric_stats(accum_metric_stats, metric_stats)
+                with self._backward_sync_context(accum_idx):
+                    micro_step_loss = self._compute_micro_step_loss(batch)
+                    micro_step_loss.loss_sum.backward()
+                local_valid_frame_count += micro_step_loss.valid_frame_count
+                local_total_frame_count += micro_step_loss.total_frame_count
+                self._accumulate_metric_stats(accum_metric_stats, micro_step_loss.metric_stats)
+
+            global_valid_frame_count = self._sync_scalar_sum(local_valid_frame_count)
+            global_total_frame_count = self._sync_scalar_sum(local_total_frame_count)
+            # DDP averages gradients across ranks. We backpropagate summed frame losses on
+            # each micro-step, then normalize once using the global number of valid frames
+            # seen across all ranks and accumulation steps.
+            self._scale_gradients(self.world_size / max(global_valid_frame_count, 1.0))
 
             grad_metrics = self.logger.log_grad_norm(model=self.model, key="grad_norm_before_clip")
 
@@ -356,6 +380,8 @@ class WorldModelTrainer:
             mean_metrics = self._finalize_metric_stats(
                 sync_metric_stats(accum_metric_stats, self.world_size, self.device)
             )
+            mean_metrics["valid_frames"] = global_valid_frame_count
+            mean_metrics["total_frames"] = global_total_frame_count
             lr_value = float(self.optimizer.param_groups[0]["lr"])
             scalar_metrics = {"learning_rate": lr_value}
             if grad_metrics:
@@ -371,10 +397,10 @@ class WorldModelTrainer:
                 
             self._maybe_run_evaluation(self.global_step)
 
-    def _train_micro_step(
+    def _compute_micro_step_loss(
         self,
         batch: WorldBatch,
-    ) -> Dict[str, Tuple[float, float]]:
+    ) -> MicroStepLoss:
         frames = batch.sequence_frames.to(self.device, non_blocking=True)
         actions = batch.sequence_actions.to(self.device, non_blocking=True)
         independent_frames = batch.independent_frames.to(self.device, non_blocking=True)
@@ -406,7 +432,7 @@ class WorldModelTrainer:
                 independent_frames=independent_frames,
                 use_actions=use_actions,
             )
-            loss, metrics = self._compute_loss(
+            micro_step_loss = self._compute_loss(
                 latents=latents,
                 noisy_latents=noisy_latents,
                 outputs=outputs,
@@ -420,9 +446,7 @@ class WorldModelTrainer:
                 use_actions=use_actions,
             )
 
-        loss.backward()
-
-        return metrics
+        return micro_step_loss
 
     def _compute_loss(
         self,
@@ -437,7 +461,7 @@ class WorldModelTrainer:
         dataset_indices: torch.Tensor,
         dataset_names: Dict[int, str],
         use_actions: torch.Tensor,
-    ) -> Tuple[torch.Tensor, Dict[str, Tuple[float, float]]]:
+    ) -> MicroStepLoss:
         if self.config.trainer.loss_type == "position":
             loss_unreduced = torch.nn.functional.mse_loss(latents, outputs.latents, reduction="none")
         else:
@@ -467,15 +491,16 @@ class WorldModelTrainer:
         frames_valid_mask = frames_valid_mask.to(dtype=loss_unreduced.dtype)
         frame_loss = loss_unreduced.mean(dim=(-1, -2))
         valid_frame_loss = frame_loss * frames_valid_mask
-        raw_loss_sum = valid_frame_loss.sum()
-        raw_loss_count = frames_valid_mask.sum()
-        raw_loss = raw_loss_sum / raw_loss_count.clamp_min(1.0)
+        loss_sum = valid_frame_loss.sum()
+        valid_frame_count = frames_valid_mask.sum().detach()
+        total_frame_count = torch.tensor(
+            float(frames_valid_mask.numel()),
+            device=frames_valid_mask.device,
+            dtype=torch.float32,
+        )
 
         metrics = {
-            "raw_l2_loss": (
-                float(raw_loss_sum.detach()),
-                float(raw_loss_count.detach()),
-            ),
+            "raw_l2_loss": self._to_metric_stat(loss_sum, valid_frame_count),
         }
         if self.global_step % 10 == 0:
             breakdown = self._compute_loss_breakdown(
@@ -487,10 +512,13 @@ class WorldModelTrainer:
                 use_actions,
             )
             metrics.update(breakdown)
-            
-        final_loss = raw_loss
-        final_loss = final_loss / self.config.trainer.grad_accum_steps
-        return final_loss, metrics
+
+        return MicroStepLoss(
+            loss_sum=loss_sum,
+            valid_frame_count=valid_frame_count,
+            total_frame_count=total_frame_count,
+            metric_stats=metrics,
+        )
 
     def _compute_loss_breakdown(
         self,
@@ -500,135 +528,95 @@ class WorldModelTrainer:
         dataset_indices: torch.Tensor,
         dataset_names: Dict[int, str],
         use_actions: torch.Tensor,
-    ) -> Dict[str, Tuple[float, float]]:
-        metrics: Dict[str, Tuple[float, float]] = {}
-        
-        indep_mask_bool = independent_frames.to(dtype=torch.bool)
-        mask_indep = frames_valid_mask * indep_mask_bool.to(dtype=frames_valid_mask.dtype)
-        mask_dept = frames_valid_mask * (~indep_mask_bool).to(dtype=frames_valid_mask.dtype)
+    ) -> MetricStats:
+        metrics: MetricStats = {}
 
-        denom_indep = mask_indep.sum()
-        loss_indep_sum = (valid_frame_loss * mask_indep).sum()
-        metrics["l2_loss/independent_frames"] = (
-            float(loss_indep_sum.detach()),
-            float(denom_indep.detach()),
-        )
-        
-        denom_dept = mask_dept.sum()
-        loss_dept_sum = (valid_frame_loss * mask_dept).sum()
-        metrics["l2_loss/dependent_frames"] = (
-            float(loss_dept_sum.detach()),
-            float(denom_dept.detach()),
-        )
-            
-        action_mask_bool = use_actions.to(dtype=torch.bool)
-        mask_action = frames_valid_mask * action_mask_bool.to(dtype=frames_valid_mask.dtype)
-        mask_no_action = frames_valid_mask * (~action_mask_bool).to(dtype=frames_valid_mask.dtype)
-        
-        denom_action = mask_action.sum()
-        loss_action_sum = (valid_frame_loss * mask_action).sum()
-        metrics["l2_loss/with_actions"] = (
-            float(loss_action_sum.detach()),
-            float(denom_action.detach()),
-        )
-            
-        denom_no_action = mask_no_action.sum()
-        loss_no_action_sum = (valid_frame_loss * mask_no_action).sum()
-        metrics["l2_loss/without_actions"] = (
-            float(loss_no_action_sum.detach()),
-            float(denom_no_action.detach()),
-        )
-        
-        num_datasets = max(dataset_names.keys()) + 1
-        
-        loss_sum_b = valid_frame_loss.sum(dim=1)
-        denom_sum_b = frames_valid_mask.sum(dim=1)
-        
-        loss_indep_b = (valid_frame_loss * mask_indep).sum(dim=1)
-        denom_indep_b = mask_indep.sum(dim=1)
-        
-        loss_dept_b = (valid_frame_loss * mask_dept).sum(dim=1)
-        denom_dept_b = mask_dept.sum(dim=1)
-        
-        loss_action_b = (valid_frame_loss * mask_action).sum(dim=1)
-        denom_action_b = mask_action.sum(dim=1)
-        
-        loss_no_action_b = (valid_frame_loss * mask_no_action).sum(dim=1)
-        denom_no_action_b = mask_no_action.sum(dim=1)
-        
-        ds_loss_total = torch.zeros(num_datasets, device=valid_frame_loss.device, dtype=valid_frame_loss.dtype)
-        ds_denom_total = torch.zeros(num_datasets, device=valid_frame_loss.device, dtype=valid_frame_loss.dtype)
-        
-        ds_loss_indep = torch.zeros(num_datasets, device=valid_frame_loss.device, dtype=valid_frame_loss.dtype)
-        ds_denom_indep = torch.zeros(num_datasets, device=valid_frame_loss.device, dtype=valid_frame_loss.dtype)
-        
-        ds_loss_dept = torch.zeros(num_datasets, device=valid_frame_loss.device, dtype=valid_frame_loss.dtype)
-        ds_denom_dept = torch.zeros(num_datasets, device=valid_frame_loss.device, dtype=valid_frame_loss.dtype)
-        
-        ds_loss_action = torch.zeros(num_datasets, device=valid_frame_loss.device, dtype=valid_frame_loss.dtype)
-        ds_denom_action = torch.zeros(num_datasets, device=valid_frame_loss.device, dtype=valid_frame_loss.dtype)
-        
-        ds_loss_no_action = torch.zeros(num_datasets, device=valid_frame_loss.device, dtype=valid_frame_loss.dtype)
-        ds_denom_no_action = torch.zeros(num_datasets, device=valid_frame_loss.device, dtype=valid_frame_loss.dtype)
-        
-        ds_loss_total.scatter_add_(0, dataset_indices, loss_sum_b)
-        ds_denom_total.scatter_add_(0, dataset_indices, denom_sum_b)
-        
-        ds_loss_indep.scatter_add_(0, dataset_indices, loss_indep_b)
-        ds_denom_indep.scatter_add_(0, dataset_indices, denom_indep_b)
-        
-        ds_loss_dept.scatter_add_(0, dataset_indices, loss_dept_b)
-        ds_denom_dept.scatter_add_(0, dataset_indices, denom_dept_b)
-        
-        ds_loss_action.scatter_add_(0, dataset_indices, loss_action_b)
-        ds_denom_action.scatter_add_(0, dataset_indices, denom_action_b)
-        
-        ds_loss_no_action.scatter_add_(0, dataset_indices, loss_no_action_b)
-        ds_denom_no_action.scatter_add_(0, dataset_indices, denom_no_action_b)
-        
+        frames_valid_mask_bool = frames_valid_mask.to(dtype=torch.bool)
+        independent_frames_bool = independent_frames.to(dtype=torch.bool)
+        use_actions_bool = use_actions.to(dtype=torch.bool)
+
+        global_masks = {
+            "l2_loss/independent_frames": frames_valid_mask_bool & independent_frames_bool,
+            "l2_loss/dependent_frames": frames_valid_mask_bool & (~independent_frames_bool),
+            "l2_loss/with_actions": frames_valid_mask_bool & use_actions_bool,
+            "l2_loss/without_actions": frames_valid_mask_bool & (~use_actions_bool),
+        }
+        for key, mask in global_masks.items():
+            metrics[key] = self._masked_metric_stat(valid_frame_loss, mask)
+
         for idx, name in dataset_names.items():
-            metrics[f"l2_loss/{name}"] = (
-                float(ds_loss_total[idx].detach()),
-                float(ds_denom_total[idx].detach()),
+            dataset_mask = dataset_indices == idx
+            dataset_loss = valid_frame_loss[dataset_mask]
+            dataset_valid_mask = frames_valid_mask_bool[dataset_mask]
+            dataset_independent = independent_frames_bool[dataset_mask]
+            dataset_use_actions = use_actions_bool[dataset_mask]
+
+            metrics[f"l2_loss/{name}"] = self._masked_metric_stat(dataset_loss, dataset_valid_mask)
+            metrics[f"l2_loss/{name}/independent"] = self._masked_metric_stat(
+                dataset_loss,
+                dataset_valid_mask & dataset_independent,
+            )
+            metrics[f"l2_loss/{name}/dependent"] = self._masked_metric_stat(
+                dataset_loss,
+                dataset_valid_mask & (~dataset_independent),
+            )
+            metrics[f"l2_loss/{name}/with_actions"] = self._masked_metric_stat(
+                dataset_loss,
+                dataset_valid_mask & dataset_use_actions,
+            )
+            metrics[f"l2_loss/{name}/without_actions"] = self._masked_metric_stat(
+                dataset_loss,
+                dataset_valid_mask & (~dataset_use_actions),
             )
 
-            metrics[f"l2_loss/{name}/independent"] = (
-                float(ds_loss_indep[idx].detach()),
-                float(ds_denom_indep[idx].detach()),
-            )
-
-            metrics[f"l2_loss/{name}/dependent"] = (
-                float(ds_loss_dept[idx].detach()),
-                float(ds_denom_dept[idx].detach()),
-            )
-
-            metrics[f"l2_loss/{name}/with_actions"] = (
-                float(ds_loss_action[idx].detach()),
-                float(ds_denom_action[idx].detach()),
-            )
-
-            metrics[f"l2_loss/{name}/without_actions"] = (
-                float(ds_loss_no_action[idx].detach()),
-                float(ds_denom_no_action[idx].detach()),
-            )
-                    
         return metrics
 
     @staticmethod
     def _accumulate_metric_stats(
-        accum_metric_stats: Dict[str, Tuple[float, float]],
-        metric_stats: Dict[str, Tuple[float, float]],
+        accum_metric_stats: MetricStats,
+        metric_stats: MetricStats,
     ) -> None:
         for key, (loss_sum, denom) in metric_stats.items():
             prev_loss_sum, prev_denom = accum_metric_stats.get(key, (0.0, 0.0))
             accum_metric_stats[key] = (prev_loss_sum + loss_sum, prev_denom + denom)
 
     @staticmethod
-    def _finalize_metric_stats(metric_stats: Dict[str, Tuple[float, float]]) -> Dict[str, float]:
+    def _finalize_metric_stats(metric_stats: MetricStats) -> Dict[str, float]:
         finalized: Dict[str, float] = {}
         for key, (loss_sum, denom) in metric_stats.items():
             finalized[key] = loss_sum / denom if denom > 0.0 else 0.0
         return finalized
+
+    @staticmethod
+    def _to_metric_stat(loss_sum: torch.Tensor, count: torch.Tensor) -> Tuple[float, float]:
+        return float(loss_sum.detach()), float(count.detach())
+
+    @classmethod
+    def _masked_metric_stat(
+        cls,
+        valid_frame_loss: torch.Tensor,
+        mask: torch.Tensor,
+    ) -> Tuple[float, float]:
+        mask = mask.to(dtype=valid_frame_loss.dtype)
+        return cls._to_metric_stat((valid_frame_loss * mask).sum(), mask.sum())
+
+    def _backward_sync_context(self, accum_idx: int):
+        if self.world_size > 1 and accum_idx < self.config.trainer.grad_accum_steps - 1:
+            return self._train_module.no_sync()
+        return nullcontext()
+
+    def _sync_scalar_sum(self, value: torch.Tensor) -> float:
+        total = value.detach().to(device=self.device, dtype=torch.float32)
+        if self.world_size > 1:
+            dist.all_reduce(total, op=dist.ReduceOp.SUM)
+        return float(total.item())
+
+    def _scale_gradients(self, scale: float) -> None:
+        if scale == 1.0:
+            return
+        for param in self.model.parameters():
+            if param.grad is not None:
+                param.grad.mul_(scale)
 
     def _next_batch(self) -> WorldBatch:
         if self._dataloader_iter is None:
@@ -654,7 +642,7 @@ class WorldModelTrainer:
         interval = self.config.trainer.evaluation_interval
         if interval is None or interval <= 0 or step % interval != 0:
             return
-        eval_model = self.ema_model if self.config.ema.enabled else getattr(self.model, '_orig_mod', self.model)
+        eval_model = self.ema_model if self.config.ema.enabled else self.model
         self.evaluator.evaluate(eval_model)
 
     def _save_checkpoint(self, step: int) -> None:

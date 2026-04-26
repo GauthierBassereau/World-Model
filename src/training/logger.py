@@ -137,7 +137,7 @@ class WorldModelLogger:
             if self.wandb_run is not None:
                 payload: Dict[str, float] = {}
                 for key, value in metrics.items():
-                    if key == "learning_rate" or key.startswith("grad_norm"):
+                    if key in {"learning_rate", "valid_frames", "total_frames"} or key.startswith("grad_norm"):
                         payload[f"debug/{key}"] = value
                     else:
                         payload[f"train/{key}"] = value

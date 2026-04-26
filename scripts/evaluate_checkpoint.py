@@ -76,6 +76,7 @@ def main() -> None:
 
     model.load_state_dict(state_dict)
     model.eval()
+    model = torch.compile(model)
     
     logger.info("Initializing Autoencoder...")
     autoencoder = RAE()

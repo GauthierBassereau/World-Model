@@ -45,6 +45,7 @@ def get_delta_timestamps(
         "soar_relative_ee_normalized": ["action"],
         "ur5_relative_local_ee_normalized": ["action.5hz_delta_local"],
         "ur5_relative_base_ee_normalized": ["action.5hz_delta_base"],
+        "ur5_ee_state_relative_base_ee_normalized": ["observation.state", "action.5hz_delta_base"],
     }
     
     if action_mode is not None:
@@ -81,12 +82,22 @@ def get_actions(
             "std": [0.018853237852454185, 0.014781574718654156, 0.016488293185830116, 0.04993394762277603, 0.05001137778162956, 0.06182064861059189, 100]
         }
         return _normalize_actions(item["action.5hz_delta_base"], stats=stats)
+    if action_mode == "ur5_ee_state_relative_base_ee_normalized":
+        stats = {
+            "mean": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            "std": [0.018853237852454185, 0.014781574718654156, 0.016488293185830116, 0.04993394762277603, 0.05001137778162956, 0.06182064861059189, 100]
+        }
+        ee_state = item["observation.state"][..., 6:13].clone()
+        # This is to recale the gripper vel from [0, 100] to [-pi, pi]
+        ee_state[..., -1] = ee_state[..., -1] / 100.0 * (2 * 3.141592653589793) - 3.141592653589793
+        base_action = _normalize_actions(item["action.5hz_delta_base"], stats=stats)
+        return torch.cat([ee_state, base_action], dim=-1).float()
     raise ValueError(f"Unknown action mode: {action_mode}")
 
 def _normalize_actions(
     actions: torch.Tensor,
     stats: Optional[Dict] = None,
-    clamp_range: float = 5.0,
+    clamp_range: float = 10.0,
 ) -> torch.Tensor:
     """Normalize actions by mean/std and clamp."""
     if stats is not None:

@@ -1,12 +1,16 @@
 """This entire rae_dino module is modified from the RAE repository"""
 
+import json
+from math import sqrt
+from pathlib import Path
+from typing import Optional
+
 import torch
 import torch.nn as nn
 from src.rae_dino.decoder.mae_decoder import GeneralDecoder
+from src.rae_dino.decoder.utils import ViTMAEConfig
 from src.rae_dino.encoder.dinov2 import Dinov2withNorm
 from transformers import AutoConfig, AutoImageProcessor
-from typing import Optional
-from math import sqrt
 
 
 class RAE(nn.Module):
@@ -25,7 +29,10 @@ class RAE(nn.Module):
         eps: float = 1e-5,
     ):
         super().__init__()
-        proc = AutoImageProcessor.from_pretrained(dinov2_path, use_fast=False)
+        try:
+            proc = AutoImageProcessor.from_pretrained(dinov2_path, backend="pil")
+        except TypeError:
+            proc = AutoImageProcessor.from_pretrained(dinov2_path, use_fast=False)
         self.encoder_mean = torch.tensor(proc.image_mean).view(1, 3, 1, 1)
         self.encoder_std = torch.tensor(proc.image_std).view(1, 3, 1, 1)
         self.encoder = Dinov2withNorm(dinov2_path)
@@ -37,7 +44,7 @@ class RAE(nn.Module):
         self.base_patches = (self.encoder_input_size // self.encoder_patch_size) ** 2 # number of patches of the latent
         
         # decoder
-        decoder_config = AutoConfig.from_pretrained(decoder_config_path)
+        decoder_config = self._load_decoder_config(decoder_config_path, decoder_patch_size)
         decoder_config.hidden_size = self.latent_dim # set the hidden size of the decoder to be the same as the encoder's output
         decoder_config.patch_size = decoder_patch_size
         decoder_config.image_size = int(decoder_patch_size * sqrt(self.base_patches)) 
@@ -64,6 +71,26 @@ class RAE(nn.Module):
         else:
             self.do_normalization = False
         self._input_hw: Optional[tuple[int, int]] = None
+
+    def _load_decoder_config(self, decoder_config_path: str, decoder_patch_size: int):
+        config_path = Path(decoder_config_path).expanduser()
+        if config_path.is_dir():
+            config_path = config_path / "config.json"
+
+        if config_path.is_file():
+            with config_path.open("r", encoding="utf-8") as handle:
+                config_dict = json.load(handle)
+
+            patch_size = config_dict.get("patch_size")
+            if not isinstance(patch_size, (int, list, tuple)):
+                config_dict["patch_size"] = decoder_patch_size
+
+            return ViTMAEConfig(**config_dict)
+
+        decoder_config = AutoConfig.from_pretrained(decoder_config_path)
+        if not isinstance(getattr(decoder_config, "patch_size", None), (int, list, tuple)):
+            decoder_config.patch_size = decoder_patch_size
+        return decoder_config
 
     def _reshape_stat_tensor(self, tensor: torch.Tensor, name: str) -> torch.Tensor:
         tensor = tensor.to(torch.float32)
