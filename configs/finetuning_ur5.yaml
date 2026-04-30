@@ -1,11 +1,11 @@
 logging:
   project: world_model
   entity: null
-  run_name: training_soar
+  run_name: finetuning_ur5_400M
   output_dir: checkpoints
   log_interval: 1
   signal_level_log_limit: 100
-  checkpoint_interval: 500
+  checkpoint_interval: 1000
 
 trainer:
   loss_type: velocity
@@ -15,13 +15,13 @@ trainer:
   evaluation_interval: 500
   grad_accum_steps: 16
   precision: bf16
-  seed: 15
-  resume: false
-  load_checkpoint: /gpfs/helios/home/gauthierbernarda/git/World-Model/checkpoints/pretraining/world_model_step_020000.pt
+  seed: 10
+  resume: false # true
+  load_checkpoint: /gpfs/helios/home/gauthierbernarda/git/World-Model/checkpoints/pretraining_400M/world_model_step_006000.pt
 
 evaluator:
-  video_sample_indices: [0, 5000, 10000, 15000, 20000, 25000, 30000, 35000, 40000, 45000, 50000]
-  rollout_start_frame: 6
+  video_sample_indices: all # null -> no videos, all -> all videos, [1, 2, 3] -> specific indices
+  rollout_start_frame: 10
   rollout_signal_level: 0.8
   precision: bf16
   max_batches: 10
@@ -31,7 +31,7 @@ evaluator:
 optimizer:
   lr:
     "0": 1.0e-7
-    "500": 3.0e-4
+    "250": 3.0e-4
   eps: 1.0e-08
   grad_clip_norm: 1.0
   weight_decay: 0.0
@@ -42,22 +42,45 @@ ema:
   start_step: 5000
 
 train_dataloader:
-  batch_size: 256
+  batch_size: 128
   shuffle: true
   num_workers: 6
   pin_memory: true
 
 train_dataset:
   sequence_length_distribution:
-    "45": 1.0
+    "60": 1.0
   fps: 5.0
-  action_dim: 7
+  action_dim: 14
   weights:
+    ur5_fix: 0.2
+    ur5_wild: 0.3
     epic_kitchens: 0.2
-    droid: 0.1
-    soar: 0.7
-  reference_dataset: soar
+    droid: 0.3
+  reference_dataset: ur5_fix
   datasets:
+    ur5_fix:
+      type: lerobot
+      repo_id: Gaugou/ur5_fix_5hz
+      episodes: null
+      excluded_episodes: null
+      episode_startpoint_only: false
+      cameras:
+        observation.images.front: 1.0
+      action_mode: ur5_ee_state_relative_base_ee_normalized
+      independent_frames_probability: 0.3
+      use_action_probability: 0.7
+    ur5_wild:
+      type: lerobot
+      repo_id: Gaugou/ur5_wild_5hz
+      episodes: null
+      excluded_episodes: null
+      episode_startpoint_only: false
+      cameras:
+        observation.images.front: 1.0
+      action_mode: ur5_ee_state_relative_base_ee_normalized
+      independent_frames_probability: 0.3
+      use_action_probability: 0.7
     epic_kitchens:
       type: lerobot
       repo_id: Gaugou/epic_kitchens_100
@@ -80,17 +103,6 @@ train_dataset:
       action_mode: null
       independent_frames_probability: 0.3
       use_action_probability: 0.0
-    soar:
-      type: lerobot
-      repo_id: Gaugou/Soar
-      episodes: null
-      excluded_episodes: [0, 5000, 7500, 10000, 12500, 15000, 17500, 20000, 22500, 25000, 27500, 30000]
-      episode_startpoint_only: false
-      cameras:
-        observation.images.image: 1.0
-      action_mode: soar_relative_ee_normalized
-      independent_frames_probability: 0.3
-      use_action_probability: 0.9
 
 eval_dataloader:
   batch_size: 8
@@ -100,22 +112,22 @@ eval_dataloader:
 
 eval_dataset:
   sequence_length_distribution:
-    "60": 1.0
+    "85": 1.0
   fps: 5.0
-  action_dim: 7
+  action_dim: 14
   weights:
-    soar: 1.0
-  reference_dataset: soar
+    ur5_fix_eval: 1.0
+  reference_dataset: ur5_fix_eval
   datasets:
-    soar:
+    ur5_fix_eval:
       type: lerobot
-      repo_id: Gaugou/Soar
-      episodes: [0, 5000, 7500, 10000, 12500, 15000, 17500, 20000, 22500, 25000, 27500, 30000]
+      repo_id: Gaugou/ur5_fix_5hz_eval
+      episodes: null
       excluded_episodes: null
       episode_startpoint_only: true
       cameras:
-        observation.images.image: 1.0
-      action_mode: soar_relative_ee_normalized
+        observation.images.front: 1.0
+      action_mode: ur5_ee_state_relative_base_ee_normalized
       independent_frames_probability: 0.0
       use_action_probability: 1.0
 
@@ -133,15 +145,15 @@ euler_solver:
 
 world_model:
   input_dim: 768
-  latent_dim: 1536
-  bottleneck_dim: 64
-  action_dim: 7
+  latent_dim: 1024 # 1536, 1024
+  bottleneck_dim: null
+  action_dim: 14
   num_registers: 4
-  depth: 28
-  num_heads: 24
-  mlp_multiplier: 2.666667
+  depth: 24 # 28, 24
+  num_heads: 16 # 24, 16
+  mlp_multiplier: 4 # 2.666667, 4
   temporal_attention_interval: 4
-  temporal_context_length: 35
+  temporal_context_length: 40
   rope_base: 10000.0
   qk_norm_eps: 1.0e-06
   attn_logit_softcapping: 50.0 # None for no softcapping -> able to use fused_attention

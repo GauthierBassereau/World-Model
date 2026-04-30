@@ -1,7 +1,7 @@
 logging:
   project: world_model
   entity: null
-  run_name: training_ur5_400M_proprio
+  run_name: training_ur5_400M_res
   output_dir: checkpoints
   log_interval: 1
   signal_level_log_limit: 100
@@ -13,11 +13,11 @@ trainer:
   loss_weighting_intercept: 0.1
   loss_weighting_slope: 0.9
   evaluation_interval: 500
-  grad_accum_steps: 8
+  grad_accum_steps: 16
   precision: bf16
   seed: 5
   resume: false # true
-  load_checkpoint: null # /gpfs/helios/home/gauthierbernarda/git/World-Model/checkpoints/training_ur5/world_model_step_002000.pt
+  load_checkpoint: null # /gpfs/helios/home/gauthierbernarda/git/World-Model/checkpoints/training_ur5_400M_res/world_model_step_002000.pt
 
 evaluator:
   video_sample_indices: all # null -> no videos, all -> all videos, [1, 2, 3] -> specific indices
@@ -54,10 +54,10 @@ train_dataset:
   action_dim: 14
   weights:
     ur5_fix: 0.05
-    ur5_wild: 0.15
-    bridgev2: 0.2
+    ur5_wild: 0.2
+    bridgev2: 0.1
     epic_kitchens: 0.3
-    droid: 0.3
+    droid: 0.35
   reference_dataset: ur5_fix
   datasets:
     ur5_fix:
@@ -146,7 +146,7 @@ eval_dataset:
       use_action_probability: 1.0
 
 signal_scheduler:
-  mode: "logit_normal"  # {"resolution_shift", "linear_shift", "uniform", "logit_normal"}
+  mode: "resolution_shift"  # {"resolution_shift", "linear_shift", "uniform", "logit_normal"}
   min_value: 0.0
   max_value: 1.0
   logit_normal_loc: -0.8

@@ -1,18 +1,18 @@
 logging:
   project: world_model_evaluation
   entity: null
-  run_name: evaluation_ur5_800M_100steps
+  run_name: ur5_800M_0.9
   output_dir: "/checkpoints"
   log_interval: 1
   signal_level_log_limit: 100
   checkpoint_interval: 0
 
-checkpoint_path: /gpfs/helios/home/gauthierbernarda/git/World-Model/checkpoints/training_ur5_800M/world_model_step_010000.pt
+checkpoint_path: /gpfs/helios/home/gauthierbernarda/git/World-Model/checkpoints/training_ur5_800M_res/world_model_step_004000.pt
 
 evaluator:
   video_sample_indices: all
   rollout_start_frame: 10
-  rollout_signal_level: 0.8
+  rollout_signal_level: 0.9
   precision: bf16
   max_batches: 10
   denoising_metrics_indices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99] # List of diffusion steps to capture intermediates for (first sequence, first frame only)
@@ -22,7 +22,7 @@ eval_dataset:
   sequence_length_distribution:
     "85": 1.0
   fps: 5.0
-  action_dim: 7
+  action_dim: 14
   weights:
     ur5_fix_eval: 1.0
   reference_dataset: ur5_fix_eval
@@ -35,7 +35,7 @@ eval_dataset:
       episode_startpoint_only: true
       cameras:
         observation.images.front: 1.0
-      action_mode: ur5_relative_base_ee_normalized
+      action_mode: ur5_ee_state_relative_base_ee_normalized
       independent_frames_probability: 0.0
       use_action_probability: 1.0
 
@@ -61,7 +61,7 @@ world_model:
   input_dim: 768
   latent_dim: 1536 # 1536, 1024
   bottleneck_dim: null
-  action_dim: 7
+  action_dim: 14
   num_registers: 4
   depth: 28 # 28, 24
   num_heads: 24 # 24, 16

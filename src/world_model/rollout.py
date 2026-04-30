@@ -30,15 +30,14 @@ def rollout_latents(
 
     if context_len > 0:
         context_frames = latents[:, :context_len]
-        noisy_context = _apply_noise(context_frames, rollout_signal_level)
-        context_signal = torch.full((batch_size, context_len), rollout_signal_level, device=device)
+        context_signal = torch.ones((batch_size, context_len), device=device)
         ctx_actions = actions[:, :context_len] if actions is not None else None
         ctx_use_actions = use_actions[:, :context_len] if use_actions is not None else None
         ctx_indep = independent_frames[:, :context_len] if independent_frames is not None else None
         
         with torch.no_grad():
             output = model(
-                noisy_latents=noisy_context,
+                noisy_latents=context_frames,
                 signal_levels=context_signal,
                 actions=ctx_actions,
                 independent_frames=ctx_indep,
