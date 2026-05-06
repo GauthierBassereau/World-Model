@@ -13,11 +13,11 @@ trainer:
   loss_weighting_intercept: 0.1
   loss_weighting_slope: 0.9
   evaluation_interval: 500
-  grad_accum_steps: 16
+  grad_accum_steps: 8
   precision: bf16
-  seed: 5
-  resume: false # true
-  load_checkpoint: null # /gpfs/helios/home/gauthierbernarda/git/World-Model/checkpoints/training_ur5_400M_res/world_model_step_002000.pt
+  seed: 10
+  resume: true # true
+  load_checkpoint: checkpoints/training_ur5_400M_res/world_model_step_004000.pt # /gpfs/helios/home/gauthierbernarda/git/World-Model/checkpoints/training_ur5_400M_res/world_model_step_002000.pt
 
 evaluator:
   video_sample_indices: all # null -> no videos, all -> all videos, [1, 2, 3] -> specific indices
@@ -25,7 +25,7 @@ evaluator:
   rollout_signal_level: 0.8
   precision: bf16
   max_batches: 10
-  denoising_metrics_indices: [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 99]
+  denoising_metrics_indices: [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 49, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 99]
   save_denoising_frames: false
 
 optimizer:

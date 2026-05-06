@@ -68,6 +68,7 @@ class WorldModelEvaluator:
         self.autoencoder = autoencoder
         self.autoencoder.eval()
         self.euler_solver = EulerSolver(euler_solver_cfg, signal_scheduler_cfg)
+        self._denoising_indices_warned = False
         self.max_sequence_length = max(int(key) for key in dataset_cfg.sequence_length_distribution.keys())
         if self.max_sequence_length < 2:
             raise ValueError("Evaluation sequence length must be >= 2.")
@@ -86,6 +87,47 @@ class WorldModelEvaluator:
                 self.logger.info(f"Limiting evaluation to {self.config.max_batches} batches based on dataloader length.")
         self.scenarios: List[Tuple[str, bool]] = [("actions", True), ("no_actions", False)]
         self.ground_truth_logged = False
+
+    def _denoising_indices_for_batch(self, batch_idx: int) -> Optional[List[int]]:
+        if batch_idx != 0 or self.config.denoising_metrics_indices is None:
+            return None
+
+        number_steps = self.euler_solver.config.number_steps
+        final_index = number_steps - 1
+        normalized_indices: List[int] = []
+        ignored_indices: List[int] = []
+        remapped_final = False
+
+        for index in self.config.denoising_metrics_indices:
+            if index == number_steps:
+                normalized_indices.append(final_index)
+                remapped_final = True
+            elif 0 <= index <= final_index:
+                normalized_indices.append(index)
+            else:
+                ignored_indices.append(index)
+
+        if (remapped_final or ignored_indices) and not self._denoising_indices_warned:
+            warning_parts = [
+                "denoising_metrics_indices are zero-based solver loop indices",
+                f"valid range is [0, {final_index}] for number_steps={number_steps}",
+            ]
+            if remapped_final:
+                warning_parts.append(f"remapped final requested index {number_steps} to {final_index}")
+            if ignored_indices:
+                warning_parts.append(f"ignored out-of-range indices {ignored_indices}")
+            self.logger.warning("; ".join(warning_parts))
+            self._denoising_indices_warned = True
+
+        normalized_indices = sorted(set(normalized_indices))
+        if not normalized_indices and not self._denoising_indices_warned:
+            self.logger.warning(
+                "No valid denoising metric indices for number_steps=%d; no denoising plots will be logged.",
+                number_steps,
+            )
+            self._denoising_indices_warned = True
+
+        return normalized_indices
 
     def _build_eval_dataset(
         self,
@@ -314,7 +356,7 @@ class WorldModelEvaluator:
                     )
                 
                 # Pass denoising indices only for the very first batch
-                denoising_indices = self.config.denoising_metrics_indices if batch_idx == 0 else None
+                denoising_indices = self._denoising_indices_for_batch(batch_idx)
 
                 predicted_stack, full_sequence, denoising_data = collect_rollout_latents(
                     model,

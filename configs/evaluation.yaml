@@ -1,18 +1,18 @@
 logging:
   project: world_model_evaluation
   entity: null
-  run_name: ur5_800M_0.9
+  run_name: ur5_400M_0.6_signal
   output_dir: "/checkpoints"
   log_interval: 1
   signal_level_log_limit: 100
   checkpoint_interval: 0
 
-checkpoint_path: /gpfs/helios/home/gauthierbernarda/git/World-Model/checkpoints/training_ur5_800M_res/world_model_step_004000.pt
+checkpoint_path: /gpfs/helios/home/gauthierbernarda/git/World-Model/checkpoints/training_ur5_400M_res/world_model_step_013000.pt
 
 evaluator:
   video_sample_indices: all
   rollout_start_frame: 10
-  rollout_signal_level: 0.9
+  rollout_signal_level: 0.6
   precision: bf16
   max_batches: 10
   denoising_metrics_indices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99] # List of diffusion steps to capture intermediates for (first sequence, first frame only)
@@ -46,7 +46,7 @@ eval_dataloader:
   pin_memory: true
 
 signal_scheduler:
-  mode: "logit_normal"  # {"resolution_shift", "linear_shift", "uniform", "logit_normal"}
+  mode: "resolution_shift"  # {"resolution_shift", "linear_shift", "uniform", "logit_normal"}
   min_value: 0.0
   max_value: 1.0
   logit_normal_loc: -0.8
@@ -55,17 +55,17 @@ signal_scheduler:
 euler_solver:
   number_steps: 100
   min_denom: 0.05
-  timestep_schedule: "linear"
+  timestep_schedule: "signal"
 
 world_model:
   input_dim: 768
-  latent_dim: 1536 # 1536, 1024
+  latent_dim: 1024 # 1536, 1024
   bottleneck_dim: null
   action_dim: 14
   num_registers: 4
-  depth: 28 # 28, 24
-  num_heads: 24 # 24, 16
-  mlp_multiplier: 2.666667 # 2.666667, 4
+  depth: 24 # 28, 24
+  num_heads: 16 # 24, 16
+  mlp_multiplier: 4 # 2.666667, 4
   temporal_attention_interval: 4
   temporal_context_length: 40
   rope_base: 10000.0
