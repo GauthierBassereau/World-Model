@@ -95,6 +95,7 @@ class WorldModelLogger:
             import wandb  # type: ignore[attr-defined]
         except ImportError:
             self.info("Weights & Biases not available; skipping logging.")
+            return None
         self._wandb = wandb
         self.wandb_run = wandb.init(
             project=self.cfg.project,

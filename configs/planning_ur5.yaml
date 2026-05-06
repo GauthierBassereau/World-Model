@@ -1,0 +1,100 @@
+logging:
+  project: world_model_planning
+  entity: null
+  run_name: ur5_episode9_goal9s_classic_cem
+  output_dir: planning_outputs
+  log_interval: 1
+  signal_level_log_limit: 100
+  checkpoint_interval: 0
+
+checkpoint_path: /gpfs/helios/home/gauthierbernarda/git/World-Model/checkpoints/training_ur5_400M_res/world_model_step_013000.pt
+
+planning:
+  mode: classic_cem  # classic_cem or mpc_cem
+  episode_index: 7
+  start_time_s: 0.0
+  goal_time_s: 4.0
+  context_frames: 1
+  rollout_signal_level: 0.6
+  precision: bf16
+  compile_model: false
+  max_context_frames: 40
+  output_dir: planning_outputs
+  seed: 1234
+  mpc:
+    steps: null
+    execute_steps: 1
+    shrink_horizon_to_goal: true
+
+cem:
+  # These defaults are light enough for iteration. Increase population/iterations/solver steps for final runs.
+  iterations: 16
+  population_size: 32
+  elite_fraction: 0.25
+  horizon: null  # null means goal_time_s - start_time_s in eval_dataset.fps steps
+  rollout_batch_size: 32
+  initial_delta_std: [0.025, 0.025, 0.025, 0.07, 0.07, 0.07, 10.0]
+  min_delta_std: [0.0025, 0.0025, 0.0025, 0.007, 0.007, 0.007, 1.0]
+  max_delta_abs: [0.08, 0.08, 0.08, 0.25, 0.25, 0.25, 50.0]
+  mean_momentum: 0.1
+  std_momentum: 0.1
+  action_l2_weight: 0.01
+  include_zero_sequence: true
+
+visualization:
+  log_iterations: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+  decode_best_samples: true
+  save_real_video: true
+  save_goal_image: true
+  save_trajectory_plots: true
+  save_planned_video: true
+  fps: 5
+
+eval_dataset:
+  sequence_length_distribution:
+    "85": 1.0
+  fps: 5.0
+  action_dim: 14
+  weights:
+    ur5_fix_eval: 1.0
+  reference_dataset: ur5_fix_eval
+  datasets:
+    ur5_fix_eval:
+      type: lerobot
+      repo_id: Gaugou/ur5_fix_5hz_eval
+      episodes: null
+      excluded_episodes: null
+      episode_startpoint_only: true
+      cameras:
+        observation.images.front: 1.0
+      action_mode: ur5_ee_state_relative_base_ee_normalized
+      independent_frames_probability: 0.0
+      use_action_probability: 1.0
+
+signal_scheduler:
+  mode: "resolution_shift"
+  min_value: 0.0
+  max_value: 1.0
+  logit_normal_loc: -0.8
+  logit_normal_scale: 0.8
+
+euler_solver:
+  number_steps: 10
+  min_denom: 0.05
+  timestep_schedule: "signal"
+
+world_model:
+  input_dim: 768
+  latent_dim: 1024
+  bottleneck_dim: null
+  action_dim: 14
+  num_registers: 4
+  depth: 24
+  num_heads: 16
+  mlp_multiplier: 4
+  temporal_attention_interval: 4
+  temporal_context_length: 40
+  rope_base: 10000.0
+  qk_norm_eps: 1.0e-06
+  attn_logit_softcapping: 50.0
+  use_action_token: true

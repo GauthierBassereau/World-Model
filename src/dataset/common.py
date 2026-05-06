@@ -27,6 +27,55 @@ RESIZE_CROP_TRANSFORM_224 = transforms_v2.Compose(
     ]
 )
 
+UR5_DELTA_BASE_STATS = {
+    "mean": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    "std": [
+        0.018853237852454185,
+        0.014781574718654156,
+        0.016488293185830116,
+        0.04993394762277603,
+        0.05001137778162956,
+        0.06182064861059189,
+        100,
+    ],
+}
+
+UR5_DELTA_LOCAL_STATS = {
+    "mean": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    "std": [
+        0.01841617003083229,
+        0.014865336008369923,
+        0.016895292326807976,
+        0.05121244490146637,
+        0.04898665100336075,
+        0.06159385293722153,
+        100,
+    ],
+}
+
+ACTION_MODE_DELTA_STATS = {
+    "ur5_relative_local_ee_normalized": UR5_DELTA_LOCAL_STATS,
+    "ur5_relative_base_ee_normalized": UR5_DELTA_BASE_STATS,
+    "ur5_ee_state_relative_base_ee_normalized": UR5_DELTA_BASE_STATS,
+}
+
+
+def get_action_delta_stats(action_mode: Optional[str]) -> Optional[Dict[str, List[float]]]:
+    return ACTION_MODE_DELTA_STATS.get(action_mode)
+
+
+def denormalize_actions(
+    actions: torch.Tensor,
+    stats: Optional[Dict] = None,
+) -> torch.Tensor:
+    if stats is not None:
+        mean = torch.as_tensor(stats["mean"], device=actions.device, dtype=actions.dtype)
+        std = torch.as_tensor(stats["std"], device=actions.device, dtype=actions.dtype)
+    else:
+        mean = torch.tensor([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5], device=actions.device, dtype=actions.dtype)
+        std = torch.tensor([0.01, 0.01, 0.01, 0.05, 0.05, 0.05, 0.5], device=actions.device, dtype=actions.dtype)
+    return actions * (std + 1e-8) + mean
+
 def get_delta_timestamps(
     action_mode: Optional[str], 
     fps: float,
@@ -70,23 +119,13 @@ def get_actions(
     if action_mode == "soar_relative_ee_normalized":
         return _normalize_actions(item["action"])
     if action_mode == "ur5_relative_local_ee_normalized":
-        # This is horrible I know. I rewrite the stats manually because I need same norm for both train and eval. And this is the fastest way to do it. Hoping no one reads this.
-        stats = {
-            "mean": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-            "std": [0.01841617003083229, 0.014865336008369923, 0.016895292326807976, 0.05121244490146637, 0.04898665100336075, 0.06159385293722153, 100]
-        }
+        stats = UR5_DELTA_LOCAL_STATS
         return _normalize_actions(item["action.5hz_delta_local"], stats=stats)
     if action_mode == "ur5_relative_base_ee_normalized":
-        stats = {
-            "mean": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-            "std": [0.018853237852454185, 0.014781574718654156, 0.016488293185830116, 0.04993394762277603, 0.05001137778162956, 0.06182064861059189, 100]
-        }
+        stats = UR5_DELTA_BASE_STATS
         return _normalize_actions(item["action.5hz_delta_base"], stats=stats)
     if action_mode == "ur5_ee_state_relative_base_ee_normalized":
-        stats = {
-            "mean": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-            "std": [0.018853237852454185, 0.014781574718654156, 0.016488293185830116, 0.04993394762277603, 0.05001137778162956, 0.06182064861059189, 100]
-        }
+        stats = UR5_DELTA_BASE_STATS
         ee_state = item["observation.state"][..., 6:13].clone()
         # This is to recale the gripper vel from [0, 100] to [-pi, pi]
         ee_state[..., -1] = ee_state[..., -1] / 100.0 * (2 * 3.141592653589793) - 3.141592653589793
