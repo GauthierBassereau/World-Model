@@ -60,6 +60,8 @@ class VisualizationConfig:
     save_real_video: bool = True
     save_goal_image: bool = True
     save_trajectory_plots: bool = True
+    save_trajectory_evolution_gif: bool = True
+    trajectory_gif_fps: int = 2
     save_planned_video: bool = True
     fps: int = 5
 
@@ -75,4 +77,3 @@ class PlanningScriptConfig:
     signal_scheduler: SignalSchedulerConfig = field(default_factory=SignalSchedulerConfig)
     euler_solver: EulerSolverConfig = field(default_factory=EulerSolverConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
-

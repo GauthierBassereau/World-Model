@@ -11,9 +11,12 @@ from src.planning.config import CEMConfig, PlanningConfig, VisualizationConfig
 from src.planning.data import PlanningSample
 from src.planning.visualization import (
     log_wandb_image,
+    log_wandb_line_series,
     log_wandb_metrics,
     log_wandb_video,
+    log_wandb_video_file,
     save_image,
+    save_trajectory_evolution_gif,
     save_trajectory_plot,
     save_video,
 )
@@ -32,6 +35,13 @@ class CEMIterationRecord:
 
 
 @dataclass
+class CEMTrajectorySnapshot:
+    iteration: int
+    best_cost: float
+    planned_positions: torch.Tensor
+
+
+@dataclass
 class CEMResult:
     best_deltas: torch.Tensor
     best_cost: float
@@ -39,6 +49,7 @@ class CEMResult:
     best_action_cost: float
     best_sequence: torch.Tensor
     iteration_records: List[CEMIterationRecord] = field(default_factory=list)
+    trajectory_snapshots: List[CEMTrajectorySnapshot] = field(default_factory=list)
 
 
 @dataclass
@@ -81,7 +92,6 @@ class CEMWorldModelPlanner:
         self.use_autocast = precision == "bf16"
         self.generator = torch.Generator(device=device)
         self.generator.manual_seed(int(planning_cfg.seed))
-        self._wandb_step = 0
 
         mode = planning_cfg.mode.lower()
         if mode not in {"classic_cem", "mpc_cem"}:
@@ -285,6 +295,7 @@ class CEMWorldModelPlanner:
         best_latent_cost = float("inf")
         best_action_cost = float("inf")
         records: List[CEMIterationRecord] = []
+        trajectory_snapshots: List[CEMTrajectorySnapshot] = []
 
         for iteration in range(self.cem_cfg.iterations):
             samples = self._sample_population(mean, std, max_abs)
@@ -316,6 +327,17 @@ class CEMWorldModelPlanner:
                 best_action_cost = iteration_action_cost
                 best_deltas = samples[iteration_best_idx].detach().clone()
                 best_sequence = iteration_best_sequence.detach().clone()
+
+            if best_deltas is not None:
+                best_positions = self._planned_positions(initial_state, best_deltas)
+                if best_positions is not None:
+                    trajectory_snapshots.append(
+                        CEMTrajectorySnapshot(
+                            iteration=iteration,
+                            best_cost=best_cost,
+                            planned_positions=best_positions,
+                        )
+                    )
 
             record = CEMIterationRecord(
                 iteration=iteration,
@@ -364,9 +386,26 @@ class CEMWorldModelPlanner:
             best_action_cost = float(mean_action_costs[0].item())
             best_deltas = mean.detach().clone()
             best_sequence = mean_sequence.detach().clone()
+            best_positions = self._planned_positions(initial_state, best_deltas)
+            if best_positions is not None:
+                trajectory_snapshots.append(
+                    CEMTrajectorySnapshot(
+                        iteration=self.cem_cfg.iterations,
+                        best_cost=best_cost,
+                        planned_positions=best_positions,
+                    )
+                )
 
         if best_deltas is None or best_sequence is None:
             raise RuntimeError("CEM did not produce a valid candidate.")
+
+        self._log_cem_summary_graphs(name, records)
+        self._save_trajectory_evolution_artifact(
+            output_dir=output_dir,
+            name=name,
+            snapshots=trajectory_snapshots,
+            reference_positions=reference_positions,
+        )
 
         return CEMResult(
             best_deltas=best_deltas,
@@ -375,6 +414,7 @@ class CEMWorldModelPlanner:
             best_action_cost=best_action_cost,
             best_sequence=best_sequence,
             iteration_records=records,
+            trajectory_snapshots=trajectory_snapshots,
         )
 
     def _evaluate_population(
@@ -554,15 +594,14 @@ class CEMWorldModelPlanner:
             if saved is not None:
                 log_wandb_video(
                     self.logger,
-                    "planning/reference/real_video_start_to_goal",
+                    "videos/reference/real_video_start_to_goal",
                     sample.real_video_frames,
                     self.visualization_cfg.fps,
-                    step=self._next_wandb_step(),
                 )
         if self.visualization_cfg.save_goal_image:
             path = output_dir / "goal_image.png"
             save_image(sample.goal_image, path)
-            log_wandb_image(self.logger, "planning/reference/goal_image", path, step=self._next_wandb_step())
+            log_wandb_image(self.logger, "videos/reference/goal_image", path)
 
     def _save_iteration_artifacts(
         self,
@@ -582,10 +621,9 @@ class CEMWorldModelPlanner:
             if saved is not None:
                 log_wandb_video(
                     self.logger,
-                    f"planning/{name}/iteration_{iteration:03d}/best_decoded_rollout",
+                    f"videos/{name}/iteration_{iteration:03d}/best_decoded_rollout",
                     decoded,
                     self.visualization_cfg.fps,
-                    step=self._next_wandb_step(),
                 )
         if self.visualization_cfg.save_trajectory_plots and planned_positions is not None:
             plot_path = save_trajectory_plot(
@@ -596,9 +634,8 @@ class CEMWorldModelPlanner:
             )
             log_wandb_image(
                 self.logger,
-                f"planning/{name}/iteration_{iteration:03d}/ee_trajectory",
+                f"trajectories/{name}/iteration_{iteration:03d}/ee_trajectory",
                 plot_path,
-                step=self._next_wandb_step(),
             )
 
     def _save_final_artifacts(
@@ -618,10 +655,9 @@ class CEMWorldModelPlanner:
             if saved is not None:
                 log_wandb_video(
                     self.logger,
-                    f"planning/{prefix}/final/planned_decoded_rollout",
+                    f"videos/{prefix}/final/planned_decoded_rollout",
                     decoded,
                     self.visualization_cfg.fps,
-                    step=self._next_wandb_step(),
                 )
         if self.visualization_cfg.save_trajectory_plots and planned_positions is not None:
             plot_path = save_trajectory_plot(
@@ -632,23 +668,94 @@ class CEMWorldModelPlanner:
             )
             log_wandb_image(
                 self.logger,
-                f"planning/{prefix}/final/ee_trajectory",
+                f"trajectories/{prefix}/final/ee_trajectory",
                 plot_path,
-                step=self._next_wandb_step(),
             )
 
-    def _log_iteration_metrics(self, name: str, record: CEMIterationRecord) -> None:
-        payload: Dict[str, float] = {
-            f"planning/{name}/best_cost": record.best_cost,
-            f"planning/{name}/best_latent_cost": record.best_latent_cost,
-            f"planning/{name}/best_action_cost": record.best_action_cost,
-            f"planning/{name}/mean_elite_cost": record.mean_elite_cost,
-            f"planning/{name}/std_mean": record.std_mean,
-            f"planning/{name}/iteration": float(record.iteration),
-        }
-        log_wandb_metrics(self.logger, payload, step=self._next_wandb_step())
+    def _save_trajectory_evolution_artifact(
+        self,
+        *,
+        output_dir: Path,
+        name: str,
+        snapshots: List[CEMTrajectorySnapshot],
+        reference_positions: Optional[torch.Tensor],
+    ) -> None:
+        if not self.visualization_cfg.save_trajectory_evolution_gif or not snapshots:
+            return
 
-    def _next_wandb_step(self) -> int:
-        step = self._wandb_step
-        self._wandb_step += 1
-        return step
+        gif_path = output_dir / name / "trajectory_evolution.gif"
+        save_trajectory_evolution_gif(
+            snapshots=[
+                (snapshot.iteration, snapshot.best_cost, snapshot.planned_positions)
+                for snapshot in snapshots
+            ],
+            reference_positions=reference_positions,
+            path=gif_path,
+            title=f"Best Trajectory Evolution ({name})",
+            fps=self.visualization_cfg.trajectory_gif_fps,
+        )
+        log_wandb_video_file(
+            self.logger,
+            f"trajectories/{name}/trajectory_evolution",
+            gif_path,
+            fmt="gif",
+        )
+
+    def _log_iteration_metrics(self, name: str, record: CEMIterationRecord) -> None:
+        self._ensure_wandb_graph_metrics(name)
+        iteration_key = f"graphs/{name}/cem_iteration"
+        payload: Dict[str, float] = {
+            iteration_key: float(record.iteration),
+            f"graphs/{name}/cost/best_total": record.best_cost,
+            f"graphs/{name}/cost/best_latent": record.best_latent_cost,
+            f"graphs/{name}/cost/best_action": record.best_action_cost,
+            f"graphs/{name}/cost/elite_mean": record.mean_elite_cost,
+            f"graphs/{name}/distribution/std_mean": record.std_mean,
+        }
+        log_wandb_metrics(self.logger, payload)
+
+    def _log_cem_summary_graphs(self, name: str, records: List[CEMIterationRecord]) -> None:
+        if not records:
+            return
+
+        xs = [record.iteration for record in records]
+        log_wandb_line_series(
+            self.logger,
+            f"graphs/{name}/cost_curve",
+            xs=xs,
+            ys=[
+                [record.best_cost for record in records],
+                [record.best_latent_cost for record in records],
+                [record.best_action_cost for record in records],
+                [record.mean_elite_cost for record in records],
+            ],
+            labels=["best_total", "best_latent", "best_action", "elite_mean"],
+            title=f"CEM Costs ({name})",
+            xname="iteration",
+        )
+        log_wandb_line_series(
+            self.logger,
+            f"graphs/{name}/distribution_curve",
+            xs=xs,
+            ys=[[record.std_mean for record in records]],
+            labels=["std_mean"],
+            title=f"CEM Distribution ({name})",
+            xname="iteration",
+        )
+
+    def _ensure_wandb_graph_metrics(self, name: str) -> None:
+        if self.logger.wandb_run is None:
+            return
+        defined = getattr(self, "_defined_wandb_graph_metrics", set())
+        if name in defined:
+            return
+
+        iteration_key = f"graphs/{name}/cem_iteration"
+        try:
+            self.logger.wandb_run.define_metric(iteration_key)
+            self.logger.wandb_run.define_metric(f"graphs/{name}/cost/*", step_metric=iteration_key)
+            self.logger.wandb_run.define_metric(f"graphs/{name}/distribution/*", step_metric=iteration_key)
+        except Exception:
+            pass
+        defined.add(name)
+        self._defined_wandb_graph_metrics = defined

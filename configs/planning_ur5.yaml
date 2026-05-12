@@ -28,25 +28,27 @@ planning:
 
 cem:
   # These defaults are light enough for iteration. Increase population/iterations/solver steps for final runs.
-  iterations: 16
-  population_size: 32
-  elite_fraction: 0.25
-  horizon: null  # null means goal_time_s - start_time_s in eval_dataset.fps steps
-  rollout_batch_size: 32
+  iterations: 17
+  population_size: 64
+  elite_fraction: 0.1
+  horizon: 10  # null means goal_time_s - start_time_s in eval_dataset.fps steps
+  rollout_batch_size: 64
   initial_delta_std: [0.025, 0.025, 0.025, 0.07, 0.07, 0.07, 10.0]
   min_delta_std: [0.0025, 0.0025, 0.0025, 0.007, 0.007, 0.007, 1.0]
   max_delta_abs: [0.08, 0.08, 0.08, 0.25, 0.25, 0.25, 50.0]
   mean_momentum: 0.1
   std_momentum: 0.1
-  action_l2_weight: 0.01
+  action_l2_weight: 0.1
   include_zero_sequence: true
 
 visualization:
-  log_iterations: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+  log_iterations: [5, 10, 15]
   decode_best_samples: true
   save_real_video: true
   save_goal_image: true
   save_trajectory_plots: true
+  save_trajectory_evolution_gif: true
+  trajectory_gif_fps: 2
   save_planned_video: true
   fps: 5
 

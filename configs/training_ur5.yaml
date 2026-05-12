@@ -1,7 +1,7 @@
 logging:
   project: world_model
   entity: null
-  run_name: training_ur5_400M_res
+  run_name: training_ur5_400M_res_short
   output_dir: checkpoints
   log_interval: 1
   signal_level_log_limit: 100
@@ -16,8 +16,8 @@ trainer:
   grad_accum_steps: 8
   precision: bf16
   seed: 10
-  resume: true # true
-  load_checkpoint: checkpoints/training_ur5_400M_res/world_model_step_004000.pt # /gpfs/helios/home/gauthierbernarda/git/World-Model/checkpoints/training_ur5_400M_res/world_model_step_002000.pt
+  resume: false # true
+  load_checkpoint: null # /gpfs/helios/home/gauthierbernarda/git/World-Model/checkpoints/training_ur5_400M_res/world_model_step_002000.pt
 
 evaluator:
   video_sample_indices: all # null -> no videos, all -> all videos, [1, 2, 3] -> specific indices
@@ -49,7 +49,7 @@ train_dataloader:
 
 train_dataset:
   sequence_length_distribution:
-    "60": 1.0
+    "24": 1.0
   fps: 5.0
   action_dim: 14
   weights:
@@ -167,7 +167,7 @@ world_model:
   num_heads: 16 # 24, 16
   mlp_multiplier: 4 # 2.666667, 4
   temporal_attention_interval: 4
-  temporal_context_length: 40
+  temporal_context_length: 16
   rope_base: 10000.0
   qk_norm_eps: 1.0e-06
   attn_logit_softcapping: 50.0 # None for no softcapping -> able to use fused_attention
