@@ -12,11 +12,11 @@ checkpoint_path: /gpfs/helios/home/gauthierbernarda/git/World-Model/checkpoints/
 evaluator:
   video_sample_indices: all
   rollout_start_frame: 10
+  rollout_horizons: [1, 5, 10, 20]
   rollout_signal_level: 0.6
+  teacher_forced_batch_size: 64
   precision: bf16
   max_batches: 10
-  denoising_metrics_indices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99] # List of diffusion steps to capture intermediates for (first sequence, first frame only)
-  save_denoising_frames: false
 
 eval_dataset:
   sequence_length_distribution:

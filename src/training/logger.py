@@ -277,9 +277,8 @@ class WorldModelLogger:
             summary_keys = sorted(
                 key
                 for key in result.metrics.keys()
-                if key.startswith("evaluation/l1_loss/")
-                or key.startswith("evaluation/l2_loss/")
-                or key.startswith("evaluation/var/")
+                if key.startswith("evaluation/teacher_forced/")
+                or key.startswith("evaluation/rollout/")
             )
             summary_parts = [f"{key}={result.metrics[key]:.5f}" for key in summary_keys]
             if summary_parts:
@@ -301,7 +300,7 @@ class WorldModelLogger:
                 self.wandb_run.log(video_payload, step=self.current_step)
         
         if self.wandb_run is not None and hasattr(result, "plots") and result.plots:
-            plot_payload = {}
+            plot_payload: Dict[str, Any] = {"evaluation_step": self.current_step}
             for key, plot_data in result.plots.items():
                 if self._wandb is None:
                     continue
@@ -313,7 +312,7 @@ class WorldModelLogger:
                     title=plot_data["title"],
                     xname=plot_data.get("xname", "diffusion_step")
                 )
-            if plot_payload:
+            if len(plot_payload) > 1:
                 self.wandb_run.log(plot_payload, step=self.current_step)
 
     def _video_from_frames(self, frames: torch.Tensor) -> np.ndarray:

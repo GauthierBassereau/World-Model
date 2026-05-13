@@ -1,7 +1,7 @@
 logging:
   project: world_model
   entity: null
-  run_name: training_ur5_400M_res_short
+  run_name: training_ur5_400M_logit_short
   output_dir: checkpoints
   log_interval: 1
   signal_level_log_limit: 100
@@ -13,20 +13,20 @@ trainer:
   loss_weighting_intercept: 0.1
   loss_weighting_slope: 0.9
   evaluation_interval: 500
-  grad_accum_steps: 8
+  grad_accum_steps: 4
   precision: bf16
   seed: 10
   resume: false # true
-  load_checkpoint: null # /gpfs/helios/home/gauthierbernarda/git/World-Model/checkpoints/training_ur5_400M_res/world_model_step_002000.pt
+  load_checkpoint: null # /gpfs/helios/home/gauthierbernarda/git/World-Model/checkpoints/training_ur5_400M_res_short/world_model_step_007000.pt
 
 evaluator:
-  video_sample_indices: all # null -> no videos, all -> all videos, [1, 2, 3] -> specific indices
+  video_sample_indices: all
   rollout_start_frame: 10
+  rollout_horizons: [1, 5, 10, 20]
   rollout_signal_level: 0.8
+  teacher_forced_batch_size: 64
   precision: bf16
   max_batches: 10
-  denoising_metrics_indices: [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 49, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 99]
-  save_denoising_frames: false
 
 optimizer:
   lr:
@@ -49,7 +49,7 @@ train_dataloader:
 
 train_dataset:
   sequence_length_distribution:
-    "24": 1.0
+    "16": 1.0
   fps: 5.0
   action_dim: 14
   weights:
@@ -146,7 +146,7 @@ eval_dataset:
       use_action_probability: 1.0
 
 signal_scheduler:
-  mode: "resolution_shift"  # {"resolution_shift", "linear_shift", "uniform", "logit_normal"}
+  mode: "logit_normal"  # {"resolution_shift", "linear_shift", "uniform", "logit_normal"}
   min_value: 0.0
   max_value: 1.0
   logit_normal_loc: -0.8
