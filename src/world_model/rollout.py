@@ -6,9 +6,17 @@ import torch.nn as nn
 from src.diffusion.euler_solver import EulerSolver
 
 
-def _apply_noise(clean_latents: torch.Tensor, signal_level: float) -> torch.Tensor:
+def _apply_rollout_signal(
+    clean_latents: torch.Tensor,
+    signal_level: float,
+    add_noise: bool,
+) -> torch.Tensor:
+    if not add_noise:
+        return signal_level * clean_latents
+
     noise = torch.randn_like(clean_latents)
     return signal_level * clean_latents + (1.0 - signal_level) * noise
+
 
 def rollout_latents(
     model: nn.Module,
@@ -22,6 +30,7 @@ def rollout_latents(
     independent_frames: Optional[torch.Tensor] = None,
     target_latents: Optional[torch.Tensor] = None,
     denoising_metrics_indices: Optional[List[int]] = None,
+    rollout_add_noise: bool = True,
 ):
     batch_size, _, tokens, dim = latents.shape
     device = latents.device
@@ -75,7 +84,11 @@ def rollout_latents(
         yield t, clean_frame, step_denoising_data
         
         if t < future_len - 1:
-            noisy_next_input = _apply_noise(clean_frame, rollout_signal_level)
+            noisy_next_input = _apply_rollout_signal(
+                clean_frame,
+                rollout_signal_level,
+                rollout_add_noise,
+            )
             signal = torch.full((batch_size, 1), rollout_signal_level, device=device)
             
             with torch.no_grad():
@@ -102,6 +115,7 @@ def collect_rollout_latents(
     independent_frames: Optional[torch.Tensor] = None,
     target_latents: Optional[torch.Tensor] = None,
     denoising_metrics_indices: Optional[List[int]] = None,
+    rollout_add_noise: bool = True,
 ) -> Tuple[torch.Tensor, torch.Tensor, Dict[int, Dict[str, Any]]]:
     predicted_frames = []
     denoising_data_all = {}
@@ -118,6 +132,7 @@ def collect_rollout_latents(
         independent_frames,
         target_latents,
         denoising_metrics_indices,
+        rollout_add_noise=rollout_add_noise,
     ):
         predicted_frames.append(clean_frame)
         if step_denoising_data:

@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 
 from src.diffusion.euler_solver import EulerSolver
@@ -16,6 +17,7 @@ from src.planning.visualization import (
     log_wandb_video,
     log_wandb_video_file,
     save_image,
+    save_line_plot,
     save_trajectory_evolution_gif,
     save_trajectory_plot,
     save_video,
@@ -32,6 +34,15 @@ class CEMIterationRecord:
     best_action_cost: float
     mean_elite_cost: float
     std_mean: float
+    translation_distance: Optional[float] = None
+    translation_x_abs: Optional[float] = None
+    translation_y_abs: Optional[float] = None
+    translation_z_abs: Optional[float] = None
+    rotation_distance: Optional[float] = None
+    rotation_x_abs: Optional[float] = None
+    rotation_y_abs: Optional[float] = None
+    rotation_z_abs: Optional[float] = None
+    gripper_abs: Optional[float] = None
 
 
 @dataclass
@@ -74,6 +85,8 @@ class CEMWorldModelPlanner:
         action_builder: ActionTokenBuilder,
         logger: WorldModelLogger,
         device: torch.device,
+        rank: int = 0,
+        world_size: int = 1,
     ) -> None:
         self.planning_cfg = planning_cfg
         self.cem_cfg = cem_cfg
@@ -84,6 +97,10 @@ class CEMWorldModelPlanner:
         self.action_builder = action_builder
         self.logger = logger
         self.device = device
+        self.rank = rank
+        self.world_size = world_size
+        self.is_main_process = rank == 0
+        self.distributed = world_size > 1 and dist.is_available() and dist.is_initialized()
         self.delta_dim = action_builder.delta_dim
         precision = planning_cfg.precision.lower()
         if precision not in {"bf16", "fp32", "float32"}:
@@ -115,6 +132,12 @@ class CEMWorldModelPlanner:
         initial_state = None
         if sample.initial_ee_state is not None:
             initial_state = sample.initial_ee_state.to(self.device, non_blocking=True).float()
+        initial_ee_pose = None
+        if sample.initial_ee_pose is not None:
+            initial_ee_pose = sample.initial_ee_pose.to(self.device, non_blocking=True).float()
+        goal_ee_pose = None
+        if sample.goal_ee_pose is not None:
+            goal_ee_pose = sample.goal_ee_pose.to(self.device, non_blocking=True).float()
 
         if self.planning_cfg.mode.lower() == "classic_cem":
             return self._run_classic(
@@ -124,6 +147,8 @@ class CEMWorldModelPlanner:
                 context_actions=context_actions,
                 context_use_actions=context_use_actions,
                 initial_state=initial_state,
+                initial_ee_pose=initial_ee_pose,
+                goal_ee_pose=goal_ee_pose,
                 goal_latent=goal_latent,
             )
         return self._run_mpc(
@@ -133,6 +158,8 @@ class CEMWorldModelPlanner:
             context_actions=context_actions,
             context_use_actions=context_use_actions,
             initial_state=initial_state,
+            initial_ee_pose=initial_ee_pose,
+            goal_ee_pose=goal_ee_pose,
             goal_latent=goal_latent,
         )
 
@@ -145,6 +172,8 @@ class CEMWorldModelPlanner:
         context_actions: torch.Tensor,
         context_use_actions: torch.Tensor,
         initial_state: Optional[torch.Tensor],
+        initial_ee_pose: Optional[torch.Tensor],
+        goal_ee_pose: Optional[torch.Tensor],
         goal_latent: torch.Tensor,
     ) -> PlanningResult:
         result = self._optimize_once(
@@ -154,12 +183,14 @@ class CEMWorldModelPlanner:
             context_actions=context_actions,
             context_use_actions=context_use_actions,
             initial_state=initial_state,
+            initial_ee_pose=initial_ee_pose,
+            goal_ee_pose=goal_ee_pose,
             goal_latent=goal_latent,
             horizon=sample.horizon,
             reference_positions=sample.reference_ee_positions,
         )
 
-        planned_positions = self._planned_positions(initial_state, result.best_deltas)
+        planned_positions = self._planned_positions(initial_ee_pose, result.best_deltas)
         self._save_final_artifacts(
             output_dir=output_dir,
             prefix="classic",
@@ -184,6 +215,8 @@ class CEMWorldModelPlanner:
         context_actions: torch.Tensor,
         context_use_actions: torch.Tensor,
         initial_state: Optional[torch.Tensor],
+        initial_ee_pose: Optional[torch.Tensor],
+        goal_ee_pose: Optional[torch.Tensor],
         goal_latent: torch.Tensor,
     ) -> PlanningResult:
         if initial_state is None and self.action_builder.has_state_token:
@@ -193,6 +226,7 @@ class CEMWorldModelPlanner:
         execute_steps = max(1, int(self.planning_cfg.mpc.execute_steps))
         executed = 0
         current_state = initial_state
+        current_ee_pose = initial_ee_pose
         rolling_latents = context_latents
         rolling_actions = context_actions
         rolling_use_actions = context_use_actions
@@ -214,6 +248,8 @@ class CEMWorldModelPlanner:
                 context_actions=rolling_actions,
                 context_use_actions=rolling_use_actions,
                 initial_state=current_state,
+                initial_ee_pose=current_ee_pose,
+                goal_ee_pose=goal_ee_pose,
                 goal_latent=goal_latent,
                 horizon=horizon,
                 reference_positions=sample.reference_ee_positions,
@@ -228,6 +264,8 @@ class CEMWorldModelPlanner:
                 context_use_actions=rolling_use_actions,
                 future_tokens=chosen_tokens,
             )
+            if self.distributed:
+                dist.broadcast(predicted_stack, src=0)
 
             predicted_chunks.append(predicted_stack)
             executed_delta_chunks.append(chosen_deltas)
@@ -235,6 +273,12 @@ class CEMWorldModelPlanner:
                 states = self.action_builder.integrate_states(current_state, chosen_deltas.unsqueeze(0))
                 assert states is not None
                 current_state = states[0, -1].detach()
+            trajectory_poses = self.action_builder.integrate_trajectory_poses(
+                current_ee_pose,
+                chosen_deltas.unsqueeze(0),
+            )
+            if trajectory_poses is not None:
+                current_ee_pose = trajectory_poses[0, -1].detach()
 
             rolling_latents = torch.cat([rolling_latents, predicted_stack], dim=1)
             rolling_actions = torch.cat([rolling_actions, chosen_tokens], dim=1)
@@ -251,9 +295,7 @@ class CEMWorldModelPlanner:
         executed_deltas = torch.cat(executed_delta_chunks, dim=0) if executed_delta_chunks else torch.empty(0, self.delta_dim)
         future_latents = torch.cat(predicted_chunks, dim=1) if predicted_chunks else torch.empty_like(context_latents[:, :0])
         final_sequence = torch.cat([initial_context, future_latents], dim=1)
-        planned_positions = self._planned_positions(initial_state, executed_deltas)
-        if self.action_builder.has_state_token and sample.initial_ee_state is not None:
-            planned_positions = self._planned_positions(sample.initial_ee_state.to(self.device).float(), executed_deltas)
+        planned_positions = self._planned_positions(initial_ee_pose, executed_deltas)
 
         self._save_final_artifacts(
             output_dir=output_dir,
@@ -279,6 +321,8 @@ class CEMWorldModelPlanner:
         context_actions: torch.Tensor,
         context_use_actions: torch.Tensor,
         initial_state: Optional[torch.Tensor],
+        initial_ee_pose: Optional[torch.Tensor],
+        goal_ee_pose: Optional[torch.Tensor],
         goal_latent: torch.Tensor,
         horizon: int,
         reference_positions: Optional[torch.Tensor],
@@ -328,9 +372,12 @@ class CEMWorldModelPlanner:
                 best_deltas = samples[iteration_best_idx].detach().clone()
                 best_sequence = iteration_best_sequence.detach().clone()
 
+            pose_error_metrics: Dict[str, float] = {}
             if best_deltas is not None:
-                best_positions = self._planned_positions(initial_state, best_deltas)
-                if best_positions is not None:
+                best_poses = self._planned_poses(initial_ee_pose, best_deltas)
+                if best_poses is not None:
+                    best_positions = best_poses[:, :3].detach().cpu()
+                    pose_error_metrics = self._pose_error_metrics(best_poses, goal_ee_pose)
                     trajectory_snapshots.append(
                         CEMTrajectorySnapshot(
                             iteration=iteration,
@@ -346,6 +393,15 @@ class CEMWorldModelPlanner:
                 best_action_cost=iteration_action_cost,
                 mean_elite_cost=float(elite.values.mean().item()),
                 std_mean=float(std.mean().item()),
+                translation_distance=pose_error_metrics.get("translation_distance"),
+                translation_x_abs=pose_error_metrics.get("translation_x_abs"),
+                translation_y_abs=pose_error_metrics.get("translation_y_abs"),
+                translation_z_abs=pose_error_metrics.get("translation_z_abs"),
+                rotation_distance=pose_error_metrics.get("rotation_distance"),
+                rotation_x_abs=pose_error_metrics.get("rotation_x_abs"),
+                rotation_y_abs=pose_error_metrics.get("rotation_y_abs"),
+                rotation_z_abs=pose_error_metrics.get("rotation_z_abs"),
+                gripper_abs=pose_error_metrics.get("gripper_abs"),
             )
             records.append(record)
             self._log_iteration_metrics(name, record)
@@ -360,7 +416,8 @@ class CEMWorldModelPlanner:
             )
 
             if iteration in self.visualization_cfg.log_iterations:
-                planned_positions = self._planned_positions(initial_state, samples[iteration_best_idx])
+                iteration_poses = self._planned_poses(initial_ee_pose, samples[iteration_best_idx])
+                planned_positions = iteration_poses[:, :3].detach().cpu() if iteration_poses is not None else None
                 self._save_iteration_artifacts(
                     output_dir=output_dir,
                     name=name,
@@ -386,20 +443,20 @@ class CEMWorldModelPlanner:
             best_action_cost = float(mean_action_costs[0].item())
             best_deltas = mean.detach().clone()
             best_sequence = mean_sequence.detach().clone()
-            best_positions = self._planned_positions(initial_state, best_deltas)
-            if best_positions is not None:
+            best_poses = self._planned_poses(initial_ee_pose, best_deltas)
+            if best_poses is not None:
                 trajectory_snapshots.append(
                     CEMTrajectorySnapshot(
                         iteration=self.cem_cfg.iterations,
                         best_cost=best_cost,
-                        planned_positions=best_positions,
+                        planned_positions=best_poses[:, :3].detach().cpu(),
                     )
                 )
 
         if best_deltas is None or best_sequence is None:
             raise RuntimeError("CEM did not produce a valid candidate.")
 
-        self._log_cem_summary_graphs(name, records)
+        self._log_cem_summary_graphs(name, records, output_dir)
         self._save_trajectory_evolution_artifact(
             output_dir=output_dir,
             name=name,
@@ -430,6 +487,55 @@ class CEMWorldModelPlanner:
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         deltas = deltas.to(device=self.device, dtype=torch.float32)
         population = deltas.shape[0]
+        shard_start, shard_end = self._shard_bounds(population, self.rank)
+        local_deltas = deltas[shard_start:shard_end]
+
+        local_costs, local_latent_costs, local_action_costs, local_best_sequence = self._evaluate_local_population(
+            deltas=local_deltas,
+            context_latents=context_latents,
+            context_actions=context_actions,
+            context_use_actions=context_use_actions,
+            initial_state=initial_state,
+            goal_latent=goal_latent,
+            return_best_sequence=return_best_sequence and not self.distributed,
+        )
+
+        all_costs, all_latent_costs, all_action_costs = self._gather_population_costs(
+            local_costs=local_costs,
+            local_latent_costs=local_latent_costs,
+            local_action_costs=local_action_costs,
+            population=population,
+        )
+
+        if not return_best_sequence:
+            return all_costs, all_latent_costs, all_action_costs, torch.empty(0, device=self.device)
+
+        if not self.distributed:
+            return all_costs, all_latent_costs, all_action_costs, local_best_sequence
+
+        best_sequence = torch.empty(0, device=self.device)
+        if self.is_main_process:
+            best_idx = int(torch.argmin(all_costs).item())
+            _, best_sequence = self._rollout_candidate_sequence(
+                deltas=deltas[best_idx : best_idx + 1],
+                context_latents=context_latents,
+                context_actions=context_actions,
+                context_use_actions=context_use_actions,
+                initial_state=initial_state,
+            )
+        return all_costs, all_latent_costs, all_action_costs, best_sequence
+
+    def _evaluate_local_population(
+        self,
+        *,
+        deltas: torch.Tensor,
+        context_latents: torch.Tensor,
+        context_actions: torch.Tensor,
+        context_use_actions: torch.Tensor,
+        initial_state: Optional[torch.Tensor],
+        goal_latent: torch.Tensor,
+        return_best_sequence: bool,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         costs: List[torch.Tensor] = []
         latent_costs: List[torch.Tensor] = []
         action_costs: List[torch.Tensor] = []
@@ -437,8 +543,8 @@ class CEMWorldModelPlanner:
         best_sequence: Optional[torch.Tensor] = None
         batch_size = max(1, int(self.cem_cfg.rollout_batch_size))
 
-        for start in range(0, population, batch_size):
-            end = min(start + batch_size, population)
+        for start in range(0, deltas.shape[0], batch_size):
+            end = min(start + batch_size, deltas.shape[0])
             chunk_deltas = deltas[start:end]
             future_tokens = self.action_builder.build_future_tokens(chunk_deltas, initial_state)
             predicted_stack, full_sequence = self._rollout_tokens(
@@ -464,12 +570,77 @@ class CEMWorldModelPlanner:
                     best_cost = local_cost
                     best_sequence = full_sequence[local_idx : local_idx + 1].detach()
 
-        all_costs = torch.cat(costs, dim=0)
-        all_latent_costs = torch.cat(latent_costs, dim=0)
-        all_action_costs = torch.cat(action_costs, dim=0)
+        if costs:
+            all_costs = torch.cat(costs, dim=0)
+            all_latent_costs = torch.cat(latent_costs, dim=0)
+            all_action_costs = torch.cat(action_costs, dim=0)
+        else:
+            all_costs = torch.empty(0, device=self.device, dtype=torch.float32)
+            all_latent_costs = torch.empty(0, device=self.device, dtype=torch.float32)
+            all_action_costs = torch.empty(0, device=self.device, dtype=torch.float32)
         if best_sequence is None:
             best_sequence = torch.empty(0, device=self.device)
         return all_costs, all_latent_costs, all_action_costs, best_sequence
+
+    def _gather_population_costs(
+        self,
+        *,
+        local_costs: torch.Tensor,
+        local_latent_costs: torch.Tensor,
+        local_action_costs: torch.Tensor,
+        population: int,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if not self.distributed:
+            return local_costs, local_latent_costs, local_action_costs
+
+        max_shard_size = (population + self.world_size - 1) // self.world_size
+        padded = torch.full((3, max_shard_size), float("inf"), device=self.device, dtype=torch.float32)
+        local_count = local_costs.numel()
+        if local_count > 0:
+            padded[0, :local_count] = local_costs
+            padded[1, :local_count] = local_latent_costs
+            padded[2, :local_count] = local_action_costs
+
+        gathered = [torch.empty_like(padded) for _ in range(self.world_size)]
+        dist.all_gather(gathered, padded)
+
+        cost_parts = []
+        latent_parts = []
+        action_parts = []
+        for rank, shard in enumerate(gathered):
+            start, end = self._shard_bounds(population, rank)
+            count = end - start
+            if count <= 0:
+                continue
+            cost_parts.append(shard[0, :count])
+            latent_parts.append(shard[1, :count])
+            action_parts.append(shard[2, :count])
+
+        return torch.cat(cost_parts), torch.cat(latent_parts), torch.cat(action_parts)
+
+    def _rollout_candidate_sequence(
+        self,
+        *,
+        deltas: torch.Tensor,
+        context_latents: torch.Tensor,
+        context_actions: torch.Tensor,
+        context_use_actions: torch.Tensor,
+        initial_state: Optional[torch.Tensor],
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        future_tokens = self.action_builder.build_future_tokens(deltas, initial_state)
+        return self._rollout_tokens(
+            context_latents=context_latents,
+            context_actions=context_actions,
+            context_use_actions=context_use_actions,
+            future_tokens=future_tokens,
+        )
+
+    def _shard_bounds(self, total: int, rank: int) -> Tuple[int, int]:
+        base = total // self.world_size
+        remainder = total % self.world_size
+        start = rank * base + min(rank, remainder)
+        count = base + (1 if rank < remainder else 0)
+        return start, start + count
 
     def _rollout_tokens(
         self,
@@ -526,15 +697,53 @@ class CEMWorldModelPlanner:
 
     def _planned_positions(
         self,
-        initial_state: Optional[torch.Tensor],
+        initial_ee_pose: Optional[torch.Tensor],
         deltas: torch.Tensor,
     ) -> Optional[torch.Tensor]:
-        if not self.action_builder.has_state_token:
+        planned_poses = self._planned_poses(initial_ee_pose, deltas)
+        if planned_poses is None:
             return None
-        states = self.action_builder.integrate_states(initial_state, deltas.unsqueeze(0))
-        if states is None:
+        return planned_poses[:, :3].detach().cpu()
+
+    def _planned_poses(
+        self,
+        initial_ee_pose: Optional[torch.Tensor],
+        deltas: torch.Tensor,
+    ) -> Optional[torch.Tensor]:
+        poses = self.action_builder.integrate_trajectory_poses(initial_ee_pose, deltas.unsqueeze(0))
+        if poses is None:
             return None
-        return states[0, :, :3].detach().cpu()
+        return poses[0].detach()
+
+    def _pose_error_metrics(
+        self,
+        planned_poses: Optional[torch.Tensor],
+        goal_ee_pose: Optional[torch.Tensor],
+    ) -> Dict[str, float]:
+        if planned_poses is None or goal_ee_pose is None or planned_poses.numel() == 0:
+            return {}
+
+        final_pose = planned_poses[-1].to(device=self.device, dtype=torch.float32)
+        goal_pose = goal_ee_pose.to(device=self.device, dtype=torch.float32)
+        translation_delta = final_pose[:3] - goal_pose[:3]
+        rotation_axis_delta = final_pose[3:6] - goal_pose[3:6]
+        rotation_distance = self.action_builder.rotation_geodesic_distance(
+            final_pose[3:6].unsqueeze(0),
+            goal_pose[3:6].unsqueeze(0),
+        )[0]
+        gripper_delta = final_pose[6] - goal_pose[6]
+
+        return {
+            "translation_distance": float(torch.linalg.vector_norm(translation_delta).item()),
+            "translation_x_abs": float(translation_delta[0].abs().item()),
+            "translation_y_abs": float(translation_delta[1].abs().item()),
+            "translation_z_abs": float(translation_delta[2].abs().item()),
+            "rotation_distance": float(rotation_distance.item()),
+            "rotation_x_abs": float(rotation_axis_delta[0].abs().item()),
+            "rotation_y_abs": float(rotation_axis_delta[1].abs().item()),
+            "rotation_z_abs": float(rotation_axis_delta[2].abs().item()),
+            "gripper_abs": float(gripper_delta.abs().item()),
+        }
 
     def _config_vector(self, values: List[float], name: str) -> torch.Tensor:
         tensor = torch.tensor(values, device=self.device, dtype=torch.float32)
@@ -588,6 +797,8 @@ class CEMWorldModelPlanner:
         return output_dir
 
     def _save_static_artifacts(self, sample: PlanningSample, output_dir: Path) -> None:
+        if not self.is_main_process:
+            return
         if self.visualization_cfg.save_real_video:
             path = output_dir / "real_video_start_to_goal.mp4"
             saved = save_video(sample.real_video_frames, path, self.visualization_cfg.fps, self.logger)
@@ -613,6 +824,8 @@ class CEMWorldModelPlanner:
         planned_positions: Optional[torch.Tensor],
         reference_positions: Optional[torch.Tensor],
     ) -> None:
+        if not self.is_main_process:
+            return
         iteration_dir = output_dir / name / f"iteration_{iteration:03d}"
         if self.visualization_cfg.decode_best_samples:
             decoded = self._decode_latents(sequence).squeeze(0).detach().cpu()
@@ -647,6 +860,8 @@ class CEMWorldModelPlanner:
         planned_positions: Optional[torch.Tensor],
         reference_positions: Optional[torch.Tensor],
     ) -> None:
+        if not self.is_main_process:
+            return
         final_dir = output_dir / prefix / "final"
         if self.visualization_cfg.save_planned_video:
             decoded = self._decode_latents(final_sequence).squeeze(0).detach().cpu()
@@ -680,6 +895,8 @@ class CEMWorldModelPlanner:
         snapshots: List[CEMTrajectorySnapshot],
         reference_positions: Optional[torch.Tensor],
     ) -> None:
+        if not self.is_main_process:
+            return
         if not self.visualization_cfg.save_trajectory_evolution_gif or not snapshots:
             return
 
@@ -691,7 +908,7 @@ class CEMWorldModelPlanner:
             ],
             reference_positions=reference_positions,
             path=gif_path,
-            title=f"Best Trajectory Evolution ({name})",
+            title="Best Trajectory Evolution",
             fps=self.visualization_cfg.trajectory_gif_fps,
         )
         log_wandb_video_file(
@@ -712,36 +929,177 @@ class CEMWorldModelPlanner:
             f"graphs/{name}/cost/elite_mean": record.mean_elite_cost,
             f"graphs/{name}/distribution/std_mean": record.std_mean,
         }
+        pose_metrics = {
+            "translation_distance_m": record.translation_distance,
+            "translation/x_abs_m": record.translation_x_abs,
+            "translation/y_abs_m": record.translation_y_abs,
+            "translation/z_abs_m": record.translation_z_abs,
+            "rotation_distance": record.rotation_distance,
+            "rotation/x": record.rotation_x_abs,
+            "rotation/y": record.rotation_y_abs,
+            "rotation/z": record.rotation_z_abs,
+            "gripper": record.gripper_abs,
+        }
+        for suffix, value in pose_metrics.items():
+            if value is not None:
+                payload[f"graphs/{name}/pose_error/{suffix}"] = value
         log_wandb_metrics(self.logger, payload)
 
-    def _log_cem_summary_graphs(self, name: str, records: List[CEMIterationRecord]) -> None:
+    def _log_cem_summary_graphs(self, name: str, records: List[CEMIterationRecord], output_dir: Path) -> None:
         if not records:
             return
 
         xs = [record.iteration for record in records]
+        graph_dir = output_dir / name / "graphs"
+        cost_ys = [[record.best_latent_cost for record in records]]
+        cost_labels = ["best_latent"]
+        distribution_ys = [[record.std_mean for record in records]]
+        distribution_labels = ["std_mean"]
         log_wandb_line_series(
             self.logger,
             f"graphs/{name}/cost_curve",
             xs=xs,
-            ys=[
-                [record.best_cost for record in records],
-                [record.best_latent_cost for record in records],
-                [record.best_action_cost for record in records],
-                [record.mean_elite_cost for record in records],
-            ],
-            labels=["best_total", "best_latent", "best_action", "elite_mean"],
-            title=f"CEM Costs ({name})",
+            ys=cost_ys,
+            labels=cost_labels,
+            title="CEM Latent Cost",
             xname="iteration",
         )
         log_wandb_line_series(
             self.logger,
             f"graphs/{name}/distribution_curve",
             xs=xs,
-            ys=[[record.std_mean for record in records]],
-            labels=["std_mean"],
-            title=f"CEM Distribution ({name})",
+            ys=distribution_ys,
+            labels=distribution_labels,
+            title="CEM Distribution",
             xname="iteration",
         )
+        if self.is_main_process:
+            save_line_plot(
+                path=graph_dir / "cost_curve.png",
+                xs=xs,
+                ys=cost_ys,
+                labels=cost_labels,
+                title="CEM Latent Cost",
+                ylabel="cost",
+            )
+            save_line_plot(
+                path=graph_dir / "distribution_curve.png",
+                xs=xs,
+                ys=distribution_ys,
+                labels=distribution_labels,
+                title="CEM Distribution",
+                ylabel="std",
+            )
+
+        pose_records = [record for record in records if record.translation_distance is not None]
+        if not pose_records:
+            return
+
+        pose_xs = [record.iteration for record in pose_records]
+        translation_distance_ys = [[record.translation_distance for record in pose_records]]
+        translation_distance_labels = ["translation_distance_m"]
+        translation_axes_ys = [
+            [record.translation_x_abs for record in pose_records],
+            [record.translation_y_abs for record in pose_records],
+            [record.translation_z_abs for record in pose_records],
+        ]
+        translation_axes_labels = ["x_abs_m", "y_abs_m", "z_abs_m"]
+        rotation_distance_ys = [[record.rotation_distance for record in pose_records]]
+        rotation_distance_labels = ["rotation_distance"]
+        rotation_axes_ys = [
+            [record.rotation_x_abs for record in pose_records],
+            [record.rotation_y_abs for record in pose_records],
+            [record.rotation_z_abs for record in pose_records],
+        ]
+        rotation_axes_labels = ["rx_abs", "ry_abs", "rz_abs"]
+        gripper_ys = [[record.gripper_abs for record in pose_records]]
+        gripper_labels = ["gripper_abs"]
+        log_wandb_line_series(
+            self.logger,
+            f"graphs/{name}/pose_error/translation_distance_curve",
+            xs=pose_xs,
+            ys=translation_distance_ys,
+            labels=translation_distance_labels,
+            title="CEM Translation Distance [m]",
+            xname="iteration",
+        )
+        log_wandb_line_series(
+            self.logger,
+            f"graphs/{name}/pose_error/translation_axes_curve",
+            xs=pose_xs,
+            ys=translation_axes_ys,
+            labels=translation_axes_labels,
+            title="CEM Translation Axis Errors [m]",
+            xname="iteration",
+        )
+        log_wandb_line_series(
+            self.logger,
+            f"graphs/{name}/pose_error/rotation_distance_curve",
+            xs=pose_xs,
+            ys=rotation_distance_ys,
+            labels=rotation_distance_labels,
+            title="CEM Rotation Distance",
+            xname="iteration",
+        )
+        log_wandb_line_series(
+            self.logger,
+            f"graphs/{name}/pose_error/rotation_axes_curve",
+            xs=pose_xs,
+            ys=rotation_axes_ys,
+            labels=rotation_axes_labels,
+            title="CEM Rotation Axis Errors",
+            xname="iteration",
+        )
+        log_wandb_line_series(
+            self.logger,
+            f"graphs/{name}/pose_error/gripper_curve",
+            xs=pose_xs,
+            ys=gripper_ys,
+            labels=gripper_labels,
+            title="CEM Gripper Error",
+            xname="iteration",
+        )
+        if self.is_main_process:
+            save_line_plot(
+                path=graph_dir / "translation_distance_curve.png",
+                xs=pose_xs,
+                ys=translation_distance_ys,
+                labels=translation_distance_labels,
+                title="CEM Translation Distance [m]",
+                ylabel="distance [m]",
+            )
+            save_line_plot(
+                path=graph_dir / "translation_axes_curve.png",
+                xs=pose_xs,
+                ys=translation_axes_ys,
+                labels=translation_axes_labels,
+                title="CEM Translation Axis Errors [m]",
+                ylabel="absolute error [m]",
+            )
+            save_line_plot(
+                path=graph_dir / "rotation_distance_curve.png",
+                xs=pose_xs,
+                ys=rotation_distance_ys,
+                labels=rotation_distance_labels,
+                title="CEM Rotation Distance",
+                ylabel="radians",
+            )
+            save_line_plot(
+                path=graph_dir / "rotation_axes_curve.png",
+                xs=pose_xs,
+                ys=rotation_axes_ys,
+                labels=rotation_axes_labels,
+                title="CEM Rotation Axis Errors",
+                ylabel="absolute rotvec error",
+            )
+            save_line_plot(
+                path=graph_dir / "gripper_curve.png",
+                xs=pose_xs,
+                ys=gripper_ys,
+                labels=gripper_labels,
+                title="CEM Gripper Error",
+                ylabel="absolute error",
+            )
 
     def _ensure_wandb_graph_metrics(self, name: str) -> None:
         if self.logger.wandb_run is None:
@@ -755,6 +1113,9 @@ class CEMWorldModelPlanner:
             self.logger.wandb_run.define_metric(iteration_key)
             self.logger.wandb_run.define_metric(f"graphs/{name}/cost/*", step_metric=iteration_key)
             self.logger.wandb_run.define_metric(f"graphs/{name}/distribution/*", step_metric=iteration_key)
+            self.logger.wandb_run.define_metric(f"graphs/{name}/pose_error/*", step_metric=iteration_key)
+            self.logger.wandb_run.define_metric(f"graphs/{name}/pose_error/translation/*", step_metric=iteration_key)
+            self.logger.wandb_run.define_metric(f"graphs/{name}/pose_error/rotation/*", step_metric=iteration_key)
         except Exception:
             pass
         defined.add(name)

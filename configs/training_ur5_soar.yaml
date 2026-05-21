@@ -1,7 +1,7 @@
 logging:
   project: world_model
   entity: null
-  run_name: 400M_uniform_local_b128_t4_25%ur5_resume
+  run_name: ur5_soar
   output_dir: checkpoints
   log_interval: 1
   signal_level_log_limit: 100
@@ -16,8 +16,8 @@ trainer:
   grad_accum_steps: 4
   precision: bf16
   seed: 10
-  resume: true # true
-  load_checkpoint: checkpoints/400M_uniform_local_b128_t4_25%ur5/world_model_step_001000.pt
+  resume: false # true
+  load_checkpoint: null
 
 evaluator:
   video_sample_indices: all
@@ -43,7 +43,7 @@ ema:
   start_step: 5000
 
 train_dataloader:
-  batch_size: 128
+  batch_size: 256
   shuffle: true
   num_workers: 6
   pin_memory: true
@@ -56,9 +56,7 @@ train_dataset:
   weights:
     ur5_fix: 0.05
     ur5_wild: 0.2
-    bridgev2: 0.15
-    epic_kitchens: 0.3
-    droid: 0.3
+    soar: 0.75
   reference_dataset: ur5_fix
   datasets:
     ur5_fix:
@@ -69,7 +67,7 @@ train_dataset:
       episode_startpoint_only: false
       cameras:
         observation.images.front: 1.0
-      action_mode: ur5_relative_local_ee_normalized
+      action_mode: ur5_delta_absg
       independent_frames_probability: 0.3
       use_action_probability: 0.7
     ur5_wild:
@@ -80,44 +78,20 @@ train_dataset:
       episode_startpoint_only: false
       cameras:
         observation.images.front: 1.0
-      action_mode: ur5_relative_local_ee_normalized
+      action_mode: ur5_delta_absg
       independent_frames_probability: 0.3
       use_action_probability: 0.7
-    bridgev2:
+    soar:
       type: lerobot
-      repo_id: Gaugou/BridgeV2
+      repo_id: Gaugou/Soar
       episodes: null
       excluded_episodes: null
       episode_startpoint_only: false
       cameras:
-        observation.images.primary: 0.5
-        observation.images.side1: 0.25
-        observation.images.side2: 0.25
-      action_mode: null
+        observation.images.image: 1.0
+      action_mode: soar_matchur5
       independent_frames_probability: 0.3
-      use_action_probability: 0.0
-    epic_kitchens:
-      type: lerobot
-      repo_id: Gaugou/epic_kitchens_100
-      episodes: null
-      excluded_episodes: null
-      episode_startpoint_only: false
-      cameras:
-        observation.images.ego: 1.0
-      action_mode: null
-      independent_frames_probability: 0.3
-      use_action_probability: 0.0
-    droid:
-      type: lerobot
-      repo_id: aractingi/droid_1.0.1
-      episodes: null
-      excluded_episodes: null
-      episode_startpoint_only: false
-      cameras:
-        observation.images.exterior_1_left: 1.0
-      action_mode: null
-      independent_frames_probability: 0.3
-      use_action_probability: 0.0
+      use_action_probability: 0.7
 
 eval_dataloader:
   batch_size: 8
@@ -142,12 +116,12 @@ eval_dataset:
       episode_startpoint_only: true
       cameras:
         observation.images.front: 1.0
-      action_mode: ur5_relative_local_ee_normalized
+      action_mode: ur5_delta_absg
       independent_frames_probability: 0.0
       use_action_probability: 1.0
 
 signal_scheduler:
-  mode: "uniform"  # {"resolution_shift", "linear_shift", "uniform", "logit_normal"}
+  mode: "resolution_shift"  # {"resolution_shift", "linear_shift", "uniform", "logit_normal"}
   min_value: 0.0
   max_value: 1.0
   logit_normal_loc: -0.8

@@ -29,6 +29,7 @@ class EvaluationConfig:
     rollout_start_frame: int = 3
     rollout_horizons: List[int] = field(default_factory=lambda: [1, 5, 10, 20])
     rollout_signal_level: float = 0.9
+    rollout_add_noise: bool = True
     teacher_forced_batch_size: int = 64
     precision: str = "bf16"
     denoising_metrics_indices: Optional[List[int]] = None
@@ -423,6 +424,7 @@ class WorldModelEvaluator:
             context_len,
             future_len,
             self.config.rollout_signal_level,
+            rollout_add_noise=self.config.rollout_add_noise,
             actions=actions,
             use_actions=use_actions,
             independent_frames=None,

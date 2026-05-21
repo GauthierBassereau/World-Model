@@ -53,7 +53,19 @@ UR5_DELTA_LOCAL_STATS = {
     ],
 }
 
+LEGACY_SOAR_STATS = {
+    "mean": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5],
+    "std": [0.01, 0.01, 0.01, 0.05, 0.05, 0.05, 0.5],
+}
+
+SHARED_DELTA_ABSG_STATS = {
+    "mean": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5],
+    "std": [0.02, 0.02, 0.02, 0.05, 0.05, 0.05, 0.5],
+}
+
 ACTION_MODE_DELTA_STATS = {
+    "soar_matchur5": SHARED_DELTA_ABSG_STATS,
+    "ur5_delta_absg": SHARED_DELTA_ABSG_STATS,
     "ur5_relative_local_ee_normalized": UR5_DELTA_LOCAL_STATS,
     "ur5_relative_base_ee_normalized": UR5_DELTA_BASE_STATS,
     "ur5_ee_state_relative_base_ee_normalized": UR5_DELTA_BASE_STATS,
@@ -72,8 +84,8 @@ def denormalize_actions(
         mean = torch.as_tensor(stats["mean"], device=actions.device, dtype=actions.dtype)
         std = torch.as_tensor(stats["std"], device=actions.device, dtype=actions.dtype)
     else:
-        mean = torch.tensor([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5], device=actions.device, dtype=actions.dtype)
-        std = torch.tensor([0.01, 0.01, 0.01, 0.05, 0.05, 0.05, 0.5], device=actions.device, dtype=actions.dtype)
+        mean = torch.tensor(LEGACY_SOAR_STATS["mean"], device=actions.device, dtype=actions.dtype)
+        std = torch.tensor(LEGACY_SOAR_STATS["std"], device=actions.device, dtype=actions.dtype)
     return actions * (std + 1e-8) + mean
 
 def get_delta_timestamps(
@@ -92,8 +104,10 @@ def get_delta_timestamps(
     ACTION_KEYS = {
         "soar_relative_ee": ["action"],
         "soar_relative_ee_normalized": ["action"],
-        "ur5_relative_local_ee_normalized": ["action.5hz_delta_local"],
-        "ur5_relative_base_ee_normalized": ["action.5hz_delta_base"],
+        "soar_matchur5": ["observation.state", "action"],
+        "ur5_relative_local_ee_normalized": ["observation.state", "action.5hz_delta_local"],
+        "ur5_relative_base_ee_normalized": ["observation.state", "action.5hz_delta_base"],
+        "ur5_delta_absg": ["observation.state", "action", "action.5hz_delta_base"],
         "ur5_ee_state_relative_base_ee_normalized": ["observation.state", "action.5hz_delta_base"],
     }
     
@@ -118,12 +132,16 @@ def get_actions(
         return item["action"]
     if action_mode == "soar_relative_ee_normalized":
         return _normalize_actions(item["action"])
+    if action_mode == "soar_matchur5":
+        return _normalize_actions(_soar_matchur5_actions(item), stats=SHARED_DELTA_ABSG_STATS)
     if action_mode == "ur5_relative_local_ee_normalized":
         stats = UR5_DELTA_LOCAL_STATS
         return _normalize_actions(item["action.5hz_delta_local"], stats=stats)
     if action_mode == "ur5_relative_base_ee_normalized":
         stats = UR5_DELTA_BASE_STATS
         return _normalize_actions(item["action.5hz_delta_base"], stats=stats)
+    if action_mode == "ur5_delta_absg":
+        return _normalize_actions(_ur5_delta_absg_actions(item), stats=SHARED_DELTA_ABSG_STATS)
     if action_mode == "ur5_ee_state_relative_base_ee_normalized":
         stats = UR5_DELTA_BASE_STATS
         ee_state = item["observation.state"][..., 6:13].clone()
@@ -132,6 +150,51 @@ def get_actions(
         base_action = _normalize_actions(item["action.5hz_delta_base"], stats=stats)
         return torch.cat([ee_state, base_action], dim=-1).float()
     raise ValueError(f"Unknown action mode: {action_mode}")
+
+def _ur5_delta_absg_actions(item: Dict[str, Any]) -> torch.Tensor:
+    actions = item["action.5hz_delta_base"].clone()
+    actions[..., -1] = item["action"][..., -1] / 100.0
+    return actions
+
+def _soar_matchur5_actions(item: Dict[str, Any]) -> torch.Tensor:
+    actions = item["action"].clone()
+    current_rpy = item["observation.state"][..., 3:6]
+    target_rpy = current_rpy + actions[..., 3:6]
+    current_rotation = _rpy_to_matrix(current_rpy)
+    target_rotation = _rpy_to_matrix(target_rpy)
+    delta_rotation = target_rotation @ current_rotation.transpose(-1, -2)
+    actions[..., 3:6] = _matrix_to_rotvec(delta_rotation)
+    return actions
+
+def _rpy_to_matrix(rpy: torch.Tensor) -> torch.Tensor:
+    roll, pitch, yaw = rpy.unbind(dim=-1)
+    sr, cr = torch.sin(roll), torch.cos(roll)
+    sp, cp = torch.sin(pitch), torch.cos(pitch)
+    sy, cy = torch.sin(yaw), torch.cos(yaw)
+
+    return torch.stack(
+        [
+            torch.stack([cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr], dim=-1),
+            torch.stack([sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr], dim=-1),
+            torch.stack([-sp, cp * sr, cp * cr], dim=-1),
+        ],
+        dim=-2,
+    )
+
+def _matrix_to_rotvec(matrix: torch.Tensor) -> torch.Tensor:
+    trace = matrix.diagonal(dim1=-2, dim2=-1).sum(dim=-1)
+    theta = torch.acos(torch.clamp((trace - 1.0) / 2.0, -1.0, 1.0))
+    skew = torch.stack(
+        [
+            matrix[..., 2, 1] - matrix[..., 1, 2],
+            matrix[..., 0, 2] - matrix[..., 2, 0],
+            matrix[..., 1, 0] - matrix[..., 0, 1],
+        ],
+        dim=-1,
+    )
+    sin_theta = torch.sin(theta)
+    scale = torch.where(theta.abs() < 1e-4, 0.5 + theta.square() / 12.0, theta / (2.0 * sin_theta))
+    return scale.unsqueeze(-1) * skew
 
 def _normalize_actions(
     actions: torch.Tensor,
@@ -144,6 +207,6 @@ def _normalize_actions(
         std = torch.as_tensor(stats["std"], device=actions.device)
     else:
         # Legacy fallback for soar
-        mean = torch.tensor([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5], device=actions.device)
-        std = torch.tensor([0.01, 0.01, 0.01, 0.05, 0.05, 0.05, 0.5], device=actions.device)
+        mean = torch.tensor(LEGACY_SOAR_STATS["mean"], device=actions.device)
+        std = torch.tensor(LEGACY_SOAR_STATS["std"], device=actions.device)
     return torch.clamp((actions - mean) / (std + 1e-8), -clamp_range, clamp_range).float()

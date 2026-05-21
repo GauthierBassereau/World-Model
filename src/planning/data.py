@@ -22,6 +22,8 @@ class PlanningSample:
     start_local_frame: int
     goal_local_frame: int
     initial_ee_state: Optional[torch.Tensor]
+    initial_ee_pose: Optional[torch.Tensor]
+    goal_ee_pose: Optional[torch.Tensor]
     reference_ee_positions: Optional[torch.Tensor]
     real_video_frames: torch.Tensor
     goal_image: torch.Tensor
@@ -141,8 +143,27 @@ def load_planning_sample(
     context_use_actions = use_actions[: planning_cfg.context_frames].unsqueeze(0)
     initial_ee_state = action_builder.state_from_action_tokens(actions, planning_cfg.context_frames)
 
+    raw_item = dataset.backend[sequence_start]
+    ee_pose_sequence = None
+    if "observation.state" in raw_item:
+        ee_pose_sequence = action_builder.extract_ee_pose(raw_item["observation.state"])
+
+    initial_ee_pose = None
+    if ee_pose_sequence is not None:
+        initial_ee_pose = ee_pose_sequence[planning_cfg.context_frames]
+
+    goal_ee_pose = None
+    goal_pose_index = planning_cfg.context_frames + target_step
+    if ee_pose_sequence is not None and goal_pose_index < ee_pose_sequence.shape[0]:
+        goal_ee_pose = ee_pose_sequence[goal_pose_index]
+
     reference_ee_positions = None
-    if action_builder.has_state_token:
+    if ee_pose_sequence is not None:
+        ref_start = planning_cfg.context_frames
+        ref_end = min(ref_start + target_step + 1, ee_pose_sequence.shape[0])
+        if ref_end - ref_start >= 2:
+            reference_ee_positions = ee_pose_sequence[ref_start:ref_end, :3].detach().cpu()
+    elif action_builder.has_state_token:
         ref_start = planning_cfg.context_frames
         ref_end = min(ref_start + target_step + 1, actions.shape[0])
         if ref_end - ref_start >= 2:
@@ -171,6 +192,8 @@ def load_planning_sample(
         start_local_frame=start_local_frame,
         goal_local_frame=goal_local_frame,
         initial_ee_state=initial_ee_state,
+        initial_ee_pose=initial_ee_pose,
+        goal_ee_pose=goal_ee_pose,
         reference_ee_positions=reference_ee_positions,
         real_video_frames=real_video_frames,
         goal_image=goal_image,
@@ -181,4 +204,3 @@ def load_planning_sample(
         start_frame_index=start_frame_index,
         goal_frame_index=goal_frame_index,
     )
-

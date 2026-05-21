@@ -1,19 +1,20 @@
 logging:
   project: world_model_evaluation
   entity: null
-  run_name: ur5_400M_0.6_signal
+  run_name: steps1_signal
   output_dir: "/checkpoints"
   log_interval: 1
   signal_level_log_limit: 100
   checkpoint_interval: 0
 
-checkpoint_path: /gpfs/helios/home/gauthierbernarda/git/World-Model/checkpoints/training_ur5_400M_res/world_model_step_013000.pt
+checkpoint_path: checkpoints/training_ur5_400M_res/world_model_step_013000.pt
 
 evaluator:
   video_sample_indices: all
   rollout_start_frame: 10
   rollout_horizons: [1, 5, 10, 20]
-  rollout_signal_level: 0.6
+  rollout_signal_level: 0.8
+  rollout_add_noise: true
   teacher_forced_batch_size: 64
   precision: bf16
   max_batches: 10
@@ -22,7 +23,7 @@ eval_dataset:
   sequence_length_distribution:
     "85": 1.0
   fps: 5.0
-  action_dim: 14
+  action_dim: 7
   weights:
     ur5_fix_eval: 1.0
   reference_dataset: ur5_fix_eval
@@ -53,21 +54,21 @@ signal_scheduler:
   logit_normal_scale: 0.8
 
 euler_solver:
-  number_steps: 100
+  number_steps: 1
   min_denom: 0.05
-  timestep_schedule: "signal"
+  timestep_schedule: "signal" # linear, signal
 
 world_model:
   input_dim: 768
   latent_dim: 1024 # 1536, 1024
   bottleneck_dim: null
-  action_dim: 14
+  action_dim: 7
   num_registers: 4
   depth: 24 # 28, 24
   num_heads: 16 # 24, 16
   mlp_multiplier: 4 # 2.666667, 4
   temporal_attention_interval: 4
-  temporal_context_length: 40
+  temporal_context_length: 42
   rope_base: 10000.0
   qk_norm_eps: 1.0e-06
   attn_logit_softcapping: 50.0 # None for no softcapping -> able to use fused_attention

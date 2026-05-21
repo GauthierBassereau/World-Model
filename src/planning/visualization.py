@@ -154,6 +154,43 @@ def log_wandb_line_series(
     )
 
 
+def save_line_plot(
+    *,
+    path: Path,
+    xs: Sequence[int],
+    ys: Sequence[Sequence[float]],
+    labels: Sequence[str],
+    title: str,
+    xlabel: str = "iteration",
+    ylabel: str = "value",
+) -> Path:
+    import os
+
+    os.environ.setdefault("MPLCONFIGDIR", str(Path(".matplotlib").resolve()))
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    x_values = list(xs)
+    for values, label in zip(ys, labels):
+        ax.plot(x_values, list(values), marker="o", linewidth=2.0, markersize=4, label=label)
+
+    ax.set_title(title)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.grid(True, alpha=0.25)
+    if labels:
+        ax.legend(loc="best")
+    fig.tight_layout()
+    fig.savefig(path, dpi=180, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return path
+
+
 def save_trajectory_plot(
     *,
     planned_positions: torch.Tensor,
