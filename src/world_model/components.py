@@ -59,6 +59,20 @@ class SignalEmbedder(nn.Module):
         return token
 
 
+class LearnedSignalEmbedder(nn.Module):
+    def __init__(self, model_dim: int, num_bins: int = 1024) -> None:
+        super().__init__()
+        if num_bins < 2:
+            raise ValueError("num_bins must be >= 2 for learned signal embeddings.")
+        self.num_bins = num_bins
+        self.embedding = nn.Embedding(num_bins, model_dim)
+
+    def forward(self, signal_levels: torch.Tensor) -> torch.Tensor:
+        signal_levels = signal_levels.float().clamp(0.0, 1.0)
+        indices = torch.round(signal_levels * (self.num_bins - 1)).to(dtype=torch.long)
+        return self.embedding(indices)
+
+
 class RMSNorm(nn.Module):
     def __init__(self, dim: int, eps: float = 1e-6) -> None:
         super().__init__()

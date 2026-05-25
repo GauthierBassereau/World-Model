@@ -1,5 +1,6 @@
 import copy
 import datetime
+import math
 import time
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass, field
@@ -49,6 +50,23 @@ class TrainerLoopConfig:
 
 
 @dataclass
+class PatchForcingConfig:
+    enabled: bool = False
+    sampler: str = "ltg"
+    ltg_std: float = 0.6
+    difficulty_loss_weight: float = 0.01
+
+    def __post_init__(self) -> None:
+        self.sampler = self.sampler.lower()
+        if self.sampler != "ltg":
+            raise ValueError(f"Unsupported patch forcing sampler: {self.sampler}")
+        if self.ltg_std <= 0.0:
+            raise ValueError("patch_forcing.ltg_std must be positive.")
+        if self.difficulty_loss_weight < 0.0:
+            raise ValueError("patch_forcing.difficulty_loss_weight must be non-negative.")
+
+
+@dataclass
 class EMAConfig:
     enabled: bool = False
     decay: float = 0.999
@@ -66,6 +84,7 @@ class WorldModelTrainingConfig:
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
     world_model: WorldModelConfig = field(default_factory=WorldModelConfig)
     signal_scheduler: SignalSchedulerConfig = field(default_factory=SignalSchedulerConfig)
+    patch_forcing: PatchForcingConfig = field(default_factory=PatchForcingConfig)
     euler_solver: EulerSolverConfig = field(default_factory=EulerSolverConfig)
     ema: EMAConfig = field(default_factory=EMAConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
@@ -110,6 +129,20 @@ class WorldModelTrainer:
         torch.cuda.set_device(self.device_idx)
         self.device = torch.device("cuda", self.device_idx)
         self.is_main_process = self.rank == 0
+
+        if config.patch_forcing.enabled and not config.world_model.patch_signal_conditioning:
+            raise ValueError(
+                "patch_forcing.enabled requires world_model.patch_signal_conditioning=true "
+                "so the model receives per-patch signal levels."
+            )
+        if config.world_model.predict_patch_difficulty:
+            if not config.world_model.patch_signal_conditioning:
+                raise ValueError(
+                    "world_model.predict_patch_difficulty requires "
+                    "world_model.patch_signal_conditioning=true."
+                )
+            if config.trainer.loss_type != "velocity":
+                raise ValueError("Patch difficulty training currently requires trainer.loss_type=velocity.")
         
         seed = set_seed(config.trainer.seed, self.world_size, self.rank)
 
@@ -417,10 +450,14 @@ class WorldModelTrainer:
             tokens, dim = latents.shape[1], latents.shape[2]
             latents = latents.view(batch_size, steps, tokens, dim)
         
-        signal_levels, scheduler_steps = self.signal_scheduler.sample_with_base(latents)
+        base_signal_levels, scheduler_steps = self.signal_scheduler.sample_with_base(latents)
+        signal_levels = self._sample_patch_signal_levels(
+            base_signal_levels=base_signal_levels,
+            num_tokens=tokens,
+        ) if self.config.patch_forcing.enabled else base_signal_levels
         self.logger.log_distr_signal(signal_levels)
         base_noise = torch.randn_like(latents)
-        signal_levels_expanded = signal_levels.unsqueeze(-1).unsqueeze(-1)
+        signal_levels_expanded = self._expand_signal_to_latents(signal_levels, latents)
         
         noisy_latents = (1.0 - signal_levels_expanded) * base_noise + signal_levels_expanded * latents
         
@@ -428,6 +465,7 @@ class WorldModelTrainer:
             outputs = self._train_module(
                 noisy_latents,
                 signal_levels=signal_levels,
+                global_signal_levels=base_signal_levels,
                 actions=actions,
                 independent_frames=independent_frames,
                 use_actions=use_actions,
@@ -448,6 +486,29 @@ class WorldModelTrainer:
 
         return micro_step_loss
 
+    def _sample_patch_signal_levels(
+        self,
+        base_signal_levels: torch.Tensor,
+        num_tokens: int,
+    ) -> torch.Tensor:
+        if self.config.patch_forcing.sampler != "ltg":
+            raise RuntimeError(f"Unsupported patch forcing sampler: {self.config.patch_forcing.sampler}")
+
+        base = base_signal_levels.float()
+        std = torch.minimum(
+            base / 2.0,
+            torch.full_like(base, self.config.patch_forcing.ltg_std),
+        )
+        noise = torch.randn(
+            (*base.shape, num_tokens),
+            device=base.device,
+            dtype=base.dtype,
+        ).abs()
+        patch_signal_levels = base.unsqueeze(-1) - noise * std.unsqueeze(-1)
+        fallback = torch.rand_like(patch_signal_levels) * base.unsqueeze(-1)
+        patch_signal_levels = torch.where(patch_signal_levels < 0.0, fallback, patch_signal_levels)
+        return patch_signal_levels.to(dtype=base_signal_levels.dtype)
+
     def _compute_loss(
         self,
         latents: torch.Tensor,
@@ -462,6 +523,8 @@ class WorldModelTrainer:
         dataset_names: Dict[int, str],
         use_actions: torch.Tensor,
     ) -> MicroStepLoss:
+        v_true: Optional[torch.Tensor] = None
+        v_pred: Optional[torch.Tensor] = None
         if self.config.trainer.loss_type == "position":
             loss_unreduced = torch.nn.functional.mse_loss(latents, outputs.latents, reduction="none")
         else:
@@ -478,13 +541,13 @@ class WorldModelTrainer:
         if self.config.trainer.loss_weighting in ("linear", "linear_signal") and self.config.trainer.loss_type == "position":
             # Weight scales linearly with signal level (after scheduler transformation)
             weights = self.config.trainer.loss_weighting_intercept + self.config.trainer.loss_weighting_slope * signal_levels
-            weights = weights.unsqueeze(-1).unsqueeze(-1)
+            weights = self._expand_signal_to_latents(weights, loss_unreduced)
             loss_unreduced = loss_unreduced * weights
         elif self.config.trainer.loss_weighting == "linear_scheduler" and self.config.trainer.loss_type == "position":
             # Weight scales linearly with scheduler step (before transformation)
             # This is useful when using dimension shift, so weights scale uniformly with the original uniform distribution
             weights = self.config.trainer.loss_weighting_intercept + self.config.trainer.loss_weighting_slope * scheduler_steps
-            weights = weights.unsqueeze(-1).unsqueeze(-1)
+            weights = self._expand_signal_to_latents(weights, loss_unreduced)
             loss_unreduced = loss_unreduced * weights
 
         # Apply valid frame mask, some sequences may have padding frames which should not contribute to loss
@@ -502,6 +565,29 @@ class WorldModelTrainer:
         metrics = {
             "raw_l2_loss": self._to_metric_stat(loss_sum, valid_frame_count),
         }
+        if outputs.patch_logvar is not None and self.config.patch_forcing.difficulty_loss_weight > 0.0:
+            if v_true is None or v_pred is None:
+                raise RuntimeError("Patch difficulty loss requires velocity targets.")
+
+            logvar = outputs.patch_logvar.float()
+            logvar_expanded = self._expand_signal_to_latents(logvar, v_true)
+            variance = torch.exp(logvar_expanded).clamp_min(1e-8)
+            squared_error = (v_true.float() - v_pred.detach().float()).pow(2)
+            difficulty_loss_unreduced = 0.5 * (
+                math.log(2.0 * math.pi)
+                + logvar_expanded
+                + squared_error / variance
+            )
+            difficulty_frame_loss = difficulty_loss_unreduced.mean(dim=(-1, -2))
+            valid_difficulty_frame_loss = difficulty_frame_loss * frames_valid_mask
+            difficulty_loss_sum = valid_difficulty_frame_loss.sum()
+            loss_sum = loss_sum + self.config.patch_forcing.difficulty_loss_weight * difficulty_loss_sum
+            metrics["patch_difficulty_nll_loss"] = self._to_metric_stat(
+                difficulty_loss_sum,
+                valid_frame_count,
+            )
+            metrics["total_loss"] = self._to_metric_stat(loss_sum, valid_frame_count)
+
         if self.global_step % 10 == 0:
             breakdown = self._compute_loss_breakdown(
                 valid_frame_loss,
@@ -519,6 +605,12 @@ class WorldModelTrainer:
             total_frame_count=total_frame_count,
             metric_stats=metrics,
         )
+
+    @staticmethod
+    def _expand_signal_to_latents(signal_levels: torch.Tensor, latents: torch.Tensor) -> torch.Tensor:
+        while signal_levels.ndim < latents.ndim:
+            signal_levels = signal_levels.unsqueeze(-1)
+        return signal_levels
 
     def _compute_loss_breakdown(
         self,

@@ -10,6 +10,7 @@ def calculate_velocity_1_to_2(
     min_denom: float = 0.05,
 ) -> torch.Tensor:
     denom = (signal_levels_2 - signal_levels_1).clamp_min(min_denom)
-    denom = denom.unsqueeze(-1).unsqueeze(-1)
+    while denom.ndim < latent_1.ndim:
+        denom = denom.unsqueeze(-1)
     nom = latent_2 - latent_1
     return nom / denom

@@ -9,6 +9,7 @@ from src.world_model.components import (
     RMSNorm,
     _rope_cache,
     SignalEmbedder,
+    LearnedSignalEmbedder,
 )
 
 @dataclass
@@ -27,11 +28,31 @@ class WorldModelConfig:
     attn_logit_softcapping: Optional[float] = 50.0
     bottleneck_dim: Optional[int] = None
     use_action_token: bool = True  # False during pretraining to exclude action token from sequence
+    use_signal_token: bool = True
+    signal_embedding_type: str = "learned"  # {"fourier", "learned"}
+    signal_embedding_num_bins: int = 1024
+    patch_signal_conditioning: bool = False
+    patch_signal_embed_dim: int = 256
+    predict_patch_difficulty: bool = False
+    patch_difficulty_logvar_min: float = -10.0
+    patch_difficulty_logvar_max: float = 10.0
+
+    def __post_init__(self) -> None:
+        self.signal_embedding_type = self.signal_embedding_type.lower()
+        if self.signal_embedding_type not in {"fourier", "learned"}:
+            raise ValueError(f"Unknown signal_embedding_type: {self.signal_embedding_type}")
+        if self.signal_embedding_num_bins < 2:
+            raise ValueError("signal_embedding_num_bins must be >= 2.")
+        if self.patch_signal_conditioning and self.patch_signal_embed_dim <= 0:
+            raise ValueError("patch_signal_embed_dim must be positive when patch signal conditioning is enabled.")
+        if self.patch_difficulty_logvar_min >= self.patch_difficulty_logvar_max:
+            raise ValueError("patch_difficulty_logvar_min must be smaller than patch_difficulty_logvar_max.")
 
 @dataclass
 class WorldModelOutput:
     latents: torch.Tensor
     kv_cache: List[Optional[Tuple[torch.Tensor, torch.Tensor]]]
+    patch_logvar: Optional[torch.Tensor] = None
 
 # There is this thing that if independant frames are specified, then the rope values are still the one as if part of the sequence.
 # Honestly not sure if it is something I want to fix or not
@@ -40,13 +61,26 @@ class WorldModelBackbone(nn.Module):
         super().__init__()
         self.config = config
 
+        patch_input_dim = config.input_dim
+        if config.patch_signal_conditioning:
+            patch_input_dim += config.patch_signal_embed_dim
+
         if config.bottleneck_dim is not None:
             self.input_proj = nn.Sequential(
-                nn.Linear(config.input_dim, config.bottleneck_dim, bias=False),
+                nn.Linear(patch_input_dim, config.bottleneck_dim, bias=False),
                 nn.Linear(config.bottleneck_dim, config.latent_dim, bias=False))
         else:
-            self.input_proj = nn.Linear(config.input_dim, config.latent_dim, bias=False) if config.input_dim != config.latent_dim else nn.Identity()
-        self.signal_embed = SignalEmbedder(config.latent_dim, base_freq_dim=256, scale=1000.0, max_period=10000)
+            self.input_proj = nn.Linear(patch_input_dim, config.latent_dim, bias=False) if patch_input_dim != config.latent_dim else nn.Identity()
+        if config.use_signal_token:
+            if config.signal_embedding_type == "learned":
+                self.signal_embed = LearnedSignalEmbedder(config.latent_dim, num_bins=config.signal_embedding_num_bins)
+            else:
+                self.signal_embed = SignalEmbedder(config.latent_dim, base_freq_dim=256, scale=1000.0, max_period=10000)
+        if config.patch_signal_conditioning:
+            self.patch_signal_embed = LearnedSignalEmbedder(
+                config.patch_signal_embed_dim,
+                num_bins=config.signal_embedding_num_bins,
+            )
         # Only create action parameters when use_action_token is True (for finetuning with actions)
         if config.use_action_token:
             self.base_action_embed = nn.Parameter(torch.randn(config.latent_dim) * 0.02)
@@ -66,6 +100,8 @@ class WorldModelBackbone(nn.Module):
 
         self.final_norm = RMSNorm(config.latent_dim)
         self.output_proj = nn.Linear(config.latent_dim, config.input_dim)
+        if config.predict_patch_difficulty:
+            self.patch_logvar_proj = nn.Linear(config.latent_dim, 1)
         self.initialize_weights()
 
     def initialize_weights(self):
@@ -91,6 +127,9 @@ class WorldModelBackbone(nn.Module):
             nn.init.normal_(self.base_action_embed, mean=0.0, std=0.02)
         nn.init.normal_(self.register_tokens, mean=0.0, std=0.02)
         torch.nn.init.zeros_(self.output_proj.weight)
+        if self.config.predict_patch_difficulty:
+            torch.nn.init.zeros_(self.patch_logvar_proj.weight)
+            torch.nn.init.zeros_(self.patch_logvar_proj.bias)
 
     def _get_spatial_mask(self, seq_len: int, device: torch.device) -> torch.Tensor:
         return torch.zeros((1, 1, seq_len, seq_len), device=device, dtype=torch.bool) # full attention baby
@@ -135,7 +174,8 @@ class WorldModelBackbone(nn.Module):
     def forward(
         self,
         noisy_latents: torch.Tensor, # [B, T, S, D]
-        signal_levels: torch.Tensor, # [B, T]
+        signal_levels: torch.Tensor, # [B, T] or [B, T, S]
+        global_signal_levels: Optional[torch.Tensor] = None, # [B, T], used by the optional global signal token
         actions: Optional[torch.Tensor] = None, # [B, T, D]
         independent_frames: Optional[torch.Tensor] = None, # [B, T]
         use_actions: Optional[torch.Tensor] = None, # [B, T]
@@ -145,10 +185,38 @@ class WorldModelBackbone(nn.Module):
         B, T, S, D_in = noisy_latents.shape
         device = noisy_latents.device
         D = self.config.latent_dim
-        
+
+        if signal_levels.ndim == 2:
+            patch_signal_levels = signal_levels.unsqueeze(-1).expand(B, T, S)
+            inferred_global_signal_levels = signal_levels
+        elif signal_levels.ndim == 3:
+            if signal_levels.shape != (B, T, S):
+                raise ValueError(
+                    f"Expected patch signal levels with shape {(B, T, S)}, got {tuple(signal_levels.shape)}"
+                )
+            patch_signal_levels = signal_levels
+            inferred_global_signal_levels = signal_levels.amax(dim=-1)
+        else:
+            raise ValueError(f"signal_levels must have shape [B, T] or [B, T, S], got {tuple(signal_levels.shape)}")
+
+        if global_signal_levels is None:
+            global_signal_levels = inferred_global_signal_levels
+        elif global_signal_levels.shape != (B, T):
+            raise ValueError(f"global_signal_levels must have shape {(B, T)}, got {tuple(global_signal_levels.shape)}")
+
+        if self.config.patch_signal_conditioning:
+            patch_sig_emb = self.patch_signal_embed(patch_signal_levels).to(dtype=noisy_latents.dtype)
+            noisy_latents = torch.cat((noisy_latents, patch_sig_emb), dim=-1)
+
         x = self.input_proj(noisy_latents)
-        sig_emb = self.signal_embed(signal_levels.flatten()).view(B, T, 1, -1)
         reg_emb = self.register_tokens.view(1, 1, self.config.num_registers, -1).expand(B, T, -1, -1)
+        prefix_tokens = []
+        if self.config.use_signal_token:
+            if self.config.signal_embedding_type == "learned":
+                sig_emb = self.signal_embed(global_signal_levels).view(B, T, 1, -1)
+            else:
+                sig_emb = self.signal_embed(global_signal_levels.flatten()).view(B, T, 1, -1)
+            prefix_tokens.append(sig_emb)
         
         # this if is basically to be able to pretrain without action data, just on raw video, making finetuning easier
         if self.config.use_action_token:
@@ -162,12 +230,14 @@ class WorldModelBackbone(nn.Module):
                     mask = use_actions.bool().view(B, T, 1, 1)
                     act_emb = torch.where(mask, act_emb, self.base_action_embed.view(1, 1, 1, -1))
 
-            x = torch.cat((sig_emb, act_emb, reg_emb, x), dim=2)
-            num_prefix_tokens = 2 + self.config.num_registers  # signal + action + registers
+            prefix_tokens.append(act_emb)
+            prefix_tokens.append(reg_emb)
+            x = torch.cat((*prefix_tokens, x), dim=2)
         else:
-            # [Signal, Registers, Latents] - no action token during pretraining
-            x = torch.cat((sig_emb, reg_emb, x), dim=2)
-            num_prefix_tokens = 1 + self.config.num_registers  # signal + registers
+            # [optional signal, registers, latents] - no action token during pretraining
+            prefix_tokens.append(reg_emb)
+            x = torch.cat((*prefix_tokens, x), dim=2)
+        num_prefix_tokens = sum(token.shape[2] for token in prefix_tokens)
         
         S_total = x.shape[2]
         
@@ -208,6 +278,13 @@ class WorldModelBackbone(nn.Module):
 
         latents = x[..., num_prefix_tokens:, :]
         latents = self.final_norm(latents)
+        patch_logvar = None
+        if self.config.predict_patch_difficulty:
+            patch_logvar = self.patch_logvar_proj(latents).squeeze(-1)
+            patch_logvar = patch_logvar.clamp(
+                min=self.config.patch_difficulty_logvar_min,
+                max=self.config.patch_difficulty_logvar_max,
+            )
         output = self.output_proj(latents)
 
-        return WorldModelOutput(latents=output, kv_cache=new_kv_cache)
+        return WorldModelOutput(latents=output, kv_cache=new_kv_cache, patch_logvar=patch_logvar)

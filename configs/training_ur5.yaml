@@ -146,6 +146,11 @@ eval_dataset:
       independent_frames_probability: 0.0
       use_action_probability: 1.0
 
+patch_forcing:
+  enabled: false
+  sampler: ltg
+  ltg_std: 0.6
+
 signal_scheduler:
   mode: "uniform"  # {"resolution_shift", "linear_shift", "uniform", "logit_normal"}
   min_value: 0.0
@@ -173,3 +178,8 @@ world_model:
   qk_norm_eps: 1.0e-06
   attn_logit_softcapping: 50.0 # None for no softcapping -> able to use fused_attention
   use_action_token: true  # false for pretraining (no actions), true for finetuning
+  use_signal_token: true
+  signal_embedding_type: fourier
+  signal_embedding_num_bins: 1024
+  patch_signal_conditioning: false
+  patch_signal_embed_dim: 256

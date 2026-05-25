@@ -234,10 +234,11 @@ def plot_spatial_attention(
     ncols = min(3, n)
     nrows = (n + ncols - 1) // ncols
 
-    num_prefix = (
-        (2 + config.num_registers) if config.use_action_token
-        else (1 + config.num_registers)
-    )
+    num_prefix = config.num_registers
+    if config.use_signal_token:
+        num_prefix += 1
+    if config.use_action_token:
+        num_prefix += 1
     S_total = num_prefix + num_patches
 
     fig, axes = plt.subplots(
@@ -287,10 +288,13 @@ def plot_spatial_attention(
         r, c = divmod(k, ncols)
         axes[r, c].set_visible(False)
 
-    prefix_desc = "σ = signal"
+    prefix_parts = []
+    if config.use_signal_token:
+        prefix_parts.append("σ = signal")
     if config.use_action_token:
-        prefix_desc += ", a = action"
-    prefix_desc += f", r = register (×{config.num_registers})"
+        prefix_parts.append("a = action")
+    prefix_parts.append(f"r = register (×{config.num_registers})")
+    prefix_desc = ", ".join(prefix_parts)
     fig.text(
         0.5, -0.01,
         f"Dashed lines separate prefix tokens from patch tokens.  "
@@ -394,10 +398,11 @@ def plot_spatial_attention_grid(
     grid_side = int(np.sqrt(num_patches))
     assert grid_side ** 2 == num_patches, "num_patches must be a perfect square"
 
-    num_prefix = (
-        (2 + config.num_registers) if config.use_action_token
-        else (1 + config.num_registers)
-    )
+    num_prefix = config.num_registers
+    if config.use_signal_token:
+        num_prefix += 1
+    if config.use_action_token:
+        num_prefix += 1
 
     # Use a mid-depth spatial layer
     layer_i = spatial_layers[len(spatial_layers) // 2]
