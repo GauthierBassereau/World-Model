@@ -15,17 +15,6 @@
 \setlength{\emergencystretch}{2em}
 \newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
 
-\newcommand{\resultfigure}[2]{%
-  \IfFileExists{#2}{%
-    \includegraphics[width=#1]{#2}%
-  }{%
-    \fbox{\parbox[c][0.14\textheight][c]{0.92\linewidth}{%
-      \centering Figure placeholder\\[1mm]
-      \texttt{\detokenize{#2}}%
-    }}%
-  }%
-}
-
 \title{\vspace{-1.5cm}\textbf{Patch-Level Diffusion Forcing for a Semantic Robot World Model}}
 \author{Gauthier Bassereau\\
 \small Neural Networks Project, University of Tartu}
@@ -77,7 +66,7 @@ Values falling below zero are resampled inside the valid interval. The base sign
 
 My main design question was how to tell the transformer which noise level belongs to each patch. The source paper uses spatially varying timestep conditioning through adaptive normalization. My architecture does not use AdaLN-Zero, so I first concatenated a learned 256-dimensional signal embedding to every 768-dimensional DINO token before projecting it into the transformer. This gave the network explicit access to every $s_{t,p}$, but it also changed the visual input interface and attached a large learned code to every patch.
 
-I did not obtain reliable training with this version. Evaluation initially improved, then rose sharply at approximately 12,000 steps and did not recover. My current interpretation is that concatenating the learned signal embedding interfered with the structure of the pretrained DINO representation. I cannot establish this from a single run, however, and this conditioning mechanism requires further investigation.
+I did not obtain reliable training with this version. Evaluation initially improved, then began to degrade at approximately 7,000 steps and later rose sharply before I stopped the run. My current interpretation is that concatenating the learned signal embedding interfered with the structure of the pretrained DINO representation. I cannot establish this from a single run, however, and this conditioning mechanism requires further investigation.
 
 In my final version, I remove per-patch signal conditioning entirely. I still corrupt every patch with its individual signal level, but I give the model only the original frame-level signal token containing $b_t$. The model must infer which regions are trustworthy from the noisy features and from their spatial and temporal context.
 
@@ -108,7 +97,7 @@ Evaluation data & 32 held-out episodes, fixed across experiments \\
 Visual representation & Frozen DINOv2-base, 256 patches $\times$ 768 features \\
 World model & 24 transformer blocks, width 1024, 16 heads, approximately 400M parameters \\
 Optimization & AdamW, bfloat16 distributed training, velocity loss \\
-Compute & Six NVIDIA H200 GPUs; approximately two days per full run \\
+Compute & Six NVIDIA H200 GPUs; approximately two days per long run \\
 Main metric & Held-out DINO-feature MSE for teacher-forced and autoregressive prediction \\
 \bottomrule
 \end{tabular}
@@ -118,67 +107,45 @@ Main metric & Held-out DINO-feature MSE for teacher-forced and autoregressive pr
 
 \section{Experiments and Results}
 
-\subsection{Failed explicit patch conditioning}
+\subsection{Training and held-out evaluation}
 
-In my first Patch Forcing run, I used the concatenated per-patch signal embedding. Figure~\ref{fig:failed-conditioning} should show both its training curve and held-out evaluation curve. The important observation is not a single noisy evaluation point but the sustained degradation beginning around 12,000 steps. The training loss did not provide an adequate warning, which reinforced the need for autoregressive held-out evaluation.
+I compare three runs in Figure~\ref{fig:quantitative-results}: the frame-level baseline, the failed Patch Forcing variant with explicit per-patch conditioning, and the final Patch Forcing variant conditioned only on the frame-level base signal. The upper-left panel shows the raw training velocity loss. The final Patch Forcing run has the lowest value throughout training, but this comparison must be treated carefully because patch-wise and frame-wise corruption produce different training distributions. The held-out metrics provide the more meaningful comparison.
 
-\begin{figure}[H]
-    \centering
-    \resultfigure{0.92\linewidth}{images/failed_patch_conditioning_curves.pdf}
-    \caption{Training and evaluation curves for the failed variant with explicit learned signal embeddings concatenated to every DINO patch token. Evaluation performance deteriorated after approximately 12,000 optimizer steps.}
-    \label{fig:failed-conditioning}
-\end{figure}
+The upper-right panel shows teacher-forced next-frame MSE. The explicitly conditioned variant improves at first, but its evaluation error starts rising at approximately 7,000 steps and then becomes unstable. Its training loss does not show an equally clear failure, demonstrating why training loss alone is insufficient for selecting a world model.
 
-\subsection{Baseline versus implicit Patch Forcing}
+The final Patch Forcing variant behaves very differently. Its teacher-forced error decreases quickly and remains close to 0.16 for most of training. The baseline stays near 0.20--0.23 during its best period, then begins to degrade after roughly 40,000 steps despite a continuing reduction in training loss. In contrast, the Patch Forcing evaluation curve remains stable and reaches its best values near the end of the run. One plausible explanation is that every video is observed under many spatial corruption patterns. This increases the variety of prediction problems without requiring additional trajectories and appears to reduce overfitting.
 
-My revised Patch Forcing model converged faster and reached a clearly better held-out error than the frame-level baseline. Figure~\ref{fig:quantitative-results} shows the two most informative evaluation curves. The left panel is teacher-forced one-step MSE, while the right panel is the 20-step autoregressive rollout metric. The magenta curve is my Patch Forcing model and the green curve is the frame-level baseline.
-
-In teacher forcing, the baseline begins to overfit at around 40,000 optimizer steps: its evaluation error trends upward even though training continues. In contrast, the Patch Forcing curve remains substantially lower and continues to improve. I believe the changing spatial corruption patterns are important here. Each episode is presented under many more local noise configurations, so the model sees a broader set of reconstruction problems even though the underlying video data are unchanged. This appears to act as a strong regularizer and allows the model to continue learning instead of memorizing the training distribution.
-
-The difference is even more important in the right panel. At rollout horizon 20, the Patch Forcing model remains considerably below the baseline throughout the later part of training. This metric includes feedback from the model's own generated states, so it is more sensitive to object disappearance, identity changes, and compounding temporal errors. The larger gap therefore suggests that Patch Forcing improves not only one-step reconstruction but also the stability of the learned dynamics.
-
-I use these common-protocol evaluation curves as the main quantitative evidence. I do not directly interpret the difference in aggregate training loss as model quality because the baseline and Patch Forcing runs are trained on different corruption distributions.
+The lower panel reports autoregressive error at increasing rollout horizons. The successful Patch Forcing model is better at every horizon, and the gap grows as predictions are fed back into the model. At horizon 20, its MSE is approximately 0.23, compared with 0.32 for the baseline and 0.47 for the failed variant. At horizon 40, the corresponding values are approximately 0.24, 0.34, and 0.61. The relatively small increase from horizons 20 to 40 for the successful model indicates substantially more stable long-term generation.
 
 \begin{figure}[H]
     \centering
-    \resultfigure{0.99\linewidth}{images/evaluation_comparison.png}
-    \caption{Held-out evaluation during training. Left: teacher-forced one-step DINO-feature MSE. Right: autoregressive rollout MSE averaged over the first 20 generated frames. Magenta denotes Patch Forcing and green denotes the frame-level baseline. Lower is better.}
+    \includegraphics[width=0.94\linewidth]{images/wandb_curves.png}
+    \caption{Comparison of the three experiments. Top left: raw training velocity loss. Top right: teacher-forced next-frame DINO-feature MSE during training. Bottom: autoregressive DINO-feature MSE averaged up to each rollout horizon. Magenta is the final Patch Forcing model, teal is the frame-level baseline, and orange is the failed variant with explicit per-patch signal conditioning. Lower is better.}
     \label{fig:quantitative-results}
 \end{figure}
 
-\begin{table}[H]
-\centering
-\small
-\begin{tabular}{lccccc}
-\toprule
-\textbf{Model} & \textbf{Teacher forcing} & $\mathbf{H=5}$ & $\mathbf{H=10}$ & $\mathbf{H=20}$ & $\mathbf{H=40}$ \\
-\midrule
-Frame-level baseline & TBD & TBD & TBD & TBD & TBD \\
-Patch Forcing & TBD & TBD & TBD & TBD & TBD \\
-\bottomrule
-\end{tabular}
-\caption{Held-out DINO-feature MSE for the selected baseline and Patch Forcing checkpoints. The values are placeholders to be replaced with the final evaluation results. Lower is better.}
-\label{tab:results}
-\end{table}
+\subsection{Qualitative rollout}
 
-The qualitative difference was larger than I expected. In baseline rollouts, I observed manipulated objects disappearing, changing identity, or becoming detached from the interaction. My Patch Forcing model preserved objects much more consistently through time and represented interactions between the robot and scene more coherently. The physics in my generated rollouts was not always accurate, but the model more often maintained the basic fact that an object continued to exist and remained involved in the interaction. In Figure~\ref{fig:qualitative-results}, I compare one held-out episode with ground truth, baseline, and Patch Forcing frames aligned in time.
+Figure~\ref{fig:qualitative-results} shows a decoded held-out rollout in which the robot moves a circular metal object towards a pan. The columns are successive points in the generated sequence. The top row is the ground truth, the middle row is the frame-level baseline, and the bottom row is the successful Patch Forcing model.
+
+The baseline initially reconstructs the scene, but it does not preserve the manipulated object consistently as the motion develops. The object becomes poorly separated from the gripper and its final relation to the pan does not match the demonstrated placement. The Patch Forcing rollout retains the circular object's identity through the motion and produces a more coherent final placement. The prediction is not a perfect physical reconstruction, but the object remains present and involved in the interaction. This is representative of the main qualitative improvement I observed: fewer disappearing objects and more consistent relations between the robot, manipulated objects, and surrounding scene.
 
 \begin{figure}[H]
     \centering
-    \resultfigure{0.98\linewidth}{images/qualitative_rollout_comparison.pdf}
-    \caption{Decoded held-out rollout. Suggested row order: ground truth, frame-level baseline, and Patch Forcing. The selected episode should highlight object persistence and interaction consistency rather than only image sharpness.}
+    \includegraphics[width=0.98\linewidth]{images/rollout.png}
+    \caption{Decoded autoregressive rollout from a held-out episode. Rows show ground truth, the frame-level baseline, and Patch Forcing; columns show successive times. Patch Forcing preserves the manipulated metal object and its relation to the pan more consistently.}
     \label{fig:qualitative-results}
 \end{figure}
 
-I interpret these results as support for my original hypothesis that heterogeneous patch corruption encourages stronger spatial reasoning. My successful model learned from the \emph{pattern of corruption} while receiving only a coarse frame-level indication of overall difficulty. My likely explanation is that the transformer had to use semantic and spatial evidence to decide which patches were reliable, rather than treating each patch as an independent denoising problem. However, my failed concatenation experiment is not enough to conclude that patch-level conditioning is harmful in general. Other conditioning mechanisms, particularly adaptive normalization closer to the source paper, require further investigation.
+Together, these results support my hypothesis that heterogeneous patch corruption can provide a better learning signal for world modelling. Since the final model does not receive the local signal levels, it must use semantic, spatial, and temporal context to infer which regions are reliable. The failed conditioning run does not establish that explicit patch conditioning is harmful in general; it only shows that my concatenation-based implementation was unstable and that other conditioning mechanisms require further investigation.
 
 \section{Limitations and Conclusion}
 
-My main limitation is experimental scale. A full run required roughly two days on six H200 GPUs, so I could not repeat every configuration with multiple random seeds or perform systematic sweeps over truncation standard deviation, signal schedulers, embedding sizes, and difficulty-loss weights. Consequently, I observe a large and consistent difference on one held-out split, but I cannot yet separate every causal factor or provide uncertainty estimates across runs.
+My main limitation is experimental scale. Each long run required roughly two days on six H200 GPUs, which limited me to one run per configuration and prevented systematic hyperparameter sweeps. None of the experiments was run to full convergence, so I cannot yet determine their final asymptotic performance or provide uncertainty estimates across random seeds. The available curves do, however, show that the successful Patch Forcing model converges substantially faster under the same evaluation protocol.
 
-I also note two methodological caveats. First, I use decoded images only to visualize predicted DINO features, not as pixel-space metrics. Second, my final model includes the difficulty head with a small auxiliary loss. Although the main architectural distinction is patch-wise corruption without patch-wise conditioning, I should independently disable this head in a future ablation. I should likewise evaluate the adaptive sampler under a fixed number of function evaluations before making claims about generation speed.
+Within these limits, I reached the central objective of the project. I integrated patch-level corruption into an existing 400M-parameter world model, identified an unstable conditioning design, and found a simpler variant that improved both teacher-forced prediction and autoregressive rollout. The quantitative gains are consistent with the qualitative result: the model preserves objects more reliably and produces more coherent interaction dynamics and physics.
 
-Within these limits, I reached the central objective of the project. I integrated patch-level corruption into an existing large world model, diagnosed an unstable conditioning design, and found a simpler alternative that produced substantially better quantitative and qualitative rollouts than the frame-level baseline. My strongest result is improved object persistence and interaction consistency. For a 400M-parameter model trained only in a frozen semantic feature space, I find this strong evidence that the structure of the noising task can materially change which spatial and temporal relationships the model learns.
+More experiments are required before drawing broader conclusions about the best patch distribution or conditioning mechanism. Nevertheless, my current results indicate that patch-level noise is a useful way to enrich the training signal. It exposes the model to more varied reconstruction problems and encourages it to learn relationships across a scene, leading to faster convergence and better generation within the compute budget available for this project.
 
 \begin{thebibliography}{9}
 

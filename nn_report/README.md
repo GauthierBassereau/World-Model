@@ -1,14 +1,9 @@
 # Neural Networks Project Report
 
-The report source is `report.tex`. Add the final figures under `images/` using
-these filenames:
+The report source is `report.tex`. It uses the following figures:
 
-- `failed_patch_conditioning_curves.pdf`
-- `evaluation_comparison.png`
-- `qualitative_rollout_comparison.pdf`
-
-Missing files render as labeled placeholders, so the document structure does
-not need to change while figures are being prepared.
+- `images/wandb_curves.png`
+- `images/rollout.png`
 
 Compile from this directory with:
 
