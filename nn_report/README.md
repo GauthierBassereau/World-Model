@@ -4,8 +4,7 @@ The report source is `report.tex`. Add the final figures under `images/` using
 these filenames:
 
 - `failed_patch_conditioning_curves.pdf`
-- `baseline_vs_patch_training.pdf`
-- `baseline_vs_patch_evaluation.pdf`
+- `evaluation_comparison.png`
 - `qualitative_rollout_comparison.pdf`
 
 Missing files render as labeled placeholders, so the document structure does
