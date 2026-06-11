@@ -1,13 +1,13 @@
 logging:
   project: world_model_evaluation
   entity: null
-  run_name: bridgev2_proprio_patch_forcing_euler_ada_0.8_10
+  run_name: bridgev2_proprio_patch_forcing_euler_classic
   output_dir: "/checkpoints"
   log_interval: 1
   signal_level_log_limit: 100
   checkpoint_interval: 0
 
-checkpoint_path: checkpoints/400M_bridgev2_proprio_patch/world_model_step_019000.pt
+checkpoint_path: checkpoints/400M_bridgev2_proprio_patch/world_model_step_060000.pt
 
 evaluator:
   video_sample_indices: all
@@ -55,10 +55,10 @@ signal_scheduler:
 
 
 euler_solver:
-  number_steps: 10
+  number_steps: 100
   min_denom: 0.05
   timestep_schedule: "linear" # linear, signal
-  sampler: "adaptive" # "euler" or "adaptive"
+  sampler: "euler" # "euler" or "adaptive"
   adaptive_percentile: 0.4
   adaptive_inner_steps: 10
 
@@ -77,9 +77,9 @@ world_model:
   qk_norm_eps: 1.0e-06
   attn_logit_softcapping: 50.0 # None for no softcapping -> able to use fused_attention
   use_action_token: true  # false for pretraining (no actions), true for finetuning
-  use_signal_token: false
-  signal_embedding_type: learned
+  use_signal_token: true
+  signal_embedding_type: fourier # fourier, learned
   signal_embedding_num_bins: 1024
-  patch_signal_conditioning: true
+  patch_signal_conditioning: false
   patch_signal_embed_dim: 256
   predict_patch_difficulty: true

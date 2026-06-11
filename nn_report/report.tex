@@ -1,0 +1,193 @@
+\documentclass[10pt,a4paper]{article}
+
+\usepackage[margin=2.2cm]{geometry}
+\usepackage{times}
+\usepackage{microtype}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{float}
+\usepackage[colorlinks=true,linkcolor=black,citecolor=black,urlcolor=blue]{hyperref}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.55em}
+\setlength{\emergencystretch}{2em}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\newcommand{\resultfigure}[2]{%
+  \IfFileExists{#2}{%
+    \includegraphics[width=#1]{#2}%
+  }{%
+    \fbox{\parbox[c][0.14\textheight][c]{0.92\linewidth}{%
+      \centering Figure placeholder\\[1mm]
+      \texttt{\detokenize{#2}}%
+    }}%
+  }%
+}
+
+\title{\vspace{-1.5cm}\textbf{Patch-Level Diffusion Forcing for a Semantic Robot World Model}}
+\author{Gauthier Bassereau\\
+\small Neural Networks Project, University of Tartu}
+\date{June 2026}
+
+\begin{document}
+\maketitle
+\vspace{-0.8cm}
+
+\begin{abstract}
+This project studies whether diffusion forcing should be applied at the level of complete video frames or individual spatial patches. The starting point is a 400-million-parameter robot world model that predicts future DINOv2 patch features. In the baseline, every patch in one frame receives the same signal level. I extended this system with Patch Forcing, where each spatial patch is corrupted independently below a sampled frame-level maximum. The first implementation explicitly concatenated a learned noise-level embedding to every patch token, but training became unstable and evaluation quality deteriorated after roughly 12,000 optimizer steps. A simpler version retained only the original frame-level signal token and required the transformer to infer the reliability of each patch from its content and spatial context. This version trained stably and substantially improved held-out prediction, especially object persistence and interaction consistency in long rollouts. The result is based on a small number of expensive runs and should therefore be treated as a strong preliminary finding rather than a complete ablation study.
+\end{abstract}
+
+\section{Project Idea and Scope}
+
+World models learn to predict how an environment changes over time. For robot manipulation, this is difficult because an image contains regions with very different levels of predictability. Static background patches are usually easy, while robot grippers, small objects, contact boundaries, and occlusions are much harder. Nevertheless, conventional diffusion and flow-matching models assign one noise level to the entire image and spend the same denoising effort everywhere.
+
+The project asks a narrow question: \emph{does training a robot world model with different noise levels across the patches of the same image improve its spatial and temporal understanding?} The motivation comes from Patch Forcing \cite{schusterbauer2026patch}, which extends Diffusion Forcing \cite{chen2024diffusionforcing} from sequence elements to image patches. Its main idea is that partially resolved regions can provide context for more difficult regions. This seems particularly relevant to video dynamics: a clear view of the table, robot arm, or part of an object may help the model reconstruct a nearby patch affected by motion or occlusion.
+
+The work builds on the world-model code developed for my thesis, but the course contribution is separate and clearly scoped. It consists of:
+\begin{itemize}
+    \item converting the BridgeData V2 experiments to a simple episode-based LeRobot evaluation setup;
+    \item implementing patch-wise noise sampling while preserving the original frame-level baseline;
+    \item testing two alternatives for signal conditioning;
+    \item adding a patch-difficulty prediction head and an adaptive sampler for later experiments; and
+    \item comparing frame-level and patch-level training quantitatively and through decoded video rollouts.
+\end{itemize}
+
+\section{Starting Model}
+
+Each RGB frame is encoded by a frozen DINOv2-base encoder \cite{oquab2023dinov2}. The resulting state is a $16\times16$ grid of 256 patch tokens, each with 768 features. A 24-block spatial-temporal transformer with width 1024 and 16 attention heads predicts future DINO features. The model has approximately 400 million parameters. Spatial attention connects patches within a frame, while causal temporal attention carries information between frames. Robot actions are supplied through a separate action token.
+
+Training uses a linear flow-matching path. Given a clean latent patch $z$, Gaussian noise $\epsilon$, and signal level $s\in[0,1]$, the corrupted input is
+\begin{equation}
+    z_s = s z + (1-s)\epsilon ,
+\end{equation}
+where $s=0$ is pure noise and $s=1$ is clean data. The network is trained with a velocity objective. In the original setup, each frame $t$ has one sampled signal level $s_t$, shared by all 256 patches. This is already Diffusion Forcing across time because different frames in a sequence can have different signal levels, but the corruption remains uniform within each image.
+
+\section{Patch Forcing Extension}
+
+\subsection{Patch-level corruption}
+
+For Patch Forcing, I first sample a frame-level base signal $b_t$ from the same configurable scheduler used by the baseline. In these experiments the base distribution is logit-normal. Each patch signal is then sampled from the lower half of a Gaussian centered on $b_t$:
+\begin{equation}
+    s_{t,p} \leq b_t, \qquad
+    s_{t,p} \sim \mathcal{N}\!\left(b_t,\,
+    \min\left(\frac{b_t}{2},\,0.6\right)^2\right)
+    \text{ truncated below } b_t .
+\end{equation}
+Values falling below zero are resampled inside the valid interval. The base signal therefore controls the maximum amount of clean information in the frame, while the patches span a range of harder, noisier states. This follows the Logit-Normal Truncated Gaussian motivation of Schusterbauer et al.\ \cite{schusterbauer2026patch}: unconstrained independent patch timesteps can leak nearly clean context into almost every training example, whereas truncation keeps the patch distribution tied to a meaningful global state.
+
+\subsection{Conditioning ablation}
+
+The main design question was how to tell the transformer which noise level belongs to each patch. The source paper uses spatially varying timestep conditioning through adaptive normalization. My architecture does not use AdaLN-Zero, so the first implementation concatenated a learned 256-dimensional signal embedding to every 768-dimensional DINO token before projecting it into the transformer. This gave the network explicit access to every $s_{t,p}$, but it also changed the visual input interface and attached a large learned code to every patch.
+
+This version did not train reliably. Evaluation initially improved, then rose sharply at approximately 12,000 steps and did not recover. My interpretation is that the explicit embedding made the denoising shortcut too easy or interfered with the structure of the pretrained DINO representation. This explanation is plausible but not proven by one run; other factors such as optimization, embedding dimension, or conditioning architecture may also be responsible.
+
+The final version removes per-patch signal conditioning entirely. The patch tokens are still corrupted with their individual signal levels, but the model receives only the original frame-level signal token containing $b_t$. It must infer which regions are trustworthy from the noisy features and from surrounding spatial and temporal context. This is deliberately simple. It preserves the baseline architecture and turns heterogeneous corruption into a representation-learning pressure: solving one patch requires understanding its relationship to the rest of the scene.
+
+The completed implementation also contains a lightweight head that predicts one log-variance value per patch. It is trained with a Gaussian negative log-likelihood on the detached velocity error and can be interpreted as patch difficulty. An adaptive sampler can use this score to advance easy patches while refining difficult patches with smaller inner steps. Because compute allowed only a limited set of full training runs, the report focuses on the training effect of patch-wise corruption; the adaptive sampler was implemented and tested, but not subjected to a complete speed-quality ablation.
+
+\section{Data and Experimental Setup}
+
+The experiments use BridgeData V2 \cite{walke2023bridgedatav2} in LeRobot format. Bridge episodes are short, typically around seven seconds, so sampling many starting indices from the same episode would produce highly overlapping examples. I therefore use one dataset index per episode, always beginning at the episode start. Training extracts 40 frames at 5 Hz, covering most or all of a typical trajectory. This also reduces the amount of terminal padding that complicated earlier experiments.
+
+The evaluation set contains 32 randomly selected episodes excluded from training. The same split and evaluation procedure are used for every model. Ten clean frames are provided as context, after which the model generates future DINO states autoregressively using the ground-truth action sequence. Predictions are compared with target DINO features using mean squared error, and selected latent rollouts are decoded to RGB for qualitative inspection.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{L{4.0cm}L{9.5cm}}
+\toprule
+\textbf{Component} & \textbf{Configuration} \\
+\midrule
+Training data & BridgeData V2, one sample per episode, 40 frames at 5 Hz \\
+Evaluation data & 32 held-out episodes, fixed across experiments \\
+Visual representation & Frozen DINOv2-base, 256 patches $\times$ 768 features \\
+World model & 24 transformer blocks, width 1024, 16 heads, approximately 400M parameters \\
+Optimization & AdamW, bfloat16 distributed training, velocity loss \\
+Compute & Six NVIDIA H200 GPUs; approximately two days per full run \\
+Main metric & Held-out DINO-feature MSE for teacher-forced and autoregressive prediction \\
+\bottomrule
+\end{tabular}
+\caption{Experimental setup shared by the baseline and successful Patch Forcing run.}
+\label{tab:setup}
+\end{table}
+
+\section{Experiments and Results}
+
+\subsection{Failed explicit patch conditioning}
+
+The first Patch Forcing run used the concatenated per-patch signal embedding. Figure~\ref{fig:failed-conditioning} should show both its training curve and held-out evaluation curve. The important observation is not a single noisy evaluation point but the sustained degradation beginning around 12,000 steps. Training loss alone did not provide an adequate warning, which reinforces the need for autoregressive held-out evaluation when training world models.
+
+\begin{figure}[H]
+    \centering
+    \resultfigure{0.92\linewidth}{images/failed_patch_conditioning_curves.pdf}
+    \caption{Training and evaluation curves for the failed variant with explicit learned signal embeddings concatenated to every DINO patch token. Evaluation performance deteriorated after approximately 12,000 optimizer steps.}
+    \label{fig:failed-conditioning}
+\end{figure}
+
+\subsection{Baseline versus implicit Patch Forcing}
+
+The revised Patch Forcing model converged faster and reached a clearly better held-out error than the frame-level baseline. Figure~\ref{fig:quantitative-results} is reserved for the direct comparison. The training curves are still useful for showing optimization behavior, but their absolute values should be interpreted carefully: the models are trained under different corruption distributions, so aggregate training loss is not a perfectly controlled measure of model quality. The held-out evaluation curves use a common generation protocol and provide the stronger comparison.
+
+\begin{figure}[H]
+    \centering
+    \begin{minipage}[t]{0.48\linewidth}
+        \centering
+        \resultfigure{\linewidth}{images/baseline_vs_patch_training.pdf}\\[-1mm]
+        \small (a) Training loss
+    \end{minipage}
+    \hfill
+    \begin{minipage}[t]{0.48\linewidth}
+        \centering
+        \resultfigure{\linewidth}{images/baseline_vs_patch_evaluation.pdf}\\[-1mm]
+        \small (b) Held-out evaluation
+    \end{minipage}
+    \caption{Frame-level baseline and final Patch Forcing model. The evaluation comparison is the main result because both models are measured under the same held-out rollout protocol.}
+    \label{fig:quantitative-results}
+\end{figure}
+
+The qualitative difference was larger than expected. In baseline rollouts, manipulated objects could disappear, change identity, or become detached from the interaction. The Patch Forcing model preserved objects much more consistently through time and represented interactions between the robot and scene more coherently. The generated physics was not always accurate, but the model more often maintained the basic fact that an object continued to exist and remained involved in the interaction. Figure~\ref{fig:qualitative-results} should present one held-out episode with ground truth, baseline, and Patch Forcing frames aligned in time.
+
+\begin{figure}[H]
+    \centering
+    \resultfigure{0.98\linewidth}{images/qualitative_rollout_comparison.pdf}
+    \caption{Decoded held-out rollout. Suggested row order: ground truth, frame-level baseline, and Patch Forcing. The selected episode should highlight object persistence and interaction consistency rather than only image sharpness.}
+    \label{fig:qualitative-results}
+\end{figure}
+
+These results support the original hypothesis that heterogeneous patch corruption encourages stronger spatial reasoning. However, they also refine it: in this architecture, explicitly giving every patch its signal level was not necessary and was possibly harmful. The successful model learned from the \emph{pattern of corruption} while receiving only a coarse frame-level indication of overall difficulty. A likely explanation is that the transformer had to use semantic and spatial evidence to decide which patches were reliable, rather than treating each patch as an independent denoising problem.
+
+\section{Limitations and Conclusion}
+
+The main limitation is experimental scale. A full run required roughly two days on six H200 GPUs, so it was not feasible to repeat every configuration with multiple random seeds or perform systematic sweeps over truncation standard deviation, signal schedulers, embedding sizes, and difficulty-loss weights. Consequently, the study demonstrates a large and consistent difference on one held-out split, but it cannot yet separate every causal factor or provide uncertainty estimates across runs.
+
+There are also two methodological caveats. First, decoded images are only visualizations of predicted DINO features and should not be treated as pixel-space metrics. Second, the final model includes the difficulty head with a small auxiliary loss; although the main architectural distinction is patch-wise corruption without patch-wise conditioning, a future ablation should independently disable this head. The adaptive sampler should likewise be evaluated under a fixed number of function evaluations before making claims about generation speed.
+
+Within these limits, the project reached its central objective. Patch-level corruption was integrated into an existing large world model, an initially unstable conditioning design was diagnosed, and a simpler alternative produced substantially better quantitative and qualitative rollouts than the frame-level baseline. The strongest result is improved object persistence and interaction consistency. For a 400M-parameter model trained only in a frozen semantic feature space, this suggests that the structure of the noising task can materially change what spatial and temporal relationships the model learns.
+
+\begin{thebibliography}{9}
+
+\bibitem{oquab2023dinov2}
+M.~Oquab, T.~Darcet, T.~Moutakanni, et al.
+``DINOv2: Learning Robust Visual Features without Supervision.''
+arXiv:2304.07193, 2023.
+
+\bibitem{chen2024diffusionforcing}
+B.~Chen, D.~Marti Monso, Y.~Du, M.~Simchowitz, R.~Tedrake, and V.~Sitzmann.
+``Diffusion Forcing: Next-token Prediction Meets Full-Sequence Diffusion.''
+Advances in Neural Information Processing Systems 37, 2024.
+
+\bibitem{schusterbauer2026patch}
+J.~Schusterbauer, M.~Gui, Y.~Li, P.~Ma, F.~Krause, and B.~Ommer.
+``Denoising, Fast and Slow: Difficulty-Aware Adaptive Sampling for Image Generation.''
+arXiv:2604.19141, 2026.
+
+\bibitem{walke2023bridgedatav2}
+H.~R.~Walke, K.~Black, T.~Z.~Zhao, et al.
+``BridgeData V2: A Dataset for Robot Learning at Scale.''
+Conference on Robot Learning, 2023.
+
+\end{thebibliography}
+
+\end{document}
