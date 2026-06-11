@@ -29,8 +29,8 @@ def _rope_cache(length: int, dim: int, base: float, device_str: str) -> Tuple[to
     positions = torch.arange(length, device=device, dtype=torch.float32)
     freqs = base ** (-torch.arange(0, dim, 2, device=device, dtype=torch.float32) / dim)
     angles = positions[:, None] * freqs[None, :]
-    cos = torch.cos(angles).repeat_interleave(2, dim=-1)
-    sin = torch.sin(angles).repeat_interleave(2, dim=-1)
+    cos = torch.cat((torch.cos(angles), torch.cos(angles)), dim=-1)
+    sin = torch.cat((torch.sin(angles), torch.sin(angles)), dim=-1)
     return cos, sin
 
 

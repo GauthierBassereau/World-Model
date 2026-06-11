@@ -63,7 +63,54 @@ SHARED_DELTA_ABSG_STATS = {
     "std": [0.02, 0.02, 0.02, 0.05, 0.05, 0.05, 0.5],
 }
 
+BRIDGEV2_ACTION_STATS = {
+    "mean": [
+        0.0005735716009908971,
+        0.00011228325259468299,
+        0.0003373184047051246,
+        -3.283241991818777e-05,
+        -0.0018181045801051378,
+        0.00010191781941100798,
+        0.6233555981508744,
+    ],
+    "std": [
+        0.010469300087834605,
+        0.015241937360906514,
+        0.012821477711892938,
+        0.03112553826170278,
+        0.032741803465084277,
+        0.055619840206296726,
+        0.48136343907227913,
+    ],
+}
+
+BRIDGEV2_JOINT_POSITION_STATS = {
+    "mean": [
+        0.3078664089670387,
+        0.03112775889086699,
+        0.0652421230355093,
+        0.010478423792782094,
+        -0.11532839496184308,
+        0.13292687768630143,
+    ],
+    "std": [
+        0.06390384208181099,
+        0.09462589615812915,
+        0.05397352374040936,
+        0.14631031040716821,
+        0.17009176302991325,
+        0.608639036668274,
+    ],
+}
+
+BRIDGEV2_PROPRIO_ACTION_STATS = {
+    "mean": BRIDGEV2_JOINT_POSITION_STATS["mean"] + BRIDGEV2_ACTION_STATS["mean"],
+    "std": BRIDGEV2_JOINT_POSITION_STATS["std"] + BRIDGEV2_ACTION_STATS["std"],
+}
+
 ACTION_MODE_DELTA_STATS = {
+    "bridgev2_action_normalized": BRIDGEV2_ACTION_STATS,
+    "bridgev2_proprio_action_normalized": BRIDGEV2_PROPRIO_ACTION_STATS,
     "soar_matchur5": SHARED_DELTA_ABSG_STATS,
     "ur5_delta_absg": SHARED_DELTA_ABSG_STATS,
     "ur5_relative_local_ee_normalized": UR5_DELTA_LOCAL_STATS,
@@ -102,6 +149,8 @@ def get_delta_timestamps(
     }
     
     ACTION_KEYS = {
+        "bridgev2_action_normalized": ["action"],
+        "bridgev2_proprio_action_normalized": ["observation.state", "action"],
         "soar_relative_ee": ["action"],
         "soar_relative_ee_normalized": ["action"],
         "soar_matchur5": ["observation.state", "action"],
@@ -128,6 +177,15 @@ def get_actions(
     """Returns action tensor. For action_mode=None, returns zeros."""
     if action_mode is None:
         return torch.zeros(sequence_length, action_dim)
+    if action_mode == "bridgev2_action_normalized":
+        return _normalize_actions(item["action"], stats=BRIDGEV2_ACTION_STATS)
+    if action_mode == "bridgev2_proprio_action_normalized":
+        joint_positions = _normalize_actions(
+            item["observation.state"][..., :6],
+            stats=BRIDGEV2_JOINT_POSITION_STATS,
+        )
+        actions = _normalize_actions(item["action"], stats=BRIDGEV2_ACTION_STATS)
+        return torch.cat([joint_positions, actions], dim=-1).float()
     if action_mode == "soar_relative_ee":
         return item["action"]
     if action_mode == "soar_relative_ee_normalized":

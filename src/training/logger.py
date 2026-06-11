@@ -287,12 +287,19 @@ class WorldModelLogger:
             if not self._wandb_eval_defined:
                 try:
                     self.wandb_run.define_metric("evaluation_step")
-                    self.wandb_run.define_metric("evaluation/*", step_metric="evaluation_step")
+                    self.wandb_run.define_metric("evaluation_graphs_metrics/*", step_metric="evaluation_step")
+                    self.wandb_run.define_metric("evaluation_ground_truth_videos/*", step_metric="evaluation_step")
+                    self.wandb_run.define_metric("evaluation_generated_videos/*", step_metric="evaluation_step")
                 except Exception:
                     pass
                 self._wandb_eval_defined = True
             payload: Dict[str, Any] = {"evaluation_step": self.current_step}
-            payload.update(result.metrics)
+            payload.update(
+                {
+                    self._evaluation_metric_wandb_key(key): value
+                    for key, value in result.metrics.items()
+                }
+            )
             self.wandb_run.log(payload, step=self.current_step)
         if self.wandb_run is not None and result.videos:
             video_payload = self._build_video_payload(result.videos, fps=fps)
@@ -305,7 +312,7 @@ class WorldModelLogger:
                 if self._wandb is None:
                     continue
                 # plot_data has xs, ys, keys, title
-                plot_payload[key] = self._wandb.plot.line_series(
+                plot_payload[self._evaluation_plot_wandb_key(key)] = self._wandb.plot.line_series(
                     xs=plot_data["xs"],
                     ys=plot_data["ys"],
                     keys=plot_data["keys"],
@@ -336,8 +343,42 @@ class WorldModelLogger:
         payload: Dict[str, Any] = {}
         for key, frames in videos.items():
             array = self._video_from_frames(frames)
-            payload[key] = self._wandb.Video(array, fps=fps, format="mp4")
+            payload[self._evaluation_video_wandb_key(key)] = self._wandb.Video(array, fps=fps, format="mp4")
         return payload
+
+    @staticmethod
+    def _evaluation_metric_wandb_key(key: str) -> str:
+        if key.startswith("evaluation_graphs_metrics/"):
+            return key
+        if key.startswith("evaluation/"):
+            key = key[len("evaluation/"):]
+        return f"evaluation_graphs_metrics/metrics/{key}"
+
+    @staticmethod
+    def _evaluation_plot_wandb_key(key: str) -> str:
+        if key.startswith("evaluation_graphs_metrics/"):
+            return key
+        if key.startswith("evaluation/plots/"):
+            key = key[len("evaluation/plots/"):]
+        elif key.startswith("evaluation/"):
+            key = key[len("evaluation/"):]
+        return f"evaluation_graphs_metrics/graphs/{key}"
+
+    @staticmethod
+    def _evaluation_video_wandb_key(key: str) -> str:
+        if key.startswith("evaluation_ground_truth_videos/") or key.startswith("evaluation_generated_videos/"):
+            return key
+
+        parts = key.split("/")
+        if len(parts) >= 2:
+            sample_name = parts[-2]
+            video_kind = parts[-1]
+            if video_kind == "ground_truth":
+                return f"evaluation_ground_truth_videos/{sample_name}"
+            if video_kind in {"rollout", "generated"}:
+                return f"evaluation_generated_videos/{sample_name}"
+
+        return key
 
     @staticmethod
     def _compute_grad_norm(parameters: Iterable[torch.nn.Parameter]) -> Optional[float]:

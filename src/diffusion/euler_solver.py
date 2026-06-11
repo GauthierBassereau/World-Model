@@ -3,6 +3,12 @@ from typing import Any
 import torch
 from src.diffusion.common import calculate_velocity_1_to_2
 from src.diffusion.signal_scheduler import SignalScheduler, SignalSchedulerConfig
+from src.world_model.utils import (
+    expand_signal_levels_for_model,
+    global_signal_levels_from_signal,
+    model_uses_patch_signal_conditioning,
+    unwrap_world_model,
+)
 
 @dataclass
 class EulerSolverConfig:
@@ -72,10 +78,12 @@ class EulerSolver:
             t_next = times[i+1]
             dt = t_next - t_curr
             t_input = torch.full((batch_size, 1), t_curr, device=device, dtype=latents.dtype)
+            t_input = expand_signal_levels_for_model(model, t_input, tokens)
             
             output = model(
                 x, 
                 t_input,
+                global_signal_levels=global_signal_levels_from_signal(t_input),
                 kv_cache=kv_cache,
                 actions=actions,
                 use_actions=use_actions,
@@ -117,17 +125,20 @@ class EulerSolver:
         dtype = x.dtype
         denoising_data = denoising_data or {}
         inner_steps = self.config.adaptive_inner_steps
+        condition_patches = model_uses_patch_signal_conditioning(model)
 
         for i, t_curr in enumerate(times[:-1]):
             t_next = times[i + 1]
             dt = (t_next - t_curr).to(dtype=dtype)
             t_patch = torch.full((batch_size, 1, tokens), t_curr, device=device, dtype=dtype)
             target_signal = torch.ones_like(t_patch)
+            global_signal_levels = t_patch.amax(dim=-1)
+            model_signal_levels = t_patch if condition_patches else global_signal_levels
 
             output = model(
                 x,
-                t_patch,
-                global_signal_levels=t_patch.amax(dim=-1),
+                model_signal_levels,
+                global_signal_levels=global_signal_levels,
                 kv_cache=kv_cache,
                 actions=actions,
                 use_actions=use_actions,
@@ -153,10 +164,12 @@ class EulerSolver:
             for _ in range(1, inner_steps):
                 remaining = (t_next.to(dtype=dtype) - t_patch).clamp_min(0.0)
                 step = torch.minimum(inner_step, remaining)
+                global_signal_levels = t_patch.amax(dim=-1)
+                model_signal_levels = t_patch if condition_patches else global_signal_levels
                 output = model(
                     x,
-                    t_patch,
-                    global_signal_levels=t_patch.amax(dim=-1),
+                    model_signal_levels,
+                    global_signal_levels=global_signal_levels,
                     kv_cache=kv_cache,
                     actions=actions,
                     use_actions=use_actions,
@@ -206,17 +219,9 @@ class EulerSolver:
 
     @staticmethod
     def _validate_adaptive_model(model) -> None:
-        unwrapped = model
-        while hasattr(unwrapped, "module") or hasattr(unwrapped, "_orig_mod"):
-            if hasattr(unwrapped, "module"):
-                unwrapped = unwrapped.module
-            elif hasattr(unwrapped, "_orig_mod"):
-                unwrapped = unwrapped._orig_mod
-
+        unwrapped = unwrap_world_model(model)
         config = getattr(unwrapped, "config", None)
         if config is None:
             return
-        if not getattr(config, "patch_signal_conditioning", False):
-            raise ValueError("Adaptive sampler requires world_model.patch_signal_conditioning=true.")
         if not getattr(config, "predict_patch_difficulty", False):
             raise ValueError("Adaptive sampler requires world_model.predict_patch_difficulty=true.")

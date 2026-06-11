@@ -1,13 +1,13 @@
 logging:
   project: world_model_evaluation
   entity: null
-  run_name: presentation_eval
+  run_name: bridgev2_proprio_patch_forcing_euler_ada_0.8_10
   output_dir: "/checkpoints"
   log_interval: 1
   signal_level_log_limit: 100
   checkpoint_interval: 0
 
-checkpoint_path: /gpfs/helios/home/gauthierbernarda/git/World-Model/checkpoints/400M_res_local_b128_t4_10%ur5/world_model_step_031000.pt
+checkpoint_path: checkpoints/400M_bridgev2_proprio_patch/world_model_step_019000.pt
 
 evaluator:
   video_sample_indices: all
@@ -23,20 +23,20 @@ eval_dataset:
   sequence_length_distribution:
     "85": 1.0
   fps: 5.0
-  action_dim: 7
+  action_dim: 13
   weights:
-    ur5_fix_eval: 1.0
-  reference_dataset: ur5_fix_eval
+    bridgev2_eval: 1.0
+  reference_dataset: bridgev2_eval
   datasets:
-    ur5_fix_eval:
+    bridgev2_eval:
       type: lerobot
-      repo_id: Gaugou/ur5_fix_5hz_eval
-      episodes: null
+      repo_id: Gaugou/BridgeV2
+      episodes: [862, 992, 4294, 8547, 9870, 9936, 12566, 15199, 15357, 15595, 16997, 24245, 25554, 26026, 30751, 30819, 31067, 31218, 34287, 35453, 35666, 36020, 36096, 38066, 38839, 39578, 39688, 41007, 41606, 41881, 46999, 48578]
       excluded_episodes: null
       episode_startpoint_only: true
       cameras:
-        observation.images.front: 1.0
-      action_mode: ur5_relative_local_ee_normalized
+        observation.images.primary: 1.0
+      action_mode: bridgev2_proprio_action_normalized
       independent_frames_probability: 0.0
       use_action_probability: 1.0
 
@@ -47,22 +47,26 @@ eval_dataloader:
   pin_memory: true
 
 signal_scheduler:
-  mode: "resolution_shift"  # {"resolution_shift", "linear_shift", "uniform", "logit_normal"}
+  mode: "logit_normal"  # {"resolution_shift", "linear_shift", "uniform", "logit_normal"}
   min_value: 0.0
   max_value: 1.0
-  logit_normal_loc: -0.8
-  logit_normal_scale: 0.8
+  logit_normal_loc: 0.0
+  logit_normal_scale: 1.0
+
 
 euler_solver:
-  number_steps: 50
+  number_steps: 10
   min_denom: 0.05
-  timestep_schedule: "signal" # linear, signal
+  timestep_schedule: "linear" # linear, signal
+  sampler: "adaptive" # "euler" or "adaptive"
+  adaptive_percentile: 0.4
+  adaptive_inner_steps: 10
 
 world_model:
   input_dim: 768
   latent_dim: 1024 # 1536, 1024
   bottleneck_dim: null
-  action_dim: 7
+  action_dim: 13
   num_registers: 4
   depth: 24 # 28, 24
   num_heads: 16 # 24, 16
@@ -73,8 +77,9 @@ world_model:
   qk_norm_eps: 1.0e-06
   attn_logit_softcapping: 50.0 # None for no softcapping -> able to use fused_attention
   use_action_token: true  # false for pretraining (no actions), true for finetuning
-  use_signal_token: true
-  signal_embedding_type: fourier
+  use_signal_token: false
+  signal_embedding_type: learned
   signal_embedding_num_bins: 1024
-  patch_signal_conditioning: false
+  patch_signal_conditioning: true
   patch_signal_embed_dim: 256
+  predict_patch_difficulty: true

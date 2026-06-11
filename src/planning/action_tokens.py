@@ -90,24 +90,10 @@ class ActionTokenBuilder:
             return None
         if initial_state is None:
             raise ValueError(f"{self.action_mode} needs an initial EE state to build action tokens.")
-        if initial_state.ndim == 1:
-            initial_state = initial_state.unsqueeze(0)
-        if deltas.ndim != 3:
-            raise ValueError(f"Expected deltas with shape [B, H, D], got {tuple(deltas.shape)}.")
-        batch_size, horizon, delta_dim = deltas.shape
-        if delta_dim != self.delta_dim:
-            raise ValueError(f"Expected delta_dim={self.delta_dim}, got {delta_dim}.")
-        initial_state = initial_state.to(device=deltas.device, dtype=deltas.dtype)
-        if initial_state.shape[0] == 1 and batch_size > 1:
-            initial_state = initial_state.expand(batch_size, -1)
-        if initial_state.shape != (batch_size, self.delta_dim):
-            raise ValueError(
-                f"Initial state shape {tuple(initial_state.shape)} incompatible with "
-                f"batch_size={batch_size}, delta_dim={self.delta_dim}."
-            )
-        cumulative = torch.cumsum(deltas, dim=1)
-        states_after_step = initial_state.unsqueeze(1) + cumulative
-        return torch.cat([initial_state.unsqueeze(1), states_after_step], dim=1)
+        states = self.integrate_trajectory_poses(initial_state, deltas)
+        if states is None:
+            raise RuntimeError("State-token integration unexpectedly returned None.")
+        return states
 
     def integrate_trajectory_poses(
         self,

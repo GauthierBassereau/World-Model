@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 
 from src.diffusion.euler_solver import EulerSolver
+from src.world_model.utils import expand_signal_levels_for_model, global_signal_levels_from_signal
 
 
 def _apply_rollout_signal(
@@ -39,7 +40,8 @@ def rollout_latents(
 
     if context_len > 0:
         context_frames = latents[:, :context_len]
-        context_signal = torch.ones((batch_size, context_len), device=device)
+        context_signal = torch.ones((batch_size, context_len), device=device, dtype=latents.dtype)
+        context_signal = expand_signal_levels_for_model(model, context_signal, tokens)
         ctx_actions = actions[:, :context_len] if actions is not None else None
         ctx_use_actions = use_actions[:, :context_len] if use_actions is not None else None
         ctx_indep = independent_frames[:, :context_len] if independent_frames is not None else None
@@ -48,6 +50,7 @@ def rollout_latents(
             output = model(
                 noisy_latents=context_frames,
                 signal_levels=context_signal,
+                global_signal_levels=global_signal_levels_from_signal(context_signal),
                 actions=ctx_actions,
                 independent_frames=ctx_indep,
                 use_actions=ctx_use_actions,
@@ -89,12 +92,14 @@ def rollout_latents(
                 rollout_signal_level,
                 rollout_add_noise,
             )
-            signal = torch.full((batch_size, 1), rollout_signal_level, device=device)
+            signal = torch.full((batch_size, 1), rollout_signal_level, device=device, dtype=clean_frame.dtype)
+            signal = expand_signal_levels_for_model(model, signal, tokens)
             
             with torch.no_grad():
                 output = model(
                     noisy_latents=noisy_next_input,
                     signal_levels=signal,
+                    global_signal_levels=global_signal_levels_from_signal(signal),
                     actions=current_actions,
                     independent_frames=None,
                     use_actions=current_use_action,

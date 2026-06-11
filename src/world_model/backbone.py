@@ -131,8 +131,8 @@ class WorldModelBackbone(nn.Module):
             torch.nn.init.zeros_(self.patch_logvar_proj.weight)
             torch.nn.init.zeros_(self.patch_logvar_proj.bias)
 
-    def _get_spatial_mask(self, seq_len: int, device: torch.device) -> torch.Tensor:
-        return torch.zeros((1, 1, seq_len, seq_len), device=device, dtype=torch.bool) # full attention baby
+    def _get_spatial_mask(self, seq_len: int, device: torch.device) -> Optional[torch.Tensor]:
+        return None
 
     def _get_temporal_mask(
         self, 

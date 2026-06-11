@@ -39,12 +39,15 @@ class SignalScheduler:
         batch, steps, tokens, dim = latents.shape
 
         base = torch.rand((batch, steps), dtype=torch.float32)
-        signal_level = self._sample_from_mode(base)
-        signal_level = signal_level * (self.config.max_value - self.config.min_value) + self.config.min_value
+        signal_level = self.signal_from_base(base)
         return (
             signal_level.to(device=latents.device, dtype=latents.dtype),
             base.to(device=latents.device, dtype=latents.dtype),
         )
+
+    def signal_from_base(self, base: torch.Tensor) -> torch.Tensor:
+        signal_level = self._sample_from_mode(base)
+        return signal_level * (self.config.max_value - self.config.min_value) + self.config.min_value
 
     def get_timesteps(self, num_steps: int) -> torch.Tensor:
         linear_t = torch.linspace(0.0, 1.0, num_steps + 1, dtype=torch.float32)

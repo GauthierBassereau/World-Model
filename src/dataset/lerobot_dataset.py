@@ -125,6 +125,8 @@ class LeRobotDataset(Dataset):
         return frame_count
 
     def effective_length(self, target_fps: float) -> float:
+        if self.cfg.episode_startpoint_only:
+            return float(len(self.indices))
         return self.duration_seconds * float(target_fps)
 
     def _resolve_native_fps(self) -> float:

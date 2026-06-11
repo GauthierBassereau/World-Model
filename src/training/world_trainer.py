@@ -19,6 +19,7 @@ from src.world_model.components import RMSNorm
 
 from src.diffusion.common import calculate_velocity_1_to_2
 from src.diffusion.euler_solver import EulerSolverConfig
+from src.diffusion.patch_forcing import sample_ltg_patch_signal_levels
 from src.diffusion.signal_scheduler import SignalScheduler, SignalSchedulerConfig
 
 from src.training.logger import WorldModelLogger, LoggingConfig
@@ -130,17 +131,7 @@ class WorldModelTrainer:
         self.device = torch.device("cuda", self.device_idx)
         self.is_main_process = self.rank == 0
 
-        if config.patch_forcing.enabled and not config.world_model.patch_signal_conditioning:
-            raise ValueError(
-                "patch_forcing.enabled requires world_model.patch_signal_conditioning=true "
-                "so the model receives per-patch signal levels."
-            )
         if config.world_model.predict_patch_difficulty:
-            if not config.world_model.patch_signal_conditioning:
-                raise ValueError(
-                    "world_model.predict_patch_difficulty requires "
-                    "world_model.patch_signal_conditioning=true."
-                )
             if config.trainer.loss_type != "velocity":
                 raise ValueError("Patch difficulty training currently requires trainer.loss_type=velocity.")
         
@@ -451,20 +442,26 @@ class WorldModelTrainer:
             latents = latents.view(batch_size, steps, tokens, dim)
         
         base_signal_levels, scheduler_steps = self.signal_scheduler.sample_with_base(latents)
-        signal_levels = self._sample_patch_signal_levels(
+        signal_levels = sample_ltg_patch_signal_levels(
             base_signal_levels=base_signal_levels,
             num_tokens=tokens,
+            ltg_std=self.config.patch_forcing.ltg_std,
         ) if self.config.patch_forcing.enabled else base_signal_levels
         self.logger.log_distr_signal(signal_levels)
         base_noise = torch.randn_like(latents)
         signal_levels_expanded = self._expand_signal_to_latents(signal_levels, latents)
         
         noisy_latents = (1.0 - signal_levels_expanded) * base_noise + signal_levels_expanded * latents
+        model_signal_levels = (
+            signal_levels
+            if self.config.world_model.patch_signal_conditioning
+            else base_signal_levels
+        )
         
         with self._autocast_scope():
             outputs = self._train_module(
                 noisy_latents,
-                signal_levels=signal_levels,
+                signal_levels=model_signal_levels,
                 global_signal_levels=base_signal_levels,
                 actions=actions,
                 independent_frames=independent_frames,
@@ -485,29 +482,6 @@ class WorldModelTrainer:
             )
 
         return micro_step_loss
-
-    def _sample_patch_signal_levels(
-        self,
-        base_signal_levels: torch.Tensor,
-        num_tokens: int,
-    ) -> torch.Tensor:
-        if self.config.patch_forcing.sampler != "ltg":
-            raise RuntimeError(f"Unsupported patch forcing sampler: {self.config.patch_forcing.sampler}")
-
-        base = base_signal_levels.float()
-        std = torch.minimum(
-            base / 2.0,
-            torch.full_like(base, self.config.patch_forcing.ltg_std),
-        )
-        noise = torch.randn(
-            (*base.shape, num_tokens),
-            device=base.device,
-            dtype=base.dtype,
-        ).abs()
-        patch_signal_levels = base.unsqueeze(-1) - noise * std.unsqueeze(-1)
-        fallback = torch.rand_like(patch_signal_levels) * base.unsqueeze(-1)
-        patch_signal_levels = torch.where(patch_signal_levels < 0.0, fallback, patch_signal_levels)
-        return patch_signal_levels.to(dtype=base_signal_levels.dtype)
 
     def _compute_loss(
         self,
