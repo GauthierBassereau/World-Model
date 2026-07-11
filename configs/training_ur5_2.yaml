@@ -1,7 +1,7 @@
 logging:
-  project: world_model
+  project: world_model_patch
   entity: null
-  run_name: ur5_soar
+  run_name: ur5_droid_classic
   output_dir: checkpoints
   log_interval: 1
   signal_level_log_limit: 100
@@ -15,14 +15,14 @@ trainer:
   evaluation_interval: 500
   grad_accum_steps: 4
   precision: bf16
-  seed: 10
+  seed: 3
   resume: false # true
   load_checkpoint: null
 
 evaluator:
   video_sample_indices: all
   rollout_start_frame: 10
-  rollout_horizons: [1, 5, 10, 20]
+  rollout_horizons: [1, 5, 10, 20, 40]
   rollout_signal_level: 0.8
   rollout_add_noise: true
   teacher_forced_batch_size: 64
@@ -33,6 +33,8 @@ optimizer:
   lr:
     "0": 1.0e-7
     "500": 3.0e-4
+    "30000": 3.0e-4
+    "60000": 3.0e-5
   eps: 1.0e-08
   grad_clip_norm: 1.0
   weight_decay: 0.0
@@ -43,7 +45,7 @@ ema:
   start_step: 5000
 
 train_dataloader:
-  batch_size: 256
+  batch_size: 128
   shuffle: true
   num_workers: 6
   pin_memory: true
@@ -52,11 +54,11 @@ train_dataset:
   sequence_length_distribution:
     "32": 1.0
   fps: 5.0
-  action_dim: 7
+  action_dim: 14
   weights:
-    ur5_fix: 0.05
+    ur5_fix: 0.1
     ur5_wild: 0.2
-    soar: 0.75
+    droid: 0.7
   reference_dataset: ur5_fix
   datasets:
     ur5_fix:
@@ -67,7 +69,7 @@ train_dataset:
       episode_startpoint_only: false
       cameras:
         observation.images.front: 1.0
-      action_mode: ur5_delta_absg
+      action_mode: ur5_ee_state_relative_base_ee_normalized
       independent_frames_probability: 0.3
       use_action_probability: 0.7
     ur5_wild:
@@ -78,20 +80,20 @@ train_dataset:
       episode_startpoint_only: false
       cameras:
         observation.images.front: 1.0
-      action_mode: ur5_delta_absg
+      action_mode: ur5_ee_state_relative_base_ee_normalized
       independent_frames_probability: 0.3
       use_action_probability: 0.7
-    soar:
+    droid:
       type: lerobot
-      repo_id: Gaugou/Soar
+      repo_id: aractingi/droid_1.0.1
       episodes: null
       excluded_episodes: null
-      episode_startpoint_only: false
+      episode_startpoint_only: true
       cameras:
-        observation.images.image: 1.0
-      action_mode: soar_matchur5
+        observation.images.exterior_1_left: 1.0
+      action_mode: null
       independent_frames_probability: 0.3
-      use_action_probability: 0.7
+      use_action_probability: 0.0
 
 eval_dataloader:
   batch_size: 8
@@ -103,7 +105,7 @@ eval_dataset:
   sequence_length_distribution:
     "85": 1.0
   fps: 5.0
-  action_dim: 7
+  action_dim: 14
   weights:
     ur5_fix_eval: 1.0
   reference_dataset: ur5_fix_eval
@@ -116,27 +118,33 @@ eval_dataset:
       episode_startpoint_only: true
       cameras:
         observation.images.front: 1.0
-      action_mode: ur5_delta_absg
+      action_mode: ur5_ee_state_relative_base_ee_normalized
       independent_frames_probability: 0.0
       use_action_probability: 1.0
 
+patch_forcing:
+  enabled: false
+  sampler: ltg
+  ltg_std: 0.6
+  difficulty_loss_weight: 0.01
+
 signal_scheduler:
-  mode: "resolution_shift"  # {"resolution_shift", "linear_shift", "uniform", "logit_normal"}
+  mode: "logit_normal"  # {"resolution_shift", "linear_shift", "uniform", "logit_normal"}
   min_value: 0.0
   max_value: 1.0
-  logit_normal_loc: -0.8
-  logit_normal_scale: 0.8
+  logit_normal_loc: 0.0
+  logit_normal_scale: 1.0
 
 euler_solver:
   number_steps: 50
   min_denom: 0.05
-  timestep_schedule: "signal"
+  timestep_schedule: "linear"
 
 world_model:
   input_dim: 768
   latent_dim: 1024 # 1536, 1024
   bottleneck_dim: null
-  action_dim: 7
+  action_dim: 14
   num_registers: 4
   depth: 24 # 28, 24
   num_heads: 16 # 24, 16
@@ -148,7 +156,8 @@ world_model:
   attn_logit_softcapping: 50.0 # None for no softcapping -> able to use fused_attention
   use_action_token: true  # false for pretraining (no actions), true for finetuning
   use_signal_token: true
-  signal_embedding_type: fourier
+  signal_embedding_type: fourier # fourier, learned
   signal_embedding_num_bins: 1024
   patch_signal_conditioning: false
   patch_signal_embed_dim: 256
+  predict_patch_difficulty: false

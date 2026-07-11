@@ -1,7 +1,7 @@
 logging:
-  project: world_model_patch
+  project: world_model_bridgev2
   entity: null
-  run_name: ur5_droid_patch
+  run_name: 400M_bridgev2_proprio_patch_no_t_cond
   output_dir: checkpoints
   log_interval: 1
   signal_level_log_limit: 100
@@ -13,7 +13,7 @@ trainer:
   loss_weighting_intercept: 0.1
   loss_weighting_slope: 0.9
   evaluation_interval: 500
-  grad_accum_steps: 8
+  grad_accum_steps: 4
   precision: bf16
   seed: 3
   resume: false # true
@@ -45,80 +45,56 @@ ema:
   start_step: 5000
 
 train_dataloader:
-  batch_size: 128
+  batch_size: 120
   shuffle: true
   num_workers: 6
   pin_memory: true
 
 train_dataset:
   sequence_length_distribution:
-    "32": 1.0
+    "40": 1.0
   fps: 5.0
-  action_dim: 14
+  action_dim: 13
   weights:
-    ur5_fix: 0.1
-    ur5_wild: 0.2
-    droid: 0.7
-  reference_dataset: ur5_fix
+    bridgev2: 1.0
+  reference_dataset: bridgev2
   datasets:
-    ur5_fix:
+    bridgev2:
       type: lerobot
-      repo_id: Gaugou/ur5_fix_5hz
+      repo_id: Gaugou/BridgeV2
       episodes: null
-      excluded_episodes: null
-      episode_startpoint_only: false
-      cameras:
-        observation.images.front: 1.0
-      action_mode: ur5_ee_state_relative_base_ee_normalized
-      independent_frames_probability: 0.3
-      use_action_probability: 0.7
-    ur5_wild:
-      type: lerobot
-      repo_id: Gaugou/ur5_wild_5hz
-      episodes: null
-      excluded_episodes: null
-      episode_startpoint_only: false
-      cameras:
-        observation.images.front: 1.0
-      action_mode: ur5_ee_state_relative_base_ee_normalized
-      independent_frames_probability: 0.3
-      use_action_probability: 0.7
-    droid:
-      type: lerobot
-      repo_id: aractingi/droid_1.0.1
-      episodes: null
-      excluded_episodes: null
+      excluded_episodes: [862, 992, 4294, 8547, 9870, 9936, 12566, 15199, 15357, 15595, 16997, 24245, 25554, 26026, 30751, 30819, 31067, 31218, 34287, 35453, 35666, 36020, 36096, 38066, 38839, 39578, 39688, 41007, 41606, 41881, 46999, 48578]
       episode_startpoint_only: true
       cameras:
-        observation.images.exterior_1_left: 1.0
-      action_mode: null
-      independent_frames_probability: 0.3
-      use_action_probability: 0.0
+        observation.images.primary: 1.0
+      action_mode: bridgev2_proprio_action_normalized
+      independent_frames_probability: 0.15
+      use_action_probability: 0.8
 
 eval_dataloader:
-  batch_size: 8
+  batch_size: 18
   shuffle: false
   num_workers: 0
   pin_memory: false
 
 eval_dataset:
   sequence_length_distribution:
-    "85": 1.0
+    "60": 1.0
   fps: 5.0
-  action_dim: 14
+  action_dim: 13
   weights:
-    ur5_fix_eval: 1.0
-  reference_dataset: ur5_fix_eval
+    bridgev2_eval: 1.0
+  reference_dataset: bridgev2_eval
   datasets:
-    ur5_fix_eval:
+    bridgev2_eval:
       type: lerobot
-      repo_id: Gaugou/ur5_fix_5hz_eval
-      episodes: null
+      repo_id: Gaugou/BridgeV2
+      episodes: [862, 992, 4294, 8547, 9870, 9936, 12566, 15199, 15357, 15595, 16997, 24245, 25554, 26026, 30751, 30819, 31067, 31218, 34287, 35453, 35666, 36020, 36096, 38066, 38839, 39578, 39688, 41007, 41606, 41881, 46999, 48578]
       excluded_episodes: null
       episode_startpoint_only: true
       cameras:
-        observation.images.front: 1.0
-      action_mode: ur5_ee_state_relative_base_ee_normalized
+        observation.images.primary: 1.0
+      action_mode: bridgev2_proprio_action_normalized
       independent_frames_probability: 0.0
       use_action_probability: 1.0
 
@@ -144,7 +120,7 @@ world_model:
   input_dim: 768
   latent_dim: 1024 # 1536, 1024
   bottleneck_dim: null
-  action_dim: 14
+  action_dim: 13
   num_registers: 4
   depth: 24 # 28, 24
   num_heads: 16 # 24, 16
@@ -155,9 +131,9 @@ world_model:
   qk_norm_eps: 1.0e-06
   attn_logit_softcapping: 50.0 # None for no softcapping -> able to use fused_attention
   use_action_token: true  # false for pretraining (no actions), true for finetuning
-  use_signal_token: true
+  use_signal_token: false
   signal_embedding_type: fourier # fourier, learned
   signal_embedding_num_bins: 1024
   patch_signal_conditioning: false
   patch_signal_embed_dim: 256
-  predict_patch_difficulty: false
+  predict_patch_difficulty: true
