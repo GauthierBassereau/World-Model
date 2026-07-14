@@ -1,0 +1,27 @@
+{
+  "profile": "dinov3b-k11",
+  "input": "archive/autoencoder_reconstruction/ur5_dinov3b_k11_original.png",
+  "device": "mps",
+  "image_shape": [
+    1,
+    3,
+    256,
+    256
+  ],
+  "latent_shape": [
+    1,
+    256,
+    768
+  ],
+  "reconstruction_shape": [
+    1,
+    3,
+    256,
+    256
+  ],
+  "mse": 0.0012710231821984053,
+  "psnr_db": 28.958465282744488,
+  "original": "archive/autoencoder_reconstruction/ur5_dinov3b_k11_original.png",
+  "reconstruction": "archive/autoencoder_reconstruction/ur5_dinov3b_k11_reconstruction.png",
+  "comparison": "archive/autoencoder_reconstruction/ur5_dinov3b_k11_comparison.png"
+}

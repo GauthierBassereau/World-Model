@@ -236,9 +236,9 @@ def plot_spatial_attention(
 
     num_prefix = config.num_registers
     if config.use_signal_token:
-        num_prefix += 1
+        num_prefix += config.num_signal_tokens
     if config.use_action_token:
-        num_prefix += 1
+        num_prefix += config.num_action_tokens
     S_total = num_prefix + num_patches
 
     fig, axes = plt.subplots(
@@ -290,9 +290,9 @@ def plot_spatial_attention(
 
     prefix_parts = []
     if config.use_signal_token:
-        prefix_parts.append("σ = signal")
+        prefix_parts.append(f"σ = signal (×{config.num_signal_tokens})")
     if config.use_action_token:
-        prefix_parts.append("a = action")
+        prefix_parts.append(f"a = action (×{config.num_action_tokens})")
     prefix_parts.append(f"r = register (×{config.num_registers})")
     prefix_desc = ", ".join(prefix_parts)
     fig.text(
@@ -400,9 +400,9 @@ def plot_spatial_attention_grid(
 
     num_prefix = config.num_registers
     if config.use_signal_token:
-        num_prefix += 1
+        num_prefix += config.num_signal_tokens
     if config.use_action_token:
-        num_prefix += 1
+        num_prefix += config.num_action_tokens
 
     # Use a mid-depth spatial layer
     layer_i = spatial_layers[len(spatial_layers) // 2]

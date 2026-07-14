@@ -1,0 +1,12 @@
+thesis: The review questions are answered by separating preprocessing, conditioning/masking, and the actual optimization objective.
+audience: thesis defense committee with limited discussion time
+one-line arc: exact tensor construction -> explicit missing-action semantics -> objective explains the CEM path
+slide 1 claim: A 32-frame sample becomes B x 32 x 262 x 1024, but attention is factorized.
+proof object: sequence preprocessing flow and token-count strip
+source: thesis Figure 3.2 and world-model implementation
+slide 2 claim: The learned base token separates missing action from a valid zero control.
+proof object: two-branch embedding equation and sentinel comparison
+source: backbone action-token construction and dataset masks
+slide 3 claim: The hook is allowed by the cost because CEM is endpoint-seeking, not path-following.
+proof object: Figure 4.6 crop plus objective/omission map
+source: thesis planning objective, planning configuration, CEM implementation

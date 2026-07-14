@@ -11,7 +11,12 @@ from fastapi.responses import HTMLResponse
 from typing import Dict, List, Optional, Tuple, Any
 
 from src.world_model.backbone import WorldModelBackbone, WorldModelConfig
-from src.rae_dino.rae import RAE
+from src.rae_dino import (
+    AutoencoderConfig,
+    build_autoencoder,
+    configured_autoencoder_resolution,
+    validate_autoencoder_input_dim,
+)
 from src.dataset.world_dataset import WorldDatasetConfig, WorldDataset
 from src.dataset.lerobot_dataset import LeRobotDatasetConfig, LeRobotDataset
 from src.dataset.loader import DataloaderConfig
@@ -38,6 +43,7 @@ class PlaygroundConfig:
     
     key_mapping: Dict[str, List[float]] = field(default_factory=dict)
     
+    autoencoder: AutoencoderConfig = field(default_factory=AutoencoderConfig)
     world_model: WorldModelConfig = field(default_factory=WorldModelConfig)
     euler_solver: EulerSolverConfig = field(default_factory=EulerSolverConfig)
     signal_scheduler: SignalSchedulerConfig = field(default_factory=SignalSchedulerConfig)
@@ -57,7 +63,7 @@ class PlaygroundConfig:
 app = FastAPI()
 config: PlaygroundConfig = None
 model: WorldModelBackbone = None
-autoencoder: RAE = None
+autoencoder: torch.nn.Module = None
 solver: EulerSolver = None
 dataset_backend: Any = None
 dataset_stats: Any = None
@@ -161,11 +167,15 @@ def load_model():
     model.eval()
     
     logger.info("Loading Autoencoder...")
-    autoencoder = RAE()
+    autoencoder = build_autoencoder(config.autoencoder)
+    validate_autoencoder_input_dim(autoencoder, config.world_model.input_dim)
     autoencoder.to(device)
     autoencoder.eval()
     
     logger.info("Loading Dataset Metadata...")
+    config.dataset.image_size = configured_autoencoder_resolution(
+        config.autoencoder
+    )
     ds = LeRobotDataset(config.dataset, DummyLogger())
     dataset_backend = ds.backend
     dataset_stats = ds.stats

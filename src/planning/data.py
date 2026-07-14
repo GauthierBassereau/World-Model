@@ -85,6 +85,7 @@ def load_planning_sample(
     ds_conf_dict["sequence_length"] = sequence_length
     ds_conf_dict["fps"] = dataset_cfg.fps
     ds_conf_dict["action_dim"] = dataset_cfg.action_dim
+    ds_conf_dict["image_size"] = dataset_cfg.image_size
     ds_cfg = pyrallis.decode(LeRobotDatasetConfig, ds_conf_dict)
     dataset = LeRobotDataset(ds_cfg, logger=logger)
 

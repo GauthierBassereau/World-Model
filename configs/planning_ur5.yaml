@@ -9,6 +9,11 @@ logging:
 
 checkpoint_path: /gpfs/helios/home/gauthierbernarda/git/World-Model/checkpoints/training_ur5_400M_res/world_model_step_013000.pt
 
+# The path above is a legacy DINOv2 checkpoint. Use type: raev2 with the new
+# world-model checkpoints produced by configs/training_ur5.yaml.
+autoencoder:
+  type: legacy
+
 planning:
   mode: classic_cem  # classic_cem or mpc_cem
   episode_index: 7
@@ -103,5 +108,3 @@ world_model:
   use_signal_token: true
   signal_embedding_type: fourier
   signal_embedding_num_bins: 1024
-  patch_signal_conditioning: false
-  patch_signal_embed_dim: 256

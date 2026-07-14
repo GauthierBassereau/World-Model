@@ -1,0 +1,11 @@
+Primary source: thesis/thesis.tex, especially Methodology sections on visual state representation, input sequence construction, transformer masking, diffusion corruption, and planning.
+Implementation cross-checks:
+- src/world_model/backbone.py
+- src/training/world_trainer.py
+- src/dataset/lerobot_dataset.py
+- src/diffusion/signal_scheduler.py
+- src/planning/cem.py
+Visual source:
+- thesis/images/token_pipeline.png, thesis Figure 3.2
+- thesis/images/results_cem_trajectory_3d.png, thesis Figure 4.6
+All tensor counts and objective terms are taken from these local sources.

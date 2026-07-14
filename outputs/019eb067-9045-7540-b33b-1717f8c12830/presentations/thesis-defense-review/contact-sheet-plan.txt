@@ -1,0 +1,5 @@
+Three-slide defense backup deck.
+Slide 1: full-width horizontal pipeline with token-accounting strip and shape callouts.
+Slide 2: central two-branch action-token comparison with a compact sentinel-risk rail.
+Slide 3: asymmetric split with objective on the left, Figure 4.6 evidence on the right, and fixes along the bottom.
+The three slides use distinct macro layouts and remain readable at thumbnail size.

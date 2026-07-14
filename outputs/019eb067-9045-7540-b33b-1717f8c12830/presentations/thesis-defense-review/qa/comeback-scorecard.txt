@@ -1,0 +1,13 @@
+story: 5 - each slide answers one reviewer question and advances the defense argument
+specificity: 5 - exact tensor shapes, probabilities, objective terms, and horizon values
+rhythm: 4 - three distinct layouts: pipeline, comparison, evidence/objective split
+whitespace: 4 - dense enough for backup slides while maintaining clear gutters
+chart clarity: 4 - Figure 4.6 evidence is legible and directly paired with the omitted costs
+typography: 4 - strong claim hierarchy with mono tensor/equation labels
+restraint: 5 - no decorative filler or generic iconography
+precision: 5 - all technical statements cross-checked against thesis and code
+coherence: 5 - consistent dark system and semantic action/signal/patch colors
+reference delta: n/a
+
+total: 41 / 45
+profile gate: pass

@@ -6,7 +6,12 @@ from dataclasses import dataclass, field
 from src.training.world_evaluator import WorldModelEvaluator, EvaluationConfig
 from src.training.logger import WorldModelLogger, LoggingConfig
 from src.world_model.backbone import WorldModelBackbone, WorldModelConfig
-from src.rae_dino.rae import RAE
+from src.rae_dino import (
+    AutoencoderConfig,
+    build_autoencoder,
+    configured_autoencoder_resolution,
+    validate_autoencoder_input_dim,
+)
 from src.dataset.world_dataset import WorldDatasetConfig
 from src.dataset.loader import DataloaderConfig
 from src.diffusion.signal_scheduler import SignalSchedulerConfig
@@ -16,6 +21,8 @@ from src.training.utils import set_seed
 @dataclass
 class EvaluationScriptConfig:
     checkpoint_path: str
+    use_checkpoint_config: bool = True
+    autoencoder: AutoencoderConfig = field(default_factory=AutoencoderConfig)
     evaluator: EvaluationConfig = field(default_factory=EvaluationConfig)
     eval_dataset: WorldDatasetConfig = field(default_factory=lambda: WorldDatasetConfig(datasets={}, weights={}))
     eval_dataloader: DataloaderConfig = field(default_factory=DataloaderConfig)
@@ -45,16 +52,32 @@ def main() -> None:
     seed = set_seed(config.seed, world_size, rank)
 
     logger = WorldModelLogger(config.logging, is_main_process=is_main_process)
-    logger.init_wandb(pyrallis.encode(config))
-
     logger.info(f"Initialized process {rank}/{world_size} on device {device}")
+
+    logger.info(f"Loading checkpoint from {config.checkpoint_path}...")
+    checkpoint = torch.load(config.checkpoint_path, map_location=device)
+    saved_config = checkpoint.get("config") if isinstance(checkpoint, dict) else None
+    if config.use_checkpoint_config and isinstance(saved_config, dict):
+        if isinstance(saved_config.get("world_model"), dict):
+            config.world_model = pyrallis.decode(
+                WorldModelConfig,
+                saved_config["world_model"],
+            )
+            logger.info("Using world-model architecture saved in the checkpoint.")
+        if isinstance(saved_config.get("autoencoder"), dict):
+            config.autoencoder = pyrallis.decode(
+                AutoencoderConfig,
+                saved_config["autoencoder"],
+            )
+            logger.info("Using autoencoder profile saved in the checkpoint.")
+    config.eval_dataset.image_size = configured_autoencoder_resolution(
+        config.autoencoder
+    )
+    logger.init_wandb(pyrallis.encode(config))
 
     logger.info("Initializing World Model...")
     model = WorldModelBackbone(config.world_model)
     model.to(device)
-    
-    logger.info(f"Loading checkpoint from {config.checkpoint_path}...")
-    checkpoint = torch.load(config.checkpoint_path, map_location=device)
     
     if "model" in checkpoint:
         state_dict = checkpoint["model"]
@@ -79,7 +102,8 @@ def main() -> None:
     model = torch.compile(model)
     
     logger.info("Initializing Autoencoder...")
-    autoencoder = RAE()
+    autoencoder = build_autoencoder(config.autoencoder)
+    validate_autoencoder_input_dim(autoencoder, config.world_model.input_dim)
     autoencoder.to(device)
     autoencoder.eval()
     for param in autoencoder.parameters():

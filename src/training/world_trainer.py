@@ -25,6 +25,7 @@ from src.diffusion.signal_scheduler import SignalScheduler, SignalSchedulerConfi
 from src.training.logger import WorldModelLogger, LoggingConfig
 from src.training.utils import set_seed, sync_metric_stats, sync_metrics
 from src.training.world_evaluator import WorldModelEvaluator, EvaluationConfig
+from src.rae_dino import AutoencoderConfig
 
 
 @dataclass
@@ -76,6 +77,7 @@ class EMAConfig:
 
 @dataclass
 class WorldModelTrainingConfig:
+    autoencoder: AutoencoderConfig = field(default_factory=AutoencoderConfig)
     train_dataset: WorldDatasetConfig = field(default_factory=lambda: WorldDatasetConfig(datasets={}, weights={}))
     train_dataloader: DataloaderConfig = field(default_factory=DataloaderConfig)
     eval_dataset: WorldDatasetConfig = field(default_factory=lambda: WorldDatasetConfig(datasets={}, weights={}))
@@ -251,9 +253,11 @@ class WorldModelTrainer:
 
         no_decay.add('base_action_embed')
         no_decay.add('register_tokens')
+        no_decay.add('signal_token_offsets')
         # torch.compile() prefixes parameter names with '_orig_mod.'
         no_decay.add('_orig_mod.base_action_embed')
         no_decay.add('_orig_mod.register_tokens')
+        no_decay.add('_orig_mod.signal_token_offsets')
         
         param_dict = {pn: p for pn, p in self.model.named_parameters()}
         
@@ -452,17 +456,10 @@ class WorldModelTrainer:
         signal_levels_expanded = self._expand_signal_to_latents(signal_levels, latents)
         
         noisy_latents = (1.0 - signal_levels_expanded) * base_noise + signal_levels_expanded * latents
-        model_signal_levels = (
-            signal_levels
-            if self.config.world_model.patch_signal_conditioning
-            else base_signal_levels
-        )
-        
         with self._autocast_scope():
             outputs = self._train_module(
                 noisy_latents,
-                signal_levels=model_signal_levels,
-                global_signal_levels=base_signal_levels,
+                signal_levels=base_signal_levels,
                 actions=actions,
                 independent_frames=independent_frames,
                 use_actions=use_actions,
@@ -502,13 +499,21 @@ class WorldModelTrainer:
         if self.config.trainer.loss_type == "position":
             loss_unreduced = torch.nn.functional.mse_loss(latents, outputs.latents, reduction="none")
         else:
-            v_true = latents - base_noise
+            target_signal = torch.ones_like(signal_levels)
+            min_denom = self.config.euler_solver.min_denom
+            v_true = calculate_velocity_1_to_2(
+                latent_1=noisy_latents,
+                latent_2=latents,
+                signal_levels_1=signal_levels,
+                signal_levels_2=target_signal,
+                min_denom=min_denom,
+            )
             v_pred = calculate_velocity_1_to_2(
                 latent_1=noisy_latents,
                 latent_2=outputs.latents,
                 signal_levels_1=signal_levels,
-                signal_levels_2=torch.ones_like(signal_levels),
-                min_denom=0.05,
+                signal_levels_2=target_signal,
+                min_denom=min_denom,
             )
             loss_unreduced = torch.nn.functional.mse_loss(v_pred, v_true, reduction="none")
 
@@ -712,6 +717,9 @@ class WorldModelTrainer:
         self.evaluator.evaluate(eval_model)
 
     def _save_checkpoint(self, step: int) -> None:
+        # This collective must be entered by every rank. Keeping it after the
+        # rank-zero early return deadlocks as soon as EMA checkpointing is used.
+        self._sync_ema_across_ranks()
         if not self.is_main_process:
             return
         self._checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -728,7 +736,6 @@ class WorldModelTrainer:
             payload["ema_model"] = self.ema_model.state_dict()
         torch.save(payload, checkpoint_path)
         self.logger.info("Saved checkpoint to %s", checkpoint_path)
-        self._sync_ema_across_ranks()
 
     def _sync_ema_across_ranks(self):
         if self.world_size <= 1 or self.ema_model is None:

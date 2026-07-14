@@ -9,30 +9,42 @@ from torch.utils.data import DataLoader
 
 from src.dataset.lerobot_dataset import LeRobotDataset, LeRobotDatasetConfig
 from src.training.logger import WorldModelLogger, LoggingConfig
-from src.rae_dino.rae import RAE
+from src.rae_dino import (
+    AutoencoderConfig,
+    build_autoencoder,
+    configured_autoencoder_resolution,
+)
 from src.dataset.collator import StackCollator
 
 def main():
     output_dir = Path("archive/latent_distr")
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device(
+        "cuda"
+        if torch.cuda.is_available()
+        else "mps"
+        if torch.backends.mps.is_available()
+        else "cpu"
+    )
     print(f"Using device: {device}")
 
     logging_config = LoggingConfig(output_dir=str(output_dir), run_name="latent_distr_viz")
     logger = WorldModelLogger(logging_config, is_main_process=True)
 
+    autoencoder_config = AutoencoderConfig()
     dataset_config = LeRobotDatasetConfig(
         repo_id="aractingi/droid_1.0.1",
         sequence_length=15,
         fps=3.0,
+        image_size=configured_autoencoder_resolution(autoencoder_config),
     )
     
     print("Initializing dataset...")
     dataset = LeRobotDataset(dataset_config, logger)
     print(f"Dataset size: {len(dataset)}")
 
-    autoencoder = RAE()
+    autoencoder = build_autoencoder(autoencoder_config)
     autoencoder.to(device)
     autoencoder.eval()
     

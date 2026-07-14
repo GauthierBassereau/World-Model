@@ -9,7 +9,7 @@ import numpy as np
 
 from src.training.logger import WorldModelLogger
 from lerobot.datasets.lerobot_dataset import LeRobotDataset as LeRobotDatasetBackend
-from .common import WorldBatch, RESIZE_CROP_TRANSFORM_224
+from .common import WorldBatch, build_resize_crop_transform
 from src.dataset.common import get_delta_timestamps, get_actions
 
 def _flatten_dict(d: dict, parent_key: str = '', sep: str = '.') -> dict:
@@ -41,8 +41,11 @@ class LeRobotDatasetConfig:
     independent_frames_probability: float = 0.0
     use_action_probability: float = 1.0
     action_dim: int = 7
+    image_size: int = 224
 
     def __post_init__(self) -> None:
+        if self.image_size <= 0:
+            raise ValueError("image_size must be positive.")
         self.cameras = _flatten_dict(self.cameras)
         self.episodes = self._get_list(self.episodes)
         self.excluded_episodes = self._get_list(self.excluded_episodes)
@@ -72,7 +75,7 @@ class LeRobotDataset(Dataset):
         self.backend = LeRobotDatasetBackend(
             repo_id=cfg.repo_id,
             episodes=None,
-            image_transforms=RESIZE_CROP_TRANSFORM_224,
+            image_transforms=build_resize_crop_transform(cfg.image_size),
             delta_timestamps=delta_timestamps,
             tolerance_s=1e-3,
             download_videos=True,

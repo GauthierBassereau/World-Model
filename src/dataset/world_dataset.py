@@ -19,6 +19,7 @@ class WorldDatasetConfig:
     datasets: Dict[str, Any]
     reference_dataset: Optional[str] = None
     action_dim: int = 8
+    image_size: int = 224
     sequence_length_distribution: Dict[Union[str, int], float] = field(default_factory=lambda: {15: 1.0})
     fps: float = 3.0
 
@@ -28,6 +29,8 @@ class WorldDatasetConfig:
         
         if not self.sequence_length_distribution:
             raise ValueError("WorldDatasetConfig.sequence_length_distribution must contain at least one entry.")
+        if self.image_size <= 0:
+            raise ValueError("WorldDatasetConfig.image_size must be positive.")
 
         self.sequence_length_distribution = {
             int(length): float(weight)
@@ -75,6 +78,7 @@ class WorldDataset(Dataset):
             ds_conf_dict["sequence_length"] = max_sequence_length
             ds_conf_dict["fps"] = self.cfg.fps
             ds_conf_dict["action_dim"] = self.action_dim
+            ds_conf_dict["image_size"] = self.image_size
             
             if ds_type == "lerobot":
                 ds_cfg = pyrallis.decode(LeRobotDatasetConfig, ds_conf_dict)

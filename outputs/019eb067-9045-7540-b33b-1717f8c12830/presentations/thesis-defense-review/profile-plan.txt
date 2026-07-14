@@ -1,0 +1,8 @@
+task mode: create
+primary deck-profile: engineering-platform
+secondary profile gates: defense readability, exact tensor shapes, explicit limitations
+required proof objects: preprocessing flow, token accounting, action-availability comparison, CEM objective-versus-path comparison
+source/asset requirements: thesis Figure 3.2, Figure 4.6, thesis methodology, implementation code
+brand authenticity constraints: none; use only thesis assets and native editable shapes
+profile-specific QA gates: technically exact labels, readable equations, attached flow connectors, no vague architecture boxes
+known missing inputs: no source defense-deck template was provided

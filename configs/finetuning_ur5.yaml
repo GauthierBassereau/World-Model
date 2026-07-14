@@ -161,5 +161,3 @@ world_model:
   use_signal_token: true
   signal_embedding_type: fourier
   signal_embedding_num_bins: 1024
-  patch_signal_conditioning: false
-  patch_signal_embed_dim: 256

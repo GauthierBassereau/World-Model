@@ -9,7 +9,11 @@ import pyrallis
 import torch
 
 from src.dataset.world_dataset import WorldDataset, WorldDatasetConfig
-from src.rae_dino.rae import RAE
+from src.rae_dino import (
+    AutoencoderConfig,
+    build_autoencoder,
+    configured_autoencoder_resolution,
+)
 
 
 @dataclass
@@ -18,6 +22,7 @@ class NoiseAnalysisConfig:
     signal_levels: List[float] = field(default_factory=lambda: [0.05, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.7, 0.9])
     loss_weighting_intercept: float = 0.1
     loss_weighting_slope: float = 0.9
+    autoencoder: AutoencoderConfig = field(default_factory=AutoencoderConfig)
     dataset: WorldDatasetConfig = field(default_factory=WorldDatasetConfig)
 
 
@@ -53,14 +58,23 @@ def main():
     output_dir = Path(config.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device(
+        "cuda"
+        if torch.cuda.is_available()
+        else "mps"
+        if torch.backends.mps.is_available()
+        else "cpu"
+    )
     print(f"Using device: {device}")
 
     logger = DummyLogger()
+    config.dataset.image_size = configured_autoencoder_resolution(
+        config.autoencoder
+    )
     dataset = WorldDataset(config.dataset, logger=logger)
     print(f"Dataset size: {len(dataset)}")
 
-    autoencoder = RAE()
+    autoencoder = build_autoencoder(config.autoencoder)
     autoencoder.to(device)
     autoencoder.eval()
 

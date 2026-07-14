@@ -13,7 +13,11 @@ from src.planning.action_tokens import ActionTokenBuilder
 from src.planning.cem import CEMWorldModelPlanner
 from src.planning.config import PlanningScriptConfig
 from src.planning.data import _single_lerobot_dataset_config, load_planning_sample
-from src.rae_dino.rae import RAE
+from src.rae_dino import (
+    build_autoencoder,
+    configured_autoencoder_resolution,
+    validate_autoencoder_input_dim,
+)
 from src.training.logger import WorldModelLogger
 from src.training.utils import set_seed
 from src.world_model.backbone import WorldModelBackbone
@@ -40,7 +44,11 @@ def _initialize_distributed() -> tuple[torch.device, int, int, bool]:
     return device, rank, world_size, distributed
 
 
-def _load_checkpoint_state(path: str, device: torch.device, logger: WorldModelLogger) -> Dict[str, torch.Tensor]:
+def _load_checkpoint(
+    path: str,
+    device: torch.device,
+    logger: WorldModelLogger,
+) -> tuple[Dict, Dict[str, torch.Tensor]]:
     logger.info("Loading checkpoint from %s...", path)
     checkpoint = torch.load(path, map_location=device)
     if "ema_model" in checkpoint:
@@ -54,7 +62,7 @@ def _load_checkpoint_state(path: str, device: torch.device, logger: WorldModelLo
     cleaned = {}
     for key, value in state_dict.items():
         cleaned[key[10:] if key.startswith("_orig_mod.") else key] = value
-    return cleaned
+    return checkpoint, cleaned
 
 
 def main() -> None:
@@ -64,17 +72,39 @@ def main() -> None:
     sys.argv = [sys.argv[0], *remaining]
 
     config = pyrallis.parse(config_class=PlanningScriptConfig, config_path=args.config_path)
-    if config.planning.max_context_frames is None:
-        config.planning.max_context_frames = config.world_model.temporal_context_length
-
     device, rank, world_size, distributed = _initialize_distributed()
     # Keep sample selection and model initialization identical across ranks.
     seed = set_seed(config.planning.seed, world_size=1, rank=0)
     is_main_process = rank == 0
 
     logger = WorldModelLogger(config.logging, is_main_process=is_main_process)
-    logger.init_wandb(pyrallis.encode(config))
     logger.info("Planning on device=%s seed=%d rank=%d/%d.", device, seed, rank, world_size)
+
+    checkpoint, checkpoint_state = _load_checkpoint(
+        config.checkpoint_path,
+        device,
+        logger,
+    )
+    saved_config = checkpoint.get("config") if isinstance(checkpoint, dict) else None
+    if config.use_checkpoint_config and isinstance(saved_config, dict):
+        if isinstance(saved_config.get("world_model"), dict):
+            config.world_model = pyrallis.decode(
+                type(config.world_model),
+                saved_config["world_model"],
+            )
+            logger.info("Using world-model architecture saved in the checkpoint.")
+        if isinstance(saved_config.get("autoencoder"), dict):
+            config.autoencoder = pyrallis.decode(
+                type(config.autoencoder),
+                saved_config["autoencoder"],
+            )
+            logger.info("Using autoencoder profile saved in the checkpoint.")
+    if config.planning.max_context_frames is None:
+        config.planning.max_context_frames = config.world_model.temporal_context_length
+    config.eval_dataset.image_size = configured_autoencoder_resolution(
+        config.autoencoder
+    )
+    logger.init_wandb(pyrallis.encode(config))
 
     _, ds_conf_dict = _single_lerobot_dataset_config(config.eval_dataset)
     action_mode = ds_conf_dict.get("action_mode")
@@ -102,7 +132,7 @@ def main() -> None:
 
     logger.info("Initializing world model...")
     model = WorldModelBackbone(config.world_model)
-    model.load_state_dict(_load_checkpoint_state(config.checkpoint_path, device, logger))
+    model.load_state_dict(checkpoint_state)
     model.to(device)
     model.eval()
     for param in model.parameters():
@@ -111,7 +141,8 @@ def main() -> None:
         model = torch.compile(model)
 
     logger.info("Initializing autoencoder...")
-    autoencoder = RAE()
+    autoencoder = build_autoencoder(config.autoencoder)
+    validate_autoencoder_input_dim(autoencoder, config.world_model.input_dim)
     autoencoder.to(device)
     autoencoder.eval()
     for param in autoencoder.parameters():

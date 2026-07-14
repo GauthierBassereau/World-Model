@@ -1,0 +1,4 @@
+No external reference deck was supplied.
+The thesis figures are content references, not visual templates.
+Preserve the color distinction used in Figure 3.2: action red, signal purple, registers/light blue, patches/blue.
+Improve the source figure for defense use by adding sequence-level shapes and the factorized attention reshapes.

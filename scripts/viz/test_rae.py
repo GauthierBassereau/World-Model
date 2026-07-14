@@ -1,15 +1,21 @@
-"""Quick sanity check: encode→decode with RAE and measure PSNR/SSIM."""
+"""Quick sanity check: encode→decode with the configured RAE and measure PSNR/SSIM."""
 import torch
 import math
 from torchvision.io import read_image
 from torchvision.transforms.functional import resize, center_crop
-from src.rae_dino.rae import RAE
+from src.rae_dino import AutoencoderConfig, build_autoencoder
 from pathlib import Path
 
 @torch.no_grad()
 def main():
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    rae = RAE().to(device).eval()
+    device = torch.device(
+        "cuda"
+        if torch.cuda.is_available()
+        else "mps"
+        if torch.backends.mps.is_available()
+        else "cpu"
+    )
+    rae = build_autoencoder(AutoencoderConfig()).to(device).eval()
 
     # Grab a few frames from the lerobot cache or provide your own paths
     # Option 1: from HF cache (adjust if needed)
@@ -26,10 +32,10 @@ def main():
         img = item["observation.images.front"]  # [C, H, W] float [0,1] or uint8
         if img.dtype == torch.uint8:
             img = img.float() / 255.0
-        # Resize + center crop to 224 (matching your training transform)
-        img = resize(img, 224, antialias=True)
-        img = center_crop(img, 224)
-        img = img.unsqueeze(0).to(device)  # [1, 3, 224, 224]
+        resolution = getattr(rae, "resolution", getattr(rae, "encoder_input_size", 256))
+        img = resize(img, resolution, antialias=True)
+        img = center_crop(img, resolution)
+        img = img.unsqueeze(0).to(device)
 
         z = rae.encode(img)
         rec = rae.decode(z).clamp(0, 1)

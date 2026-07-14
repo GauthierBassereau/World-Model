@@ -3,6 +3,9 @@ host: "0.0.0.0"
 port: 8000
 device: "cuda"
 
+autoencoder:
+  type: legacy
+
 # Dataset config to load initial context
 dataset:
   repo_id: "Gaugou/soar"
@@ -57,8 +60,6 @@ world_model: # ~400M parameters
   use_signal_token: true
   signal_embedding_type: fourier
   signal_embedding_num_bins: 1024
-  patch_signal_conditioning: false
-  patch_signal_embed_dim: 256
 
 signal_scheduler:
   mode: "logit_normal"  # {"resolution_shift", "linear_shift", "uniform", "logit_normal"}

@@ -19,7 +19,6 @@ from src.diffusion.signal_scheduler import SignalSchedulerConfig
 from src.diffusion.common import calculate_velocity_1_to_2
 from src.diffusion.euler_solver import EulerSolver, EulerSolverConfig
 from src.world_model.rollout import collect_rollout_latents
-from src.world_model.utils import expand_signal_levels_for_model, global_signal_levels_from_signal
 
 
 @dataclass
@@ -113,6 +112,7 @@ class WorldModelEvaluator:
         ds_conf_dict["sequence_length"] = self.max_sequence_length
         ds_conf_dict["fps"] = dataset_cfg.fps
         ds_conf_dict["action_dim"] = dataset_cfg.action_dim
+        ds_conf_dict["image_size"] = dataset_cfg.image_size
 
         ds_cfg = pyrallis.decode(LeRobotDatasetConfig, ds_conf_dict)
         return dataset_name, LeRobotDataset(ds_cfg, logger=self.logger)
@@ -345,15 +345,14 @@ class WorldModelEvaluator:
         signal_dtype = target_latents.dtype
 
         context_signal = torch.ones((batch_size, 1), device=device, dtype=signal_dtype)
-        context_signal = expand_signal_levels_for_model(model, context_signal, context_latents.shape[2])
         context_output = model(
             noisy_latents=context_latents,
             signal_levels=context_signal,
-            global_signal_levels=global_signal_levels_from_signal(context_signal),
             actions=context_actions,
             independent_frames=None,
             use_actions=context_use_actions,
             kv_cache=None,
+            return_prediction=False,
         )
         kv_cache = context_output.kv_cache
 
@@ -369,12 +368,10 @@ class WorldModelEvaluator:
             t_next = times[step_idx + 1]
             dt = t_next - t_curr
             signal_levels = torch.full((batch_size, 1), float(t_curr.item()), device=device, dtype=signal_dtype)
-            signal_levels = expand_signal_levels_for_model(model, signal_levels, target_latents.shape[2])
 
             output = model(
                 noisy_latents=x,
                 signal_levels=signal_levels,
-                global_signal_levels=global_signal_levels_from_signal(signal_levels),
                 actions=target_actions,
                 independent_frames=None,
                 use_actions=target_use_actions,

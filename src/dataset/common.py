@@ -15,17 +15,23 @@ class WorldBatch:
     dataset_names: Dict[int, str]
     episode_ids: torch.Tensor
 
-RESIZE_CROP_TRANSFORM_224 = transforms_v2.Compose(
-    [
-        transforms_v2.Resize(
-            size=224,
-            interpolation=InterpolationMode.BILINEAR,
-            antialias=True,
-        ),
-        transforms_v2.CenterCrop(224),
-        transforms_v2.ToDtype(torch.uint8, scale=True),
-    ]
-)
+def build_resize_crop_transform(image_size: int):
+    if image_size <= 0:
+        raise ValueError("image_size must be positive.")
+    return transforms_v2.Compose(
+        [
+            transforms_v2.Resize(
+                size=image_size,
+                interpolation=InterpolationMode.BILINEAR,
+                antialias=True,
+            ),
+            transforms_v2.CenterCrop(image_size),
+            transforms_v2.ToDtype(torch.uint8, scale=True),
+        ]
+    )
+
+
+RESIZE_CROP_TRANSFORM_224 = build_resize_crop_transform(224)
 
 UR5_DELTA_BASE_STATS = {
     "mean": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],

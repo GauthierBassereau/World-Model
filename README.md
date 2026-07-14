@@ -2,7 +2,7 @@
 
 **Master's thesis, University of Tartu, 2026**
 
-This repository contains the code and experiments for a diffusion-style world model for robot manipulation. The model does not predict pixels directly. It encodes video frames with a frozen DINOv2 encoder, predicts future semantic patch features with a 400M parameter spatial-temporal transformer, and uses those imagined latent rollouts for offline goal-conditioned planning.
+This repository began as a diffusion-style world model for robot manipulation. The thesis baseline encodes video with frozen DINOv2 features, predicts future semantic patches with a 400M parameter spatial-temporal transformer, and uses those imagined latent rollouts for offline goal-conditioned planning. The codebase now also contains a post-thesis extension based on RAEv2, patch-level noising, richer conditioning tokens, and an optional wide diffusion head.
 
 I built the full stack around the idea: UR5 data recording through LeRobot and RTDE, dataset converters for mixed video training, DINOv2/RAE encoding and decoding, distributed world-model training, held-out rollout evaluation, and a Cross-Entropy Method planner over UR5 end-effector actions.
 
@@ -12,6 +12,67 @@ I built the full stack around the idea: UR5 data recording through LeRobot and R
 
 [Thesis PDF](thesis/thesis.pdf) | [Thesis source](thesis/thesis.tex)
 
+## Current Extension: RAEv2 and Patch-Level Noising
+
+The quantitative world-model and planning results later in this README describe the original thesis baseline. The active UR5 training config now explores a separate extension inspired by [RAEv2](https://arxiv.org/abs/2605.18324), the original [RAE](https://arxiv.org/abs/2510.11690), [Patch Forcing](https://arxiv.org/abs/2604.19141), and the scalable world-model architecture in [Dreamer 4](https://arxiv.org/abs/2509.24527).
+
+### RAEv2 autoencoder
+
+The default `dinov3b-k11` profile is an atomic set of a frozen DINOv3-B encoder, its matching pretrained ViT-XL decoder, and positional latent normalization statistics. At 256 x 256 resolution, the public interface is:
+
+```text
+RGB [B, 3, 256, 256]  ->  latent tokens [B, 256, 768]  ->  RGB [B, 3, 256, 256]
+```
+
+The assets come from `nyu-visionx/RAEv2-models` at pinned revision `9770b7b980fa1875c8e6d65f226c615c0ce908a8`. The first construction downloads only the three files belonging to the selected profile into the Hugging Face cache; later runs reuse them. `cache_dir` can relocate the cache, and `local_files_only: true` makes cluster jobs fail rather than access the network. Keeping the three files behind one profile prevents accidental encoder/decoder/statistics mismatches.
+
+| Profile | Encoder aggregation | Latent contract | Intended use |
+|---|---|---|---|
+| `dinov3b-k11` | DINOv3-B, blocks 1-11 | `256 x 768` | Default, lower memory |
+| `dinov3l-k7-general` | DINOv3-L, 7-layer MLS | `256 x 1024` | General-data reconstruction/generation tradeoff |
+| `dinov3l-k23-general` | DINOv3-L, 23-layer MLS | `256 x 1024` | Highest-reconstruction profile |
+
+The large profiles also require `world_model.input_dim: 1024`. To reproduce an encode/decode check on CPU, CUDA, or Apple MPS:
+
+```bash
+python scripts/viz/reconstruct_autoencoder.py \
+  --image /path/to/ur5_frame.png \
+  --profile dinov3b-k11 \
+  --device auto \
+  --stem ur5_dinov3b_k11
+```
+
+The checked-in UR5 run achieved **28.96 dB PSNR** on Apple MPS; its [metrics](archive/autoencoder_reconstruction/ur5_dinov3b_k11.json) and source images live under `archive/autoencoder_reconstruction/`.
+
+<p align="center">
+  <img src="archive/autoencoder_reconstruction/ur5_dinov3b_k11_comparison.png" alt="UR5 input and DINOv3-B K11 RAEv2 reconstruction" width="82%">
+</p>
+
+### Conditioning, noising, and prediction head
+
+The current per-frame token layout is:
+
+```text
+[time_1..time_4 | action_1..action_4 | register_1..register_4 | 256 DINOv3 patch tokens]
+```
+
+The four time tokens share one Gaussian-Fourier embedding plus four learned offsets. During LTG patch noising they encode the original frame-level upper bound sampled before per-patch corruption. Individual patches may be made noisier, but their noise levels are deliberately not provided to the model. This differs intentionally from Patch Forcing, which conditions each patch on its own timestep: here the model must recognize from the latent content that one generated patch is less reliable than its neighbors. The actual per-patch signal levels are still used to construct the noisy input and compute the loss.
+
+Actions use the same pattern: the action vector is projected once and added to four learned token offsets. When actions are masked or unavailable, the four learned base tokens remain, preserving a fixed layout across robot and passive-video data.
+
+The DreamerV4-style backbone is otherwise unchanged: spatial attention operates within frames, causal temporal attention operates across matching token positions, and rollout still uses the temporal KV cache. The model continues to predict the clean latent `x`; training converts that prediction to velocity using each patch's real signal level and applies the existing velocity loss.
+
+`world_model.output_head` selects the prediction head:
+
+- `linear` preserves the thesis-style normalized linear projection and supports legacy ablations.
+- `dh` uses the RAE/RAEv2 wide head: two spatial transformer blocks of width 2048 and 16 heads, conditioned patch-by-patch by the temporally informed backbone. `world_model.gradient_checkpointing` applies one memory/speed choice consistently to every backbone and DH transformer block during training.
+
+During rollout, context priming and insertion of generated feedback call the backbone in cache-only mode. They update temporal keys and values but skip the prediction projection or expensive DH head; denoising steps still execute the selected head normally. This is an inference optimization and does not change rollout semantics.
+
+### Checkpoint configuration
+
+New training checkpoints save the complete experiment config alongside model and optimizer state. Evaluation and planning default to `use_checkpoint_config: true`, restoring the saved world-model architecture and autoencoder profile before construction. This keeps the latent width, token counts, and `linear`/`dh` head consistent with the weights. Set it to `false` only for a deliberate override; legacy checkpoints without a saved config continue to use the YAML values. Exact resume is strict, while non-resume checkpoint loading can initialize newly added modules for finetuning and reports missing or unexpected keys.
+
 ## Core Question
 
 The final thesis focuses on a recorded UR5 target domain and a concrete evaluation question:
@@ -20,9 +81,9 @@ The final thesis focuses on a recorded UR5 target domain and a concrete evaluati
 
 The target robot dataset is intentionally small: around two hours of UR5 interaction data with 10 tabletop objects, varied camera viewpoints, and no fixed imitation task. The rest of the training signal comes from mixed video: BridgeData V2, EPIC-KITCHENS, and DROID. After temporal resampling and selection, the training corpus is roughly 1,000 hours at 5 Hz.
 
-## System
+## Thesis Baseline System
 
-| Component | Final setup |
+| Component | Thesis setup |
 |---|---|
 | Visual state | Frozen DINOv2-base patch features |
 | Per-frame latent | `16 x 16` patch grid, 768 features per patch, 196,608 scalars total |
@@ -35,7 +96,7 @@ The target robot dataset is intentionally small: around two hours of UR5 interac
 | Rollout | Euler denoising with KV caching, generated latents fed back at signal level 0.8 |
 | Planning | CEM over action sequences, scored by terminal DINO feature distance plus action penalty |
 
-The token layout per frame is:
+The thesis token layout per frame was:
 
 ```text
 [signal | action | register_1..register_4 | 256 DINO patch tokens]
@@ -152,7 +213,7 @@ The decoded rollout below is the important sanity check: the optimized action se
 
 This is still offline planning. One illustrative CEM run took roughly two minutes on one H200 GPU, so the current diffusion planner is too slow for real-time control without distillation, fewer denoising steps, a learned action proposal, or another acceleration method.
 
-## What This Shows
+## What the Thesis Baseline Shows
 
 - Frozen DINOv2 features are a practical state space for visual robot world models.
 - Mixed passive video and robot video reduced overfitting on a small UR5 dataset.
@@ -164,16 +225,19 @@ This is still offline planning. One illustrative CEM run took roughly two minute
 
 | Path | Purpose |
 |---|---|
-| `src/world_model/` | Block-causal transformer backbone and autoregressive latent rollout |
-| `src/diffusion/` | Signal-level schedules and Euler solver |
-| `src/rae_dino/` | Frozen DINOv2 encoder and RAE decoder wrapper |
+| `src/world_model/` | Block-causal spatial-temporal backbone, linear/DH heads, and autoregressive latent rollout |
+| `src/diffusion/` | Signal schedules, LTG patch forcing, and Euler solver |
+| `src/rae_dino/` | Pinned RAEv2 profiles and DINOv3 loader, plus the legacy DINOv2 RAE wrapper |
 | `src/dataset/` | LeRobot-style dataset loading, mixing, padding, and action preprocessing |
 | `src/training/` | Trainer, evaluator, logging, and distributed training utilities |
 | `src/planning/` | CEM planner, action token builder, planning data loading, visualizations |
 | `scripts/data/` | Dataset conversion utilities |
+| `scripts/viz/reconstruct_autoencoder.py` | Reproducible RAEv2 encode/decode check on CPU, CUDA, or MPS |
 | `scripts/train_world_model.py` | Main world-model training entrypoint |
 | `scripts/evaluate_checkpoint.py` | Held-out rollout evaluation |
 | `scripts/plan_with_world_model.py` | Goal-conditioned CEM planning |
+| `archive/autoencoder_reconstruction/` | Checked-in RAEv2 reconstruction images and metrics |
+| `tests/` | Unit and smoke tests for profiles, conditioning, heads, noising, rollout, and configs |
 | `thesis/` | Thesis source, PDF, and original figures |
 
 ## Limitations

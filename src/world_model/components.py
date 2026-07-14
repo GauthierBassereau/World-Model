@@ -59,6 +59,36 @@ class SignalEmbedder(nn.Module):
         return token
 
 
+class GaussianFourierSignalEmbedder(nn.Module):
+    """RAEv2-style scalar embedding with fixed random Fourier frequencies."""
+
+    def __init__(
+        self,
+        model_dim: int,
+        embedding_size: int = 256,
+        scale: float = 1.0,
+    ) -> None:
+        super().__init__()
+        self.register_buffer(
+            "frequencies",
+            torch.normal(0.0, scale, (embedding_size,)),
+        )
+        self.mlp = nn.Sequential(
+            nn.Linear(embedding_size * 2, model_dim),
+            nn.SiLU(),
+            nn.Linear(model_dim, model_dim),
+        )
+
+    def forward(self, signal_levels: torch.Tensor) -> torch.Tensor:
+        angles = (
+            signal_levels.float().unsqueeze(-1)
+            * self.frequencies
+            * (2.0 * torch.pi)
+        )
+        embedding = torch.cat((torch.sin(angles), torch.cos(angles)), dim=-1)
+        return self.mlp(embedding)
+
+
 class LearnedSignalEmbedder(nn.Module):
     def __init__(self, model_dim: int, num_bins: int = 1024) -> None:
         super().__init__()

@@ -1,0 +1,14 @@
+slide size: 1280 x 720
+background: deep ink #0B1020
+typography: Aptos Display for claims, Aptos for body, Aptos Mono for tensor shapes
+palette: white/gray base; blue for visual patches; purple for signal; red for action; cyan for registers; amber for limitations
+chart grammar: direct labels, no legends unless unavoidable
+diagram grammar: left-to-right flow with attached arrows and exact tensor labels
+connector grammar: 2 px solid gray, consistent arrowheads
+container grammar: dark filled panels with subtle 1 px borders; rounded only for semantic stages
+footer grammar: quiet local-source note at 11 px
+page markers: lower-right 01/03 format
+title grammar: small uppercase kicker plus 38-42 px claim title
+data-label grammar: 18-24 px mono for shapes and equations
+allowed layouts: pipeline, split comparison, objective-versus-omissions
+banned motifs: generic card grids, decorative icons, gradients, detached arrows

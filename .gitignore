@@ -10,7 +10,12 @@ __pycache__/
 *.pt
 *.mp4
 *.sh
+pytest.ini
 
 wandb/
 logs/
 planning_outputs/
+thesis/
+tests/
+RAEv2/
+nn_report/

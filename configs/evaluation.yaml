@@ -9,6 +9,11 @@ logging:
 
 checkpoint_path: checkpoints/400M_bridgev2_proprio_fixedrope/world_model_step_060000.pt
 
+# This checked-in checkpoint predates the RAEv2 refactor. New checkpoints save
+# their autoencoder config; switch this block to type: raev2 when evaluating one.
+autoencoder:
+  type: legacy
+
 evaluator:
   video_sample_indices: all
   rollout_start_frame: 10
@@ -79,6 +84,4 @@ world_model:
   use_signal_token: true
   signal_embedding_type: fourier # fourier, learned
   signal_embedding_num_bins: 1024
-  patch_signal_conditioning: false
-  patch_signal_embed_dim: 256
   predict_patch_difficulty: false

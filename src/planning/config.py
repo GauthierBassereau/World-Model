@@ -6,6 +6,7 @@ from src.diffusion.euler_solver import EulerSolverConfig
 from src.diffusion.signal_scheduler import SignalSchedulerConfig
 from src.training.logger import LoggingConfig
 from src.world_model.backbone import WorldModelConfig
+from src.rae_dino import AutoencoderConfig
 
 
 @dataclass
@@ -69,6 +70,8 @@ class VisualizationConfig:
 @dataclass
 class PlanningScriptConfig:
     checkpoint_path: str = "checkpoints/training_ur5_400M_res/world_model_step_013000.pt"
+    use_checkpoint_config: bool = True
+    autoencoder: AutoencoderConfig = field(default_factory=AutoencoderConfig)
     planning: PlanningConfig = field(default_factory=PlanningConfig)
     cem: CEMConfig = field(default_factory=CEMConfig)
     visualization: VisualizationConfig = field(default_factory=VisualizationConfig)
