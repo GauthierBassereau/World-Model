@@ -56,7 +56,12 @@ class WorldDataset(Dataset):
         self.weights = cfg.weights
         self.tolerance = tolerance
         self.action_dim = cfg.action_dim
+        self.image_size = cfg.image_size
         self.logger = logger
+        self._sampling_seed = torch.tensor(
+            0 if seed is None else int(seed),
+            dtype=torch.int64,
+        ).share_memory_()
 
         if not self.cfg.datasets:
             raise ValueError("WorldDatasetConfig.datasets must contain at least one dataset.")
@@ -145,8 +150,8 @@ class WorldDataset(Dataset):
             generator.manual_seed(seed)
         # virtual_map: maps virtual_index -> dataset_index
         # indices_map: maps virtual_index -> inner_dataset_index
-        self.virtual_map = []
-        self.indices_map = []
+        virtual_map = []
+        indices_map = []
         
         dataset_lengths = {name: len(ds) for name, ds in self.datasets.items()}
         
@@ -162,14 +167,26 @@ class WorldDataset(Dataset):
                 indices.extend(torch.randperm(ds_len, generator=generator).tolist())
             indices = indices[:count]
             
-            self.virtual_map.extend([dataset_idx] * count)
-            self.indices_map.extend(indices)
+            virtual_map.extend([dataset_idx] * count)
+            indices_map.extend(indices)
+
+        new_virtual_map = torch.tensor(virtual_map, dtype=torch.long)
+        new_indices_map = torch.tensor(indices_map, dtype=torch.long)
+        if hasattr(self, "virtual_map"):
+            self.virtual_map.copy_(new_virtual_map)
+            self.indices_map.copy_(new_indices_map)
+        else:
+            # Persistent dataloader workers keep their dataset instance. Shared
+            # maps let epoch reshuffles made by the trainer remain visible.
+            self.virtual_map = new_virtual_map.share_memory_()
+            self.indices_map = new_indices_map.share_memory_()
 
     def reshuffle_virtual_map(self, seed: Optional[int] = None) -> None:
         generator = None
         if seed is not None:
             generator = torch.Generator()
             generator.manual_seed(seed)
+            self._sampling_seed.fill_(int(seed))
         self.create_virtual_map(generator)
 
     def __repr__(self) -> str:
@@ -179,21 +196,35 @@ class WorldDataset(Dataset):
         return self.total_length
 
     def __getitem__(self, index: int) -> WorldBatch:
-        dataset_idx = self.virtual_map[index]
+        dataset_idx = int(self.virtual_map[index])
         dataset_name = self.dataset_names[dataset_idx]
-        inner_index = self.indices_map[index]
+        inner_index = int(self.indices_map[index])
         
         dataset = self.datasets[dataset_name]
+        sample_seed = (
+            int(self._sampling_seed.item()) * 6_364_136_223_846_793_005
+            + int(index)
+        ) & ((1 << 63) - 1)
+        python_rng = random.Random(sample_seed)
+        torch_generator = torch.Generator()
+        torch_generator.manual_seed(sample_seed)
         
         # Resilience loop, sometimes some videos can be corrupted in droid... so we just pick a random index from the same dataset
         for attempt in range(self.tolerance):
             try:
-                batch = dataset[inner_index]
+                if isinstance(dataset, LeRobotDataset):
+                    batch = dataset.get_item(
+                        inner_index,
+                        python_rng=python_rng,
+                        torch_generator=torch_generator,
+                    )
+                else:
+                    batch = dataset[inner_index]
                 batch.dataset_indices = torch.tensor(dataset_idx, dtype=torch.long)
                 batch.dataset_names = self.idx_to_dataset
                 return batch
             except Exception as e:
                 self.logger.warning(f"Failed to load sample from {dataset_name} at index {inner_index} (attempt {attempt+1}/{self.tolerance}): {e}")
-                inner_index = random.randint(0, len(dataset) - 1) # just picking a random index from the same dataset
+                inner_index = python_rng.randint(0, len(dataset) - 1)
         
         raise RuntimeError(f"Failed to load sample from {dataset_name} after {self.tolerance} attempts.")

@@ -1,11 +1,26 @@
 logging:
-  project: world_model_bridgev2
+  project: world_model_patch
   entity: null
-  run_name: 400M_bridgev2_proprio_patch_no_t_cond
+  run_name: bridge_classic_ema
   output_dir: checkpoints
   log_interval: 1
   signal_level_log_limit: 100
   checkpoint_interval: 1000
+
+# Encoder, decoder, and normalization stats are downloaded as one pinned
+# profile. Alternatives currently bundled: dinov3l-k7-general and
+# dinov3l-k23-general (also set world_model.input_dim: 1024 for those).
+autoencoder:
+  type: raev2
+  raev2:
+    profile: dinov3b-k11
+    repo_id: nyu-visionx/RAEv2-models
+    revision: 9770b7b980fa1875c8e6d65f226c615c0ce908a8
+    cache_dir: null
+    local_files_only: false
+    dinov3_repo_dir: null
+    noise_tau: 0.0
+    eps: 1.0e-5
 
 trainer:
   loss_type: velocity
@@ -13,11 +28,11 @@ trainer:
   loss_weighting_intercept: 0.1
   loss_weighting_slope: 0.9
   evaluation_interval: 500
-  grad_accum_steps: 4
+  grad_accum_steps: 1
   precision: bf16
   seed: 3
-  resume: false # true
-  load_checkpoint: null
+  resume: true # true
+  load_checkpoint: checkpoints/bridge_patch_ema/world_model_step_048000.pt
 
 evaluator:
   video_sample_indices: all
@@ -32,20 +47,21 @@ evaluator:
 optimizer:
   lr:
     "0": 1.0e-7
-    "500": 3.0e-4
-    "30000": 3.0e-4
-    "60000": 3.0e-5
+    "2000": 3.0e-4
+    "50000": 3.0e-4
+    "60000": 1.0e-7
   eps: 1.0e-08
   grad_clip_norm: 1.0
   weight_decay: 0.0
+  betas: [0.9, 0.95]
 
 ema:
-  enabled: false
-  decay: 0.9995
-  start_step: 5000
+  enabled: true
+  decay: 0.999
+  start_step: 0
 
 train_dataloader:
-  batch_size: 120
+  batch_size: 128
   shuffle: true
   num_workers: 6
   pin_memory: true
@@ -72,7 +88,7 @@ train_dataset:
       use_action_probability: 0.8
 
 eval_dataloader:
-  batch_size: 18
+  batch_size: 8
   shuffle: false
   num_workers: 0
   pin_memory: false
@@ -113,7 +129,7 @@ signal_scheduler:
 
 euler_solver:
   number_steps: 50
-  min_denom: 0.05
+  min_denom: 0.02
   timestep_schedule: "linear"
 
 world_model:
@@ -131,7 +147,22 @@ world_model:
   qk_norm_eps: 1.0e-06
   attn_logit_softcapping: 50.0 # None for no softcapping -> able to use fused_attention
   use_action_token: true  # false for pretraining (no actions), true for finetuning
-  use_signal_token: false
-  signal_embedding_type: fourier # fourier, learned
+  use_signal_token: true
+  # RAEv2-style conditioning: one shared embedding plus four learned offsets.
+  # The tokens receive the sampled LTG upper bound, never the realized
+  # per-patch signal after patch forcing.
+  num_signal_tokens: 1
+  num_action_tokens: 1
+  signal_embedding_type: gaussian_fourier # fourier, gaussian_fourier, learned
   signal_embedding_num_bins: 1024
-  predict_patch_difficulty: true
+  predict_patch_difficulty: false
+  # Keep the DreamerV4-style backbone and replace only its prediction head
+  # with the lightweight 2-block, 2048-wide DDT/DH head from RAE/RAEv2.
+  output_head: linear # linear, dh
+  dh_hidden_dim: 2048
+  dh_depth: 2
+  dh_num_heads: 16
+  dh_mlp_multiplier: 4.0
+  # Recompute activations during backward in every backbone and DH transformer
+  # block. Disable for faster training when GPU memory is sufficient.
+  gradient_checkpointing: true

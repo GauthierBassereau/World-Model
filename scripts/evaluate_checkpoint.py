@@ -55,7 +55,10 @@ def main() -> None:
     logger.info(f"Initialized process {rank}/{world_size} on device {device}")
 
     logger.info(f"Loading checkpoint from {config.checkpoint_path}...")
-    checkpoint = torch.load(config.checkpoint_path, map_location=device)
+    # Keep online, optimizer, and EMA tensors on host memory while selecting
+    # the weights to evaluate. Loading the whole training checkpoint directly
+    # onto the GPU can otherwise cause a large transient allocation.
+    checkpoint = torch.load(config.checkpoint_path, map_location="cpu")
     saved_config = checkpoint.get("config") if isinstance(checkpoint, dict) else None
     if config.use_checkpoint_config and isinstance(saved_config, dict):
         if isinstance(saved_config.get("world_model"), dict):
@@ -77,7 +80,6 @@ def main() -> None:
 
     logger.info("Initializing World Model...")
     model = WorldModelBackbone(config.world_model)
-    model.to(device)
     
     if "model" in checkpoint:
         state_dict = checkpoint["model"]
@@ -98,6 +100,7 @@ def main() -> None:
     state_dict = new_state_dict
 
     model.load_state_dict(state_dict)
+    model.to(device)
     model.eval()
     model = torch.compile(model)
     

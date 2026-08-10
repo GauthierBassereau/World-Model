@@ -73,6 +73,10 @@ During rollout, context priming and insertion of generated feedback call the bac
 
 New training checkpoints save the complete experiment config alongside model and optimizer state. Evaluation and planning default to `use_checkpoint_config: true`, restoring the saved world-model architecture and autoencoder profile before construction. This keeps the latent width, token counts, and `linear`/`dh` head consistent with the weights. Set it to `false` only for a deliberate override; legacy checkpoints without a saved config continue to use the YAML values. Exact resume is strict, while non-resume checkpoint loading can initialize newly added modules for finetuning and reports missing or unexpected keys.
 
+When EMA is enabled with a delayed `start_step`, it is initialized from the online weights at that step. Periodic evaluation uses the online model before EMA starts and the EMA model afterward. Active EMA weights are saved in the checkpoint, and standalone evaluation and playground scripts prefer them automatically.
+
+To continue a stopped run, set `trainer.resume: true`, point `trainer.load_checkpoint` at the checkpoint, and keep the original seed. Current checkpoints restore the optimizer, global step, per-rank RNG state, sampler epoch, position within that epoch, EMA state, and W&B run ID. Changing the seed changes the permutation underneath the saved cursor and can both repeat old samples and skip unseen ones. Keep the world size, global batch size, and gradient accumulation unchanged for the closest continuation. Legacy checkpoints have no saved RNG or W&B state, but their data cursor is inferred from `epoch` and `epoch_step`.
+
 ## Core Question
 
 The final thesis focuses on a recorded UR5 target domain and a concrete evaluation question:

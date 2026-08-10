@@ -160,9 +160,19 @@ class LeRobotDataset(Dataset):
         return len(self.indices)
 
     def __getitem__(self, index: int) -> WorldBatch:
+        return self.get_item(index)
+
+    def get_item(
+        self,
+        index: int,
+        *,
+        python_rng: Optional[random.Random] = None,
+        torch_generator: Optional[torch.Generator] = None,
+    ) -> WorldBatch:
         global_idx = self.indices[index]
         item = self.backend[global_idx]
-        cam_key = random.choices(self.camera_keys, weights=self.camera_probs, k=1)[0]
+        rng = python_rng if python_rng is not None else random
+        cam_key = rng.choices(self.camera_keys, weights=self.camera_probs, k=1)[0]
         sequence_frames = item[cam_key]
 
         sequence_actions = get_actions(
@@ -187,14 +197,20 @@ class LeRobotDataset(Dataset):
         else:
             padded_frames = torch.zeros((self.sequence_length,), dtype=torch.bool)
 
-        independent_frames_mask = torch.rand(self.sequence_length) < self.cfg.independent_frames_probability
+        independent_frames_mask = (
+            torch.rand(self.sequence_length, generator=torch_generator)
+            < self.cfg.independent_frames_probability
+        )
         # only dependent frames can have actions
         actions_mask = torch.zeros(self.sequence_length, dtype=torch.bool)
         dependent_mask = ~independent_frames_mask
         num_dependent = dependent_mask.sum().item()
         
         if num_dependent > 0:
-            actions_mask[dependent_mask] = torch.rand(num_dependent) < self.cfg.use_action_probability
+            actions_mask[dependent_mask] = (
+                torch.rand(num_dependent, generator=torch_generator)
+                < self.cfg.use_action_probability
+            )
             actions_mask[0] = False
             actions_mask[padded_frames] = False
 

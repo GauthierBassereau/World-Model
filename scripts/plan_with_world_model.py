@@ -46,11 +46,10 @@ def _initialize_distributed() -> tuple[torch.device, int, int, bool]:
 
 def _load_checkpoint(
     path: str,
-    device: torch.device,
     logger: WorldModelLogger,
 ) -> tuple[Dict, Dict[str, torch.Tensor]]:
     logger.info("Loading checkpoint from %s...", path)
-    checkpoint = torch.load(path, map_location=device)
+    checkpoint = torch.load(path, map_location="cpu")
     if "ema_model" in checkpoint:
         logger.info("Found EMA model in checkpoint; using EMA weights for planning.")
         state_dict = checkpoint["ema_model"]
@@ -82,7 +81,6 @@ def main() -> None:
 
     checkpoint, checkpoint_state = _load_checkpoint(
         config.checkpoint_path,
-        device,
         logger,
     )
     saved_config = checkpoint.get("config") if isinstance(checkpoint, dict) else None

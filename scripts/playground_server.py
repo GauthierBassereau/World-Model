@@ -152,9 +152,8 @@ def load_model():
     
     logger.info("Loading World Model...")
     model = WorldModelBackbone(config.world_model)
-    model.to(device)
     
-    checkpoint = torch.load(config.checkpoint_path, map_location=device)
+    checkpoint = torch.load(config.checkpoint_path, map_location="cpu")
     state_dict = checkpoint["model"] if "model" in checkpoint else checkpoint
     if "ema_model" in checkpoint:
         state_dict = checkpoint["ema_model"]
@@ -164,6 +163,7 @@ def load_model():
         key = k[10:] if k.startswith("_orig_mod.") else k
         new_state_dict[key] = v
     model.load_state_dict(new_state_dict)
+    model.to(device)
     model.eval()
     
     logger.info("Loading Autoencoder...")

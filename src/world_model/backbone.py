@@ -420,6 +420,7 @@ class WorldModelBackbone(nn.Module):
                 patch_logvar=None,
             )
 
+        # TODO predict patch diff should prob be after DH head if exist ?
         patch_logvar = None
         if self.config.predict_patch_difficulty:
             patch_logvar = self.patch_logvar_proj(latents).squeeze(-1)

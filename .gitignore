@@ -16,6 +16,5 @@ wandb/
 logs/
 planning_outputs/
 thesis/
-tests/
 RAEv2/
 nn_report/
